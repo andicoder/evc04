@@ -13,6 +13,8 @@ pub fn reported_current(fuse_limit: f32, target: f32) -> f32 {
     fuse_limit - target.clamp(0.0, fuse_limit)
 }
 
+pub mod frame;
+
 #[cfg(test)]
 mod tests {
     use super::*;
