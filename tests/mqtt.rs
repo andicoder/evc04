@@ -1,0 +1,103 @@
+//! Boundary tests for the MQTT control surface (docs/mqtt.md): the inbound
+//! target-payload parser and the outbound status schema. The live rumqttc task
+//! is an I/O boundary and is exercised against a broker, not here.
+
+use evc04_charge::mqtt::{parse_target, Status, OFFLINE_PAYLOAD};
+
+#[test]
+fn parses_valid_target_amps() {
+    assert_eq!(parse_target(br#"{"amps": 6.5}"#).unwrap(), 6.5);
+}
+
+#[test]
+fn parses_integer_amps() {
+    assert_eq!(parse_target(br#"{"amps": 10}"#).unwrap(), 10.0);
+}
+
+#[test]
+fn out_of_range_amps_is_accepted_not_rejected() {
+    // The contract clamps in the control math (reported_current), so the parser
+    // accepts over- and under-range values; staleness/range handling is downstream.
+    assert_eq!(parse_target(br#"{"amps": 999}"#).unwrap(), 999.0);
+    assert_eq!(parse_target(br#"{"amps": -5}"#).unwrap(), -5.0);
+}
+
+#[test]
+fn additive_fields_are_ignored() {
+    // The object shape leaves room for future fields; older versions ignore them.
+    assert_eq!(
+        parse_target(br#"{"amps": 6.5, "mode": "eco"}"#).unwrap(),
+        6.5
+    );
+}
+
+#[test]
+fn malformed_json_is_rejected() {
+    assert!(parse_target(b"not json").is_err());
+}
+
+#[test]
+fn missing_amps_is_rejected() {
+    assert!(parse_target(br#"{"volts": 230}"#).is_err());
+}
+
+#[test]
+fn non_numeric_amps_is_rejected() {
+    assert!(parse_target(br#"{"amps": "lots"}"#).is_err());
+}
+
+#[test]
+fn non_finite_amps_is_rejected() {
+    // JSON can't carry NaN/Inf literals, but an overflowing exponent decodes to
+    // an infinity — guard against pushing that into the control math.
+    assert!(parse_target(br#"{"amps": 1e400}"#).is_err());
+}
+
+#[test]
+fn status_serialises_to_the_documented_schema() {
+    let status = Status {
+        online: true,
+        target_a: 6.5,
+        reported_a: 9.5,
+        last_poll_age_s: 0.4,
+        gateway: "connected".to_string(),
+        mqtt: "connected".to_string(),
+        failsafe: false,
+        last_error: None,
+    };
+    let got: serde_json::Value = serde_json::from_str(&status.to_json()).unwrap();
+    let want = serde_json::json!({
+        "online": true,
+        "target_a": 6.5,
+        "reported_a": 9.5,
+        "last_poll_age_s": 0.4,
+        "gateway": "connected",
+        "mqtt": "connected",
+        "failsafe": false,
+        "last_error": null,
+    });
+    assert_eq!(got, want);
+}
+
+#[test]
+fn status_last_error_serialises_as_a_string_when_set() {
+    let status = Status {
+        online: true,
+        target_a: 0.0,
+        reported_a: 16.0,
+        last_poll_age_s: 1.0,
+        gateway: "down".to_string(),
+        mqtt: "connected".to_string(),
+        failsafe: true,
+        last_error: Some("malformed target payload".to_string()),
+    };
+    let got: serde_json::Value = serde_json::from_str(&status.to_json()).unwrap();
+    assert_eq!(got["last_error"], "malformed target payload");
+    assert_eq!(got["failsafe"], true);
+}
+
+#[test]
+fn offline_lwt_payload_marks_the_service_offline() {
+    let got: serde_json::Value = serde_json::from_slice(OFFLINE_PAYLOAD).unwrap();
+    assert_eq!(got, serde_json::json!({ "online": false }));
+}
