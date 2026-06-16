@@ -9,15 +9,20 @@ behaviour, and the open hardware questions are below.
 ## 1. Goal
 
 Control charging on a **Vestel EVC04-AC11-T2P** wallbox so that an external
-controller (Home Assistant, following Tibber day-ahead prices and/or PV surplus)
-can decide **when and how fast** the car charges — ideally with **continuous
-current modulation**, at minimum with **on/off** gating.
+controller (Home Assistant / evcc, following day-ahead prices and/or PV surplus)
+can decide **when and how fast** the car charges — both **continuous current
+modulation** and **on/off** gating, the controller's choice.
 
 The constraint that shapes the entire design: **this box has no communication
 module**, so none of the "normal" control paths work (see §2). The only available
 lever is the box's **Power Optimizer**, which polls an external energy meter over
-RS485 and reduces charge current to stay under a fuse limit. We **emulate that
-meter** and feed it fabricated values.
+RS485 and runs a **closed feedback loop** that ramps charge current until the
+measured total reaches a fuse limit. We **emulate that meter**: feeding it a value
+that tracks the **live measured current** closes the loop and the box **modulates**
+(proven on hardware); feeding a static value gives **on/off** only (§6). The
+charging *brain* (price / PV / departure planning) stays in the external
+controller — Home Assistant or **evcc** (§8) — never in this service, which is a
+mode-agnostic actuator: `target` + `measured` in, meter emulation out.
 
 ---
 
@@ -46,8 +51,37 @@ meter** and feed it fabricated values.
 
 **The Power Optimizer:** enabled via on-board **DIP switches 4-5-6** (set a fuse
 limit per a DIP table; any non-all-off value enables polling). Once enabled, the
-box continuously polls an external meter on CN20 and limits
-`charge_current ≤ fuse_limit − household_current`.
+box continuously polls an external meter on CN20 and runs a closed loop that holds
+the measured total current at `fuse_limit` (see §6).
+
+```
+DIP 4-5-6 = Power Optimizer main-fuse current limit (manual Table-14).
+Only these 3 pins set the limit; all-OFF disables the optimizer.
+(Pin 1 reserved, Pin 2 = External Enable, Pin 3 = Locked Cable.)
+Never flip DIPs while the box is powered.
+
+  63 A  (ON-ON-OFF)                 16 A  (OFF-OFF-ON)
+        4    5    6                       4    5    6
+      +----+----+----+                  +----+----+----+
+   ON |[##]|[##]|    |               ON |    |    |[##]|
+      +----+----+----+                  +----+----+----+
+  OFF |    |    |[##]|              OFF |[##]|[##]|    |
+      +----+----+----+                  +----+----+----+
+
+  full table        ( # = ON / rocker up,  . = OFF / rocker down )
+  ----------------------------------------------------------------
+   4 5 6   limit            4 5 6   limit
+   . . .   disabled         # . .   32 A
+   . . #   16 A             # . #   40 A
+   . # .   20 A             # # .   63 A
+   . # #   25 A             # # #   80 A
+```
+
+The fuse limit must equal `FUSE_LIMIT_A` so the §6 offset math lands the edge
+where expected. The DIP value trades full-charge headroom against modulation range
+(§9): a **low** limit (16 A, tested) maps the closed loop onto the car's real
+6–16 A envelope for PV modulation; a **high** limit guarantees unthrottled full
+charge under household load. **16 A is the current recommended operating DIP.**
 
 **CN connectors (for context):**
 - **CN20** — RS485 meter bus. Silkscreen `V | GND | A | B`. This is where we tap.
@@ -144,18 +178,26 @@ optionally answer the wider map for robustness, but it is not required.
 
 ## 6. Control math
 
-The Power Optimizer's nominal rule is:
+### The box runs its own closed loop
+
+The Power Optimizer's nominal rule looks open-loop:
 
 ```
 available_charge_current = fuse_limit − reported_household_current   (per phase)
 ```
 
-`fuse_limit` is the value selected by **DIP 4-5-6** on the board.
+`fuse_limit` is the value selected by **DIP 4-5-6** on the board (§2). But the box
+does **not** treat the meter value as a static ceiling. The Power Optimizer
+measures the **total main-line current including the charger's own draw** and runs
+a **closed feedback loop**, ramping the charge current until the *measured total*
+sits at `fuse_limit`. This single fact drives the whole control design.
 
-**Measured reality (validated with a car, fuse_limit = 65 A / DIP on-on-off):**
-the box does **not** expose a usable proportional band. It charges at the box
-maximum for almost the entire reported range and then **cliffs to pause within
-~2 A of the fuse limit**:
+### A static feed gives on/off only (measured, with a car)
+
+Because a fabricated static value never rises as the car charges, a **static**
+`reported = fuse_limit − target` cannot land the loop anywhere in between — the box
+always ramps to full (`reported < fuse`) or cuts off (`reported ≥ fuse`). Bench
+tested with a car at `fuse_limit = 65 A` (DIP on-on-off):
 
 | reported (all 3φ) | `65 − reported` | delivered charge | state |
 |---|---|---|---|
@@ -164,31 +206,66 @@ maximum for almost the entire reported range and then **cliffs to pause within
 | 65 A | 0 | ~0 | **pause** |
 | ≥ 66 A | ≤ −1 | ~0 | pause |
 
-So the pause edge sits **right at `reported = fuse_limit`** (confirmed: pause at
-exactly 65 A). The reason there is no wide linear region: the box's hardware max
-(~16–18 A) is far below `fuse_limit = 65 A`, so `available` stays ≥ box-max until
-`reported` is within a couple of amps of the limit — the whole `fuse_limit −
-target` modulation collapses into a 1–2 A sliver at the top of the range.
+The pause edge sits **right at `reported = fuse_limit`**, with only a 1–2 A
+transition zone — **not** a usable proportional band (the box's hardware max is far
+below 65 A, so `available` stays ≥ box-max until `reported` is within ~2 A of the
+limit). Re-tested at DIP 16 A: the **same** on/off cliff. So the earlier claim of
+"continuous modulation in between" was **wrong** for the static model.
 
-**Consequences:**
+### Closing the loop makes it modulate (proven)
 
-- **Strategy A — on/off (proven, ships the Tibber goal):** report **0 A** (or any
-  value below the fuse limit) → charge at full power; report **≥ fuse_limit + 1**
-  (e.g. 80 A) → charging pauses. Binary, robust, and **what the hardware actually
-  gives us at the as-installed DIP setting.** This is the default the service
-  ships.
-- **Strategy B — current modulation (unproven, needs a hardware change):** smooth
-  PV-surplus current control is **not achievable at `fuse_limit = 65 A`** — the
-  band is too narrow. It would require setting **DIP 4-5-6 to a much lower fuse
-  limit (~16–20 A)** so the `fuse_limit − target` range maps onto the box's real
-  6–16 A envelope. Whether the box then modulates proportionally (rather than
-  cliffing again) is **still open** and must be re-measured after lowering the
-  DIP (see §9).
+Feed a value that **rises with the actual draw**:
 
-The service therefore implements the **subtract math** (`reported = fuse_limit −
-target`) as the general model, but callers must understand that at a high fuse
-limit it behaves as on/off, and `FUSE_LIMIT_A` must match the DIP setting for the
-edge to land where expected.
+```
+reported = clamp(offset + measured_current, 0, ..)        (per phase)
+offset   = fuse_limit − target
+```
+
+`measured_current` is a **live** per-phase current published to the service over
+MQTT (§7/§8). Now the box sees its own draw climb, the loop settles, and the
+delivered current tracks `fuse_limit − offset = target`. Proven on hardware:
+
+- offset 0 → settles **15 A**; offset 4 → settles **12 A** (stable equilibria).
+- **Soft-ramping** the offset toward its setpoint (rate-limited, not a step)
+  extends the stable range down to ~**9 A** — a hard offset jump shocks the box
+  into over-throttling below the car's 6 A floor and the session collapses.
+- With home-automation-speed measurement (~3–6 s round-trip) the stable range is
+  ~**9–15 A**; the bottom (6–8 A) hunts and would need a faster (~1 s) measurement
+  source (publishable over the same topic, no service change).
+- **3-phase floor ≈ 6 A ≈ 4.1 kW.** Below that the box can't hold a stable
+  current, so a **minimum-charge cutoff** applies: `target < MIN_CHARGE_A` (~6 A)
+  → serve a hard pause (`reported ≥ fuse_limit`), don't try to modulate the floor.
+
+### The measured input is source-agnostic
+
+The service does not care what `measured_current` represents — it just serves
+`offset + measured`. Today the home-automation side publishes **total/grid
+current** (giving load-management + PV-surplus semantics); a charger-side CT can be
+retrofitted later by publishing the **car** current to the **same topic**, for
+precise per-car control, with **no service change**.
+
+### Mode selection lives in the controller, not here
+
+The service is **mode-agnostic**: it consumes `target` + `measured` and nothing
+else. The controller (Home Assistant / evcc, §8) picks behaviour purely by the
+target it publishes:
+
+- **full charge** (cheap price window) → `target ≥ fuse_limit` → offset 0 → the
+  loop holds the *total* at the fuse limit (effectively max, while still respecting
+  the main fuse).
+- **modulate** (PV surplus) → `target` = surplus-derived → tracked within the
+  stable band.
+- **pause** → `target < MIN_CHARGE_A` → hard pause.
+
+`FUSE_LIMIT_A` must match the DIP setting (§2) for the offset math to land where
+expected; the DIP value itself trades full-charge headroom against modulation
+range (§9).
+
+> **Implementation status.** The closed-loop model above is the **target design**
+> (tracked by #21–#28). The current code still serves the **static** open-loop
+> value (`reported = fuse_limit − target`) — on/off only — as the shipped stepping
+> stone; #22–#25 add the measured input, the soft-ramp, the min-charge cutoff, and
+> the measurement-loss failsafe.
 
 ---
 
@@ -209,9 +286,15 @@ A long-running process with three concerns:
    start 0x500C / qty 6` poll, respond with the 12-byte `>fff` payload (L1/L2/L3
    reported current) + correct Modbus CRC16. Ignore / exception-respond to
    anything else. Validate inbound CRC.
-3. **MQTT control.** Subscribe to a **target charge current** topic; convert it
-   to the reported household current via `report = fuse_limit − target` and update
-   the values the slave serves. **Publish liveness/status** back to MQTT.
+3. **MQTT control.** Subscribe to **two** inbound topics — a **target charge
+   current** and a **live measured current** (§6). Compute the served value
+   `reported = clamp(offset + measured)` with `offset = fuse_limit − target`
+   **soft-ramped** toward its setpoint, apply the **minimum-charge cutoff**
+   (`target < MIN_CHARGE_A` → hard pause), and update the values the slave serves.
+   Two independent **failsafes** (§9): if the **target** goes stale, fall back to
+   `FAILSAFE_TARGET_A`; if the **measured** input goes stale, abandon the closed
+   loop and serve a **safe static pause** (the more dangerous case — it wins).
+   **Publish liveness/status** back to MQTT.
 
 **Configuration — all via environment variables** (no config files, no secrets in
 the image). At minimum:
@@ -222,33 +305,45 @@ the image). At minimum:
 | `FUSE_LIMIT_A` | the DIP-selected fuse limit, amps (for the headroom math) |
 | `MQTT_HOST` / `MQTT_PORT` / `MQTT_USER` / `MQTT_PASS` | broker |
 | `MQTT_TOPIC_TARGET` | inbound: target charge current (A) |
+| `MQTT_TOPIC_MEASURED` | inbound: live measured per-phase current (A), closes the loop (default `evc04/measured`) |
 | `MQTT_TOPIC_STATUS` | outbound: liveness/state (retained) |
 | `SLAVE_ADDR` | default 1 |
 | `POLL_REGISTER` / `POLL_QTY` | default 0x500C / 6 (override only for debugging) |
-| `FAILSAFE_TARGET_A` | value to serve if MQTT goes stale (see §9) |
-| `FAILSAFE_AFTER_S` | seconds the last MQTT target stays valid before the failsafe engages (default 60; must exceed the controller's republish interval, see §9) |
+| `MIN_CHARGE_A` | below this target → hard pause; don't modulate the 3φ floor (default 6) |
+| `RAMP_RATE_A_PER_S` | soft-ramp slope for the offset, A per second (default ~0.5) |
+| `FAILSAFE_TARGET_A` | target to serve if the **target** input goes stale (see §9) |
+| `FAILSAFE_AFTER_S` | seconds the last target stays valid before its failsafe engages (default 60; must exceed the controller's republish interval) |
+| `MEAS_STALE_TIMEOUT_S` | seconds the last measured value stays valid before the measurement failsafe forces a safe static pause (see §9) |
 
-**Prototype that already worked:** a hand-rolled pymodbus RTU slave answering the
-`0x500C × 6` poll with the real Inepro float map over the Waveshare in transparent
-mode. The box accepted the framing cleanly (no resync storms). Rebuild a bench
-venv with `python3 -m venv venv && venv/bin/pip install pymodbus pyserial`.
-Suggested stack: **Python + pymodbus + paho-mqtt** (but the choice is open).
+**Origin:** a hand-rolled pymodbus RTU slave first proved the `0x500C × 6` poll
+could be answered cleanly over the Waveshare in transparent mode (no resync
+storms). The shipping service is **Rust / tokio** (see `CLAUDE.md` for the stack
+rationale); the verified frames in §5/§11 make the protocol a fixed target.
 
 ---
 
-## 8. MQTT contract (to be finalised)
+## 8. MQTT contract
 
-Not yet fixed — **define and document it as part of the build**. It must cover:
+**The full, authoritative contract lives in [`docs/mqtt.md`](docs/mqtt.md).** All
+payloads are UTF-8 JSON; QoS 1; target/measured/status retained. Summary:
 
-- **Inbound target topic** — payload schema (plain number in amps? JSON?),
-  units, valid range, what an out-of-range or missing value means.
-- **Outbound status topic** — retained state: connected?, last poll age, current
-  reported A, current target A, gateway/MQTT health.
-- **Retention & QoS** — target probably retained so a restart resumes the last
-  command; status retained for HA.
+- **Inbound — target** (`MQTT_TOPIC_TARGET`): `{ "amps": N }`, the desired charge
+  current. Out-of-range is clamped (not rejected); invalid payloads are ignored
+  and the last good value held, surfaced in `last_error`.
+- **Inbound — measured** (`MQTT_TOPIC_MEASURED`): `{ "amps": N }`, the live
+  per-phase current that closes the loop (§6). Source-agnostic; same
+  hold-last-good / staleness discipline as the target.
+- **Outbound — status** (`MQTT_TOPIC_STATUS`, retained, + offline LWT): `online`,
+  `target_a`, `reported_a`, `last_poll_age_s`, `gateway`, `mqtt`, `last_error`,
+  plus the closed-loop fields `measured_a`, `offset_a`, `measurement_age_s`,
+  `ramping`, and the two failsafe flags (`failsafe` for target, plus a measurement
+  failsafe).
 
-Keep it simple and HA-friendly (e.g. a number entity publishing to the target
-topic, an MQTT sensor reading status).
+**The brain is evcc** (#28): this service is a mode-agnostic actuator, driven as an
+**evcc custom charger** — `maxcurrent` → target, `enable=false` → target below the
+cutoff, status → A/B/C charging state. evcc's control interval must exceed the
+inner loop's settle time (~30–60 s) or the two loops hunt. A HA-only setup (number
+entity → target, sensor ← status) also works for simple on/off + manual current.
 
 ---
 
@@ -283,16 +378,33 @@ These are **not** answerable from the bus alone; they need an observable
       charge (~11–12 kW). Ascending sweep showed the box charges full until
       `reported ≈ 63 A` and cliffs to pause at `reported = 65 A` (= fuse limit),
       with only a 1–2 A transition zone — **not** a wide linear region (see §6).
-      Strategy A (on/off) is proven and is what the hardware gives at this DIP.
+      This is the static-feed on/off behaviour the hardware gives at this DIP, and
+      the evidence that motivated the closed-loop model (§6).
       Caveat: HA's house meter (`sensor.smartmeter_*`) does **not** see the
       wallbox; the usable observable was the Tibber Pulse grid sensor
       (`sensor.net_power`). Cars also ramp up slowly (~1–2 min) after plug-in, so
       measure throttling by sweeping reported current **upward** (charge down =
       fast response), never downward (charge up = slow ramp confound).
-- [ ] **Test current modulation at a lower fuse limit.** Strategy B is unproven:
-      set DIP 4-5-6 to ~16–20 A and re-sweep to see whether the box modulates
-      proportionally across the box's real 6–16 A envelope or cliffs again.
-      Photograph DIP state first (revert safety).
+- [x] **Closed-loop modulation at a lower fuse limit — proven.** At DIP 16 A,
+      feeding `offset + live_measured_current` makes the box modulate: offset 0 →
+      15 A, offset 4 → 12 A; soft-ramping the offset holds the loop stable down to
+      ~9 A (~9–15 A with HA-speed measurement; the 6–8 A bottom hunts). Static feed
+      still cliffs on/off at any DIP. This is what replaced the open-loop model
+      (§6).
+- [ ] **Decide the operating DIP fuse limit (#27).** The DIP couples two opposed
+      goals: **modulation** wants a low limit (16 A maps onto the car's 6–16 A
+      envelope, tested) while **guaranteed full charge** wants a high limit (offset
+      0 holds the *total* at the fuse, so at 16 A a loaded household throttles the
+      car). Open sub-question: **does closed-loop modulation stay stable at a higher
+      DIP (e.g. 32 A)?** Untested — re-run the offset/soft-ramp sweep at DIP 32 A
+      with simulated household load and decide. Photograph DIP state first (revert
+      safety).
+- [ ] **Measurement-input staleness failsafe (#25).** Distinct from the target
+      staleness above: serving `offset + stale_measured` is dangerous (it can hold
+      the box at the wrong current), so a stale **measured** input must abandon the
+      closed loop and fall to a **safe static pause** within `MEAS_STALE_TIMEOUT_S`.
+      Measurement-loss is the more dangerous of the two failsafes and takes
+      precedence over the target failsafe (→ pause).
 - [ ] **Mid-charge meter-loss latch:** confirm whether a meter dropout *during an
       active charge* latches the red fault (needs power-cycle) or clears soft like
       the idle case (§7 / failsafe above).
@@ -326,10 +438,13 @@ Ship like a normal app, **not** a thin image wrapper:
 Bus:        9600 8E1, transparent TCP↔RS485 gateway
 Poll:       addr 1, FC 0x03, start 0x500C, qty 6, ~1.006 s, content-agnostic
 Payload:    struct.pack('>fff', L1_A, L2_A, L3_A)   # Inepro PRO380, 3× float32 ABCD
-Control:    reported_A = fuse_limit_A − target_charge_A   (per phase)
-            report 0   → charge max ;  report ≥ fuse_limit → pause
-            MEASURED (fuse=65A): on/off only — full until report~63, pause at 65.
-            No usable linear band at high fuse; modulation needs lower DIP (~16-20A).
+Control:    CLOSED-LOOP: box loops on total measured current (incl. own draw).
+            reported_A = clamp(offset + measured_A)   (per phase, offset soft-ramped)
+            offset = fuse_limit_A − target_A
+            target ≥ fuse → offset 0 → box holds total at fuse (full)
+            target < MIN_CHARGE_A (~6A) → hard pause
+            Static feed = on/off ONLY (proven). Closed loop modulates: DIP 16A
+            stable ~9–15A; 3φ floor ~6A. Two failsafes: target-stale, measured-stale.
 Poll frame: 01 03 50 0c 00 06 14 cb
 Examples:   0A→01 03 0c 00000000×3 93 70  |  16A→…41800000×3 97 ae  |  63A→…427c0000×3 13 97
 ```
