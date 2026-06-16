@@ -28,3 +28,22 @@ jobs:
 
       - name: Test
         run: cargo test --all-targets
+
+  # Cross-compile both release targets on every commit so an arch- or musl-specific
+  # break surfaces here, not only on a v* tag in release.yml. Build-only: no image.
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: taiki-e/install-action@cross
+
+      - name: Build
+        run: cross build --release --locked --target ${{ matrix.target }}
