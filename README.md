@@ -1,5 +1,9 @@
 # evc04-charge
 
+[![CI](https://github.com/andicoder/evc04-charge/actions/workflows/ci.yml/badge.svg)](https://github.com/andicoder/evc04-charge/actions/workflows/ci.yml)
+[![Release](https://github.com/andicoder/evc04-charge/actions/workflows/release.yml/badge.svg)](https://github.com/andicoder/evc04-charge/actions/workflows/release.yml)
+[![GHCR image](https://ghcr-badge.egpl.dev/andicoder/evc04-charge/latest_tag?label=ghcr.io&color=blue&logo=docker)](https://github.com/andicoder/evc04-charge/pkgs/container/evc04-charge)
+
 Smart, price-aware charge control for the **Vestel EVC04-AC11-T2P** ("basic"
 Home variant) wallbox — a box that ships with **no communication module**, so it
 cannot be controlled over Modbus-TCP or OCPP the way the SW/Connect variants can.
