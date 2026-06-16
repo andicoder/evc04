@@ -14,6 +14,7 @@ pub fn reported_current(fuse_limit: f32, target: f32) -> f32 {
 }
 
 pub mod config;
+pub mod control;
 pub mod frame;
 pub mod mqtt;
 pub mod slave;
