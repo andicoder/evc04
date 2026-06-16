@@ -6,9 +6,12 @@
 //! is exercised against a real broker, not in unit tests.
 
 use crate::config::MqttConfig;
+use crate::control::ControlView;
+use crate::slave::LinkHealth;
 use rumqttc::{AsyncClient, Event, LastWill, MqttOptions, Packet, QoS};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use tokio::time::Instant;
 
 /// QoS 1 for both directions, fixed by the contract (docs/mqtt.md).
 const QOS: QoS = QoS::AtLeastOnce;
@@ -95,6 +98,36 @@ impl Status {
     pub fn to_json(&self) -> String {
         // Infallible: every field is a plain scalar/string/null.
         serde_json::to_string(self).expect("status serialises")
+    }
+}
+
+/// Aggregate the live daemon state into the retained status object (docs/mqtt.md).
+///
+/// The `mqtt` field is always `connected`: this only runs inside the live event
+/// loop, and an ungraceful disconnect is reported by the broker via the LWT, not
+/// by us. `gateway` maps the slave's [`LinkHealth`]; the target/reported/failsafe
+/// fields come from the failsafe-aware [`ControlView`]; `last_poll_age_s` is the
+/// time since the slave last answered a poll (a growing value signals a dead bus).
+pub fn assemble_status(
+    view: &ControlView,
+    gateway: LinkHealth,
+    last_poll: Instant,
+    last_error: Option<String>,
+) -> Status {
+    let gateway = match gateway {
+        LinkHealth::Up => "connected",
+        LinkHealth::Stalled => "reconnecting",
+        LinkHealth::Down => "down",
+    };
+    Status {
+        online: true,
+        target_a: view.effective_target_a(),
+        reported_a: view.currents()[0],
+        last_poll_age_s: last_poll.elapsed().as_secs_f32(),
+        gateway: gateway.to_string(),
+        mqtt: "connected".to_string(),
+        failsafe: view.failsafe_active(),
+        last_error,
     }
 }
 

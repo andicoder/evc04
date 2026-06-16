@@ -69,6 +69,27 @@ fn zero_port_is_rejected() {
 }
 
 #[test]
+fn failsafe_after_defaults_when_unset() {
+    let cfg = Config::from_vars(valid_vars()).unwrap();
+    assert_eq!(cfg.failsafe_after, std::time::Duration::from_secs(60));
+}
+
+#[test]
+fn parses_failsafe_after_seconds() {
+    let cfg = Config::from_vars(with(valid_vars(), "FAILSAFE_AFTER_S", "30")).unwrap();
+    assert_eq!(cfg.failsafe_after, std::time::Duration::from_secs(30));
+}
+
+#[test]
+fn zero_failsafe_after_is_rejected() {
+    let err = Config::from_vars(with(valid_vars(), "FAILSAFE_AFTER_S", "0")).unwrap_err();
+    assert!(
+        format!("{err}").to_uppercase().contains("FAILSAFE_AFTER"),
+        "error should name FAILSAFE_AFTER_S, got: {err}"
+    );
+}
+
+#[test]
 fn parses_a_full_valid_config() {
     let vars = with(
         with(

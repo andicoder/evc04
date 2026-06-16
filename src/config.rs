@@ -5,6 +5,7 @@
 
 use crate::slave::PollMatch;
 use serde::Deserialize;
+use std::time::Duration;
 
 /// Reject implausible fuse limits. Domestic AC charging tops out well below this;
 /// 80 A leaves headroom while still catching typos and unit mistakes.
@@ -24,6 +25,9 @@ pub struct Config {
     pub poll: PollMatch,
     /// Target charge current to serve if the MQTT command goes stale (SPECS.md §9).
     pub failsafe_target_a: f32,
+    /// How long the last MQTT target stays valid before the failsafe engages
+    /// (SPECS.md §9). Must exceed the controller's republish interval.
+    pub failsafe_after: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +91,9 @@ impl RawConfig {
         if self.poll_qty == 0 {
             problems.push("POLL_QTY must be greater than 0".to_string());
         }
+        if self.failsafe_after_s == 0 {
+            problems.push("FAILSAFE_AFTER_S must be greater than 0".to_string());
+        }
         // Failsafe is a charge target, so it cannot exceed the fuse headroom.
         if !(self.failsafe_target_a.is_finite()
             && self.failsafe_target_a >= 0.0
@@ -120,6 +127,7 @@ impl RawConfig {
                 qty: self.poll_qty,
             },
             failsafe_target_a: self.failsafe_target_a,
+            failsafe_after: Duration::from_secs(self.failsafe_after_s),
         })
     }
 }
@@ -143,6 +151,8 @@ struct RawConfig {
     #[serde(default = "default_poll_qty")]
     poll_qty: u16,
     failsafe_target_a: f32,
+    #[serde(default = "default_failsafe_after_s")]
+    failsafe_after_s: u64,
 }
 
 fn default_slave_addr() -> u8 {
@@ -155,6 +165,10 @@ fn default_poll_register() -> u16 {
 
 fn default_poll_qty() -> u16 {
     6
+}
+
+fn default_failsafe_after_s() -> u64 {
+    60
 }
 
 /// Why a configuration could not be loaded.
