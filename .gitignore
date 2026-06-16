@@ -16,6 +16,10 @@ venv/
 .coverage
 htmlcov/
 
+# Rust
+/target/
+**/*.rs.bk
+
 # Editor / OS
 .vscode/
 .idea/
