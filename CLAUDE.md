@@ -40,17 +40,32 @@ project-specific deltas are spelled out here:
 
 ## Intended stack & layout (open to change — propose before deviating)
 
-- **Python 3.11+**, `pymodbus` (RTU framing) + `paho-mqtt`. Chosen because the
-  working prototype used pymodbus over the Waveshare in transparent mode.
+- **Rust (2021 edition, stable)** on the `tokio` async runtime. Chosen for a
+  single static binary (tiny `scratch`/distroless image), no-GC reliability for a
+  24/7 daemon driving an 11 kW charger, and explicit byte-level control over the
+  RTU framing and the ABCD float encoding. The verified frames in `SPECS.md`
+  §5/§11 make the protocol a fixed target, so the discovery-speed advantage of the
+  Python prototype no longer outweighs these.
+- **Crates** (versions are floors; let Cargo resolve):
+  - `tokio-modbus` ≥ 0.17 with the **`rtu-over-tcp-server`** feature — the EVC04
+    polls us through a *transparent TCP↔RS485 gateway*, so we answer **RTU frames
+    (CRC16, no MBAP header) over a plain TCP socket**. Not `tcp-server` (MBAP) and
+    not `rtu-server` (only for a directly-attached serial port).
+  - `rumqttc` ≥ 0.25 — async MQTT client for the target-current subscription and
+    status publishing.
+  - `tokio-serial` is **only** needed if the box is ever wired over a local serial
+    port instead of the gateway — do not pull it in until that exists.
 - Suggested layout:
   ```
-  src/evc04_charge/        # package: modbus slave, mqtt client, control math, link/watchdog
-  tests/                   # pytest; protocol fixtures from SPECS.md §5/§11
-  pyproject.toml           # deps, build, ruff/pytest config
-  Dockerfile               # slim runtime image
+  src/                     # bin + modules: modbus slave, mqtt client, control math, link/watchdog
+  tests/                   # integration tests; protocol fixtures from SPECS.md §5/§11
+  Cargo.toml               # deps, build config, clippy/test settings
+  Dockerfile               # multi-stage: build static musl binary → scratch/distroless
   .github/workflows/       # lint + test on PR; build & push GHCR on tag
   ```
-- **Lint/format:** ruff. **Tests:** pytest. Keep both green; CI enforces them.
+- **Lint/format:** `rustfmt` + `clippy` (deny warnings in CI). **Tests:**
+  `cargo test`, with the §5/§11 hex frames as fixtures. Keep both green; CI
+  enforces them.
 
 ## Configuration
 
