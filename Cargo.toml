@@ -17,6 +17,8 @@ path = "src/lib.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["io-util", "net", "time", "sync"] }
+serde = { version = "1", features = ["derive"] }
+envy = "0.4"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
