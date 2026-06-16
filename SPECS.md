@@ -226,6 +226,7 @@ the image). At minimum:
 | `SLAVE_ADDR` | default 1 |
 | `POLL_REGISTER` / `POLL_QTY` | default 0x500C / 6 (override only for debugging) |
 | `FAILSAFE_TARGET_A` | value to serve if MQTT goes stale (see §9) |
+| `FAILSAFE_AFTER_S` | seconds the last MQTT target stays valid before the failsafe engages (default 60; must exceed the controller's republish interval, see §9) |
 
 **Prototype that already worked:** a hand-rolled pymodbus RTU slave answering the
 `0x500C × 6` poll with the real Inepro float map over the Waveshare in transparent
