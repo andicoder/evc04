@@ -17,11 +17,11 @@ in the controller, never here.
 
 Topics, all configured via env vars ([`SPECS.md`](../SPECS.md) §7):
 
-| Direction | Env var | Default |
-|---|---|---|
-| Inbound — target | `MQTT_TOPIC_TARGET` | `evc04/target` |
+| Direction          | Env var               | Default          |
+| ------------------ | --------------------- | ---------------- |
+| Inbound — target   | `MQTT_TOPIC_TARGET`   | `evc04/target`   |
 | Inbound — measured | `MQTT_TOPIC_MEASURED` | `evc04/measured` |
-| Outbound — status | `MQTT_TOPIC_STATUS` | `evc04/status` |
+| Outbound — status  | `MQTT_TOPIC_STATUS`   | `evc04/status`   |
 
 All payloads are UTF-8 JSON. Connection uses `MQTT_USER` / `MQTT_PASS`; QoS (1) and
 retention are fixed by this contract, not configurable.
@@ -38,9 +38,9 @@ The controller publishes the desired per-phase charge current in amps:
 { "amps": 6.5 }
 ```
 
-| Field | Type | Required | Meaning |
-|---|---|---|---|
-| `amps` | number | yes | Desired charge current per phase, amps. |
+| Field  | Type   | Required | Meaning                                 |
+| ------ | ------ | -------- | --------------------------------------- |
+| `amps` | number | yes      | Desired charge current per phase, amps. |
 
 ### Semantics — the target selects the mode
 
@@ -88,9 +88,9 @@ as the target:
 { "amps": 9.1 }
 ```
 
-| Field | Type | Required | Meaning |
-|---|---|---|---|
-| `amps` | number | yes | Live measured current, amps (a single value applied to all 3 phases). |
+| Field  | Type   | Required | Meaning                                                               |
+| ------ | ------ | -------- | ------------------------------------------------------------------- |
+| `amps` | number | yes      | Live measured current, amps (a single value applied to all 3 phases). |
 
 ### Semantics
 
@@ -136,21 +136,21 @@ on every state transition). Home Assistant reads it via one MQTT sensor using
 }
 ```
 
-| Field | Type | Meaning |
-|---|---|---|
-| `online` | bool | Service running and the control loop live. Set `false` by the broker via LWT if the service dies. |
-| `target_a` | number | Effective target (post-clamp), amps. Reflects `FAILSAFE_TARGET_A` when `failsafe` is true. |
-| `measured_a` | number | Last live measured current consumed, amps. *(planned, #22)* |
-| `offset_a` | number | Current soft-ramped offset `= fuse_limit − target`, amps. *(planned, #24)* |
-| `reported_a` | number | Current the slave is serving per phase: `clamp(offset_a + measured_a)` (closed-loop) or `fuse_limit − target_a` (open-loop build), amps. |
-| `last_poll_age_s` | number | Seconds since the EVC04 last polled us (~1 Hz; a growing value signals a dead RS485 link). |
-| `measurement_age_s` | number | Seconds since the last valid measured value; drives the measurement failsafe. *(planned, #25)* |
-| `gateway` | string | RS485↔TCP gateway link: `connected` \| `reconnecting` \| `down`. |
-| `mqtt` | string | Broker link as seen by the service: `connected` \| `reconnecting`. |
-| `ramping` | bool | `true` while the offset is still soft-ramping toward its setpoint. *(planned, #24)* |
-| `failsafe` | bool | `true` while serving `FAILSAFE_TARGET_A` because the **target** went stale. |
-| `measurement_failsafe` | bool | `true` while serving a safe static pause because the **measured** input went stale (precedence over `failsafe`). *(planned, #25)* |
-| `last_error` | string \| null | Reason for the most recent rejected input or link fault; `null` when healthy. |
+| Field                  | Type           | Meaning |
+| ---------------------- | -------------- | ------- |
+| `online`               | bool           | Service running and the control loop live. Set `false` by the broker via LWT if the service dies. |
+| `target_a`             | number         | Effective target (post-clamp), amps. Reflects `FAILSAFE_TARGET_A` when `failsafe` is true. |
+| `measured_a`           | number         | Last live measured current consumed, amps. *(planned, #22)* |
+| `offset_a`             | number         | Current soft-ramped offset `= fuse_limit − target`, amps. *(planned, #24)* |
+| `reported_a`           | number         | Current the slave is serving per phase: `clamp(offset_a + measured_a)` (closed-loop) or `fuse_limit − target_a` (open-loop build), amps. |
+| `last_poll_age_s`      | number         | Seconds since the EVC04 last polled us (~1 Hz; a growing value signals a dead RS485 link). |
+| `measurement_age_s`    | number         | Seconds since the last valid measured value; drives the measurement failsafe. *(planned, #25)* |
+| `gateway`              | string         | RS485↔TCP gateway link: `connected` / `reconnecting` / `down`. |
+| `mqtt`                 | string         | Broker link as seen by the service: `connected` / `reconnecting`. |
+| `ramping`              | bool           | `true` while the offset is still soft-ramping toward its setpoint. *(planned, #24)* |
+| `failsafe`             | bool           | `true` while serving `FAILSAFE_TARGET_A` because the **target** went stale. |
+| `measurement_failsafe` | bool           | `true` while serving a safe static pause because the **measured** input went stale (precedence over `failsafe`). *(planned, #25)* |
+| `last_error`           | string or null | Reason for the most recent rejected input or link fault; `null` when healthy. |
 
 ### Last Will and Testament
 
