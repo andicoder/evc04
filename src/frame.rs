@@ -44,9 +44,121 @@ pub fn build_response(addr: u8, payload: &[u8]) -> Vec<u8> {
     frame
 }
 
+/// FC code for Read Holding Registers — the only function the EVC04 ever issues.
+pub const FC_READ_HOLDING: u8 = 0x03;
+
+/// A parsed inbound Modbus-RTU read request (addr | fc | start | qty), CRC already
+/// verified. Classification of *which* request this is (i.e. our poll) is the
+/// caller's job via [`ParsedRequest::is_poll`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParsedRequest {
+    pub addr: u8,
+    pub fc: u8,
+    pub start: u16,
+    pub qty: u16,
+}
+
+impl ParsedRequest {
+    /// True iff this is the meter poll we emulate: matching slave address, FC03,
+    /// start register and quantity. Defaults live in `SPECS.md` §4 (addr 1,
+    /// `0x500C`, qty 6) but are passed in so env config (§7) drives them.
+    pub fn is_poll(&self, addr: u8, register: u16, qty: u16) -> bool {
+        self.addr == addr && self.fc == FC_READ_HOLDING && self.start == register && self.qty == qty
+    }
+}
+
+/// Parse an inbound 8-byte RTU read request: `addr | fc | start_hi | start_lo |
+/// qty_hi | qty_lo | crc_lo | crc_hi`. Returns the fields only when the length is
+/// exact and the trailing CRC16 checks out; a bad CRC or wrong length yields
+/// `None` (the frame is dropped — see the why-note below).
+pub fn parse_request(frame: &[u8]) -> Option<ParsedRequest> {
+    // A read request is exactly 8 bytes: 6-byte body + 2-byte CRC.
+    let [body @ .., crc_lo, crc_hi] = frame else {
+        return None;
+    };
+    if body.len() != 6 || modbus_crc16(body).to_le_bytes() != [*crc_lo, *crc_hi] {
+        // Drop on bad framing/CRC. The poll cadence is content-agnostic (SPECS.md
+        // §4) — staying silent costs nothing, and we never want to act on a frame
+        // we can't trust. Frames not addressed to us are likewise dropped by the
+        // caller via `is_poll`, matching Modbus's "silence on foreign address".
+        return None;
+    }
+    Some(ParsedRequest {
+        addr: body[0],
+        fc: body[1],
+        start: u16::from_be_bytes([body[2], body[3]]),
+        qty: u16::from_be_bytes([body[4], body[5]]),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Append a correct CRC16 (low byte first) to a request body.
+    fn framed(body: &[u8]) -> Vec<u8> {
+        let mut frame = body.to_vec();
+        frame.extend_from_slice(&modbus_crc16(body).to_le_bytes());
+        frame
+    }
+
+    // SPECS.md §4 verified poll frame.
+    const SPEC_POLL: [u8; 8] = [0x01, 0x03, 0x50, 0x0c, 0x00, 0x06, 0x14, 0xcb];
+
+    #[test]
+    fn parses_the_spec_poll_frame() {
+        assert_eq!(
+            parse_request(&SPEC_POLL),
+            Some(ParsedRequest {
+                addr: 1,
+                fc: 0x03,
+                start: 0x500C,
+                qty: 6,
+            })
+        );
+    }
+
+    #[test]
+    fn recognises_the_spec_poll_frame_as_the_poll() {
+        let req = parse_request(&SPEC_POLL).expect("spec frame parses");
+        assert!(req.is_poll(1, 0x500C, 6));
+    }
+
+    #[test]
+    fn rejects_frame_with_corrupted_crc() {
+        let mut frame = SPEC_POLL;
+        frame[7] ^= 0xff; // flip the high CRC byte
+        assert_eq!(parse_request(&frame), None);
+    }
+
+    #[test]
+    fn rejects_frame_of_wrong_length() {
+        assert_eq!(parse_request(&[0x01, 0x03, 0x50, 0x0c]), None);
+    }
+
+    #[test]
+    fn wrong_function_code_is_not_the_poll() {
+        let req = parse_request(&framed(&[0x01, 0x04, 0x50, 0x0c, 0x00, 0x06])).unwrap();
+        assert!(!req.is_poll(1, 0x500C, 6));
+    }
+
+    #[test]
+    fn wrong_start_register_is_not_the_poll() {
+        let req = parse_request(&framed(&[0x01, 0x03, 0x50, 0x00, 0x00, 0x06])).unwrap();
+        assert!(!req.is_poll(1, 0x500C, 6));
+    }
+
+    #[test]
+    fn wrong_quantity_is_not_the_poll() {
+        let req = parse_request(&framed(&[0x01, 0x03, 0x50, 0x0c, 0x00, 0x02])).unwrap();
+        assert!(!req.is_poll(1, 0x500C, 6));
+    }
+
+    #[test]
+    fn wrong_slave_address_is_not_the_poll() {
+        let req = parse_request(&framed(&[0x02, 0x03, 0x50, 0x0c, 0x00, 0x06])).unwrap();
+        assert!(!req.is_poll(1, 0x500C, 6));
+    }
 
     // SPECS.md §5 verified payloads (the 12 data bytes, without addr/FC/count/CRC).
     #[test]
