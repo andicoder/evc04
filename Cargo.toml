@@ -1,0 +1,22 @@
+[package]
+name = "evc04-charge"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.82"
+description = "Emulates an Inepro PRO380 meter so an external controller can modulate a Vestel EVC04 wallbox over RS485."
+license = "MIT"
+repository = "https://github.com/andicoder/evc04-charge"
+
+[[bin]]
+name = "evc04-charge"
+path = "src/main.rs"
+
+[lib]
+name = "evc04_charge"
+path = "src/lib.rs"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
