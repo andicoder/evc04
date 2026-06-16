@@ -19,19 +19,21 @@ contract, open hardware questions). Do not start coding without it.
 
 ## Mandatory discipline
 
-- **TDD — non-negotiable.** Write a **failing test first**, watch it fail for the
-  right reason, then make it pass, then refactor. No production code before a red
-  test exists. Exempt: docs, packaging/CI config, pure renames. The Modbus
-  framing, the Inepro float encoding, and the `report = fuse_limit − target` math
-  are all pure functions — they are trivially unit-testable against the verified
-  frames in `SPECS.md` §5/§11. Use those exact hex frames as fixtures.
-- **Options first.** If a task has more than one reasonable approach, list 2–3
-  numbered options with tradeoffs and stop — let the human pick before you build.
-- **No speculative abstraction.** Build only what the EVC04 actually polls (the 3
-  current registers). Don't implement the full Inepro map "just in case". No
-  future-proofing, no dead code.
-- **Validate at boundaries only** (MQTT payloads, gateway bytes, env config).
-  Trust internal callers.
+The general rules live in the global skills (`tdd`, `clean-code`,
+`commit-conventions`, `pr-workflow`) — load them on demand. Only the
+project-specific deltas are spelled out here:
+
+- **TDD — non-negotiable** (`tdd` skill). Red test before production code; exempt
+  only docs, packaging/CI config, pure renames. The Modbus framing, the Inepro
+  float encoding, and the `report = fuse_limit − target` math are all pure
+  functions — unit-test them against the verified frames in `SPECS.md` §5/§11,
+  using those exact hex frames as fixtures.
+- **Options first.** More than one reasonable approach → list 2–3 numbered options
+  with tradeoffs and stop; let the human pick before you build.
+- **No speculative abstraction; validate at boundaries only** (`clean-code`
+  skill). Build only what the EVC04 actually polls (the 3 current registers) — no
+  full Inepro map "just in case", no future-proofing, no dead code. Validate MQTT
+  payloads, gateway bytes, and env config; trust internal callers.
 - **Comments explain *why*, never *what*.** The wire protocol has surprising
   invariants (content-agnostic 1 Hz cadence, 8E1 parity, ABCD float order) —
   those deserve a comment; ordinary code does not.
@@ -64,13 +66,11 @@ and supplies env + manifests — **no application logic leaves this repo.**
 
 ## Git workflow
 
-- Conventional-commit subjects, imperative mood, English only. Explain *why*, not
-  *what*. Don't list files in the body.
-- **Never** commit/push/PR/merge unless explicitly asked. Never push straight to
-  the default branch; use a `feat/…`, `fix/…`, `chore/…`, `refactor/…` branch and
-  a PR.
-- Never use `--no-verify`, `--force` on shared branches, or `--amend` on pushed
-  commits without explicit instruction.
+Follow the `commit-conventions` and `pr-workflow` skills. Project deltas:
+
+- The default branch is `main`. Never push straight to it; branch off it with a
+  `feat/…`, `fix/…`, `chore/…`, or `refactor/…` prefix and open a PR.
+- **Never** commit/push/PR/merge unless explicitly asked.
 
 ## Safety reminders (real hardware involved)
 
