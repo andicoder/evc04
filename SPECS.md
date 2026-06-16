@@ -144,33 +144,51 @@ optionally answer the wider map for robustness, but it is not required.
 
 ## 6. Control math
 
-The Power Optimizer computes:
+The Power Optimizer's nominal rule is:
 
 ```
 available_charge_current = fuse_limit − reported_household_current   (per phase)
 ```
 
-So to command a target charge current we report:
+`fuse_limit` is the value selected by **DIP 4-5-6** on the board.
 
-```
-reported_current = fuse_limit − target_charge_current               (per phase, all 3)
-```
+**Measured reality (validated with a car, fuse_limit = 65 A / DIP on-on-off):**
+the box does **not** expose a usable proportional band. It charges at the box
+maximum for almost the entire reported range and then **cliffs to pause within
+~2 A of the fuse limit**:
 
-- Report **0 A** → full headroom → car charges at the box maximum.
-- Report **≈ fuse_limit** (or above) → zero/negative headroom → charging pauses.
-- Report **fuse_limit − X** → box allows ~**X A** → continuous modulation.
+| reported (all 3φ) | `65 − reported` | delivered charge | state |
+|---|---|---|---|
+| 0 … 63 A | 65 … 2 | ~11–12 kW | **full** |
+| 64 A | 1 | ~7 kW, unstable (still ramping down) | transition |
+| 65 A | 0 | ~0 | **pause** |
+| ≥ 66 A | ≤ −1 | ~0 | pause |
 
-`fuse_limit` is the value selected by **DIP 4-5-6** on the board. **It must be
-read off the actual installation** (see open item in §9) — the exact headroom
-math (and whether the box clamps/rounds) is only confirmable with a car.
+So the pause edge sits **right at `reported = fuse_limit`** (confirmed: pause at
+exactly 65 A). The reason there is no wide linear region: the box's hardware max
+(~16–18 A) is far below `fuse_limit = 65 A`, so `available` stays ≥ box-max until
+`reported` is within a couple of amps of the limit — the whole `fuse_limit −
+target` modulation collapses into a 1–2 A sliver at the top of the range.
 
-**Two strategies** (pick A first; B is the full version):
+**Consequences:**
 
-- **Strategy A — on/off (simple, ships the Tibber goal):** cheap hour → report
-  0 A; expensive hour → report a high current (e.g. 80 A) → charging pauses.
-  Needs no further reverse-engineering; binary, robust.
-- **Strategy B — modulation (full):** report `fuse_limit − target` for a target
-  current that tracks dynamic price / PV surplus → continuous control.
+- **Strategy A — on/off (proven, ships the Tibber goal):** report **0 A** (or any
+  value below the fuse limit) → charge at full power; report **≥ fuse_limit + 1**
+  (e.g. 80 A) → charging pauses. Binary, robust, and **what the hardware actually
+  gives us at the as-installed DIP setting.** This is the default the service
+  ships.
+- **Strategy B — current modulation (unproven, needs a hardware change):** smooth
+  PV-surplus current control is **not achievable at `fuse_limit = 65 A`** — the
+  band is too narrow. It would require setting **DIP 4-5-6 to a much lower fuse
+  limit (~16–20 A)** so the `fuse_limit − target` range maps onto the box's real
+  6–16 A envelope. Whether the box then modulates proportionally (rather than
+  cliffing again) is **still open** and must be re-measured after lowering the
+  DIP (see §9).
+
+The service therefore implements the **subtract math** (`reported = fuse_limit −
+target`) as the general model, but callers must understand that at a high fuse
+limit it behaves as on/off, and `FUSE_LIMIT_A` must match the DIP setting for the
+edge to land where expected.
 
 ---
 
@@ -238,9 +256,8 @@ topic, an MQTT sensor reading status).
 These are **not** answerable from the bus alone; they need an observable
 (delivered charge current with a car connected):
 
-- [ ] **Read the DIP 4-5-6 fuse limit** actually set on the box → the `limit −
-      target` math depends on it. Photograph current DIP state first (revert
-      safety).
+- [x] **DIP 4-5-6 fuse limit = 65 A** (DIP on-on-off). Confirmed empirically: the
+      charge cliffs to pause at exactly `reported = 65 A` (see §6).
 - **Failsafe behaviour — partially confirmed on real hardware (no car):**
   - **Meter goes silent** (Power Optimizer enabled): the box raises a
     **meter-communication fault → solid red LED**. It keeps polling at ~1 Hz the
@@ -261,10 +278,23 @@ These are **not** answerable from the bus alone; they need an observable
   - [ ] **Still open (needs a car):** exact meter-timeout window (how many missed
         polls before red?), and whether a fault taken mid-charge latches vs. clears
         soft like the idle case.
-- [ ] **Validate end-to-end with a car:** report all-zeros → confirm full-current
-      charge; sweep reported current upward → confirm charge amps drop ~linearly;
-      nail the exact headroom math, any rounding/clamping, and the on/off
-      threshold for Strategy A.
+- [x] **Validate end-to-end with a car — done.** Reported all-zeros → full-current
+      charge (~11–12 kW). Ascending sweep showed the box charges full until
+      `reported ≈ 63 A` and cliffs to pause at `reported = 65 A` (= fuse limit),
+      with only a 1–2 A transition zone — **not** a wide linear region (see §6).
+      Strategy A (on/off) is proven and is what the hardware gives at this DIP.
+      Caveat: HA's house meter (`sensor.smartmeter_*`) does **not** see the
+      wallbox; the usable observable was the Tibber Pulse grid sensor
+      (`sensor.net_power`). Cars also ramp up slowly (~1–2 min) after plug-in, so
+      measure throttling by sweeping reported current **upward** (charge down =
+      fast response), never downward (charge up = slow ramp confound).
+- [ ] **Test current modulation at a lower fuse limit.** Strategy B is unproven:
+      set DIP 4-5-6 to ~16–20 A and re-sweep to see whether the box modulates
+      proportionally across the box's real 6–16 A envelope or cliffs again.
+      Photograph DIP state first (revert safety).
+- [ ] **Mid-charge meter-loss latch:** confirm whether a meter dropout *during an
+      active charge* latches the red fault (needs power-cycle) or clears soft like
+      the idle case (§7 / failsafe above).
 - [ ] **Permanent install:** fixed Waveshare config (9600 8E1, transparent mode,
       static IP / DHCP reservation), LAN/PoE drop at the wallbox, strain-relieved
       CN20 tap.
@@ -297,6 +327,8 @@ Poll:       addr 1, FC 0x03, start 0x500C, qty 6, ~1.006 s, content-agnostic
 Payload:    struct.pack('>fff', L1_A, L2_A, L3_A)   # Inepro PRO380, 3× float32 ABCD
 Control:    reported_A = fuse_limit_A − target_charge_A   (per phase)
             report 0   → charge max ;  report ≥ fuse_limit → pause
+            MEASURED (fuse=65A): on/off only — full until report~63, pause at 65.
+            No usable linear band at high fuse; modulation needs lower DIP (~16-20A).
 Poll frame: 01 03 50 0c 00 06 14 cb
 Examples:   0A→01 03 0c 00000000×3 93 70  |  16A→…41800000×3 97 ae  |  63A→…427c0000×3 13 97
 ```
