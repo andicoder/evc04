@@ -22,7 +22,7 @@ async fn serve_once(input: &[u8]) -> Vec<u8> {
     let (mut client, server) = duplex(1024);
     client.write_all(input).await.unwrap();
     client.shutdown().await.unwrap();
-    serve_connection(server, PollMatch::default(), zero_amps)
+    serve_connection(server, PollMatch::default(), None, zero_amps)
         .await
         .unwrap();
     let mut out = Vec::new();
