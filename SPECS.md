@@ -182,7 +182,11 @@ A long-running process with three concerns:
    (transparent mode, 9600 8E1 implied on the serial side). **Auto-reconnect**
    with backoff; a **watchdog** that detects a dead/stalled link and re-establishes
    it. The box polls at 1 Hz — missing a few polls is fine, a prolonged silence
-   is not (see failsafe, §9).
+   is **not**: with the Power Optimizer enabled the box **hard-faults to a solid
+   red LED** when the meter stops answering (confirmed on real hardware, see §9).
+   Treat continuous availability of the slave as a hard requirement, and make
+   rollouts **overlap** — the new instance must be answering polls *before* the
+   old one stops, or the box sees a gap and faults.
 2. **Modbus-RTU slave.** Parse incoming RTU frames; for the `addr 1 / FC03 /
    start 0x500C / qty 6` poll, respond with the 12-byte `>fff` payload (L1/L2/L3
    reported current) + correct Modbus CRC16. Ignore / exception-respond to
@@ -237,12 +241,26 @@ These are **not** answerable from the bus alone; they need an observable
 - [ ] **Read the DIP 4-5-6 fuse limit** actually set on the box → the `limit −
       target` math depends on it. Photograph current DIP state first (revert
       safety).
-- [ ] **Failsafe behaviour:** what does the box do when the meter goes **silent**
-      or reports **0**? This decides whether a crashed emulator must fail toward
-      *no charging* or *full charging*. Decide the safe default and whether to
-      lean on the box's own **Failsafe Current** (control-interface reg `2000`,
-      only on SW variants) or the **External Enable** input (DIP pin 2 + a relay)
-      as an independent backstop. Implement `FAILSAFE_TARGET_A` accordingly.
+- **Failsafe behaviour — partially confirmed on real hardware (no car):**
+  - **Meter goes silent** (Power Optimizer enabled): the box raises a
+    **meter-communication fault → solid red LED**. It keeps polling at ~1 Hz the
+    whole time (it never gives up, just waits for the meter to return).
+  - **Meter returns:** after a few consecutive good readings the box clears the
+    fault and goes **green/ready** again — a **soft** clear, no power-cycle needed
+    (observed once, idle/no car). Whether a fault taken *mid-charge* latches and
+    needs a physical power-cycle is **still open** (needs a car).
+  - **Meter reports 0 A** with no car: box is simply **ready/idle** — 0 A does
+    **not** start a phantom session, so it is the safe startup/unknown-state value.
+  - **Design consequence:** a meter dropout **faults** the box, it does not merely
+    pause. So the service must fail toward *being present and answering*, not toward
+    silence. Implement `FAILSAFE_TARGET_A` for the case where MQTT goes stale but
+    the slave is still up (keep answering with a safe target), and consider the
+    box's own **Failsafe Current** (control-interface reg `2000`, only on SW
+    variants) or the **External Enable** input (DIP pin 2 + a relay) as an
+    independent backstop only against total service loss.
+  - [ ] **Still open (needs a car):** exact meter-timeout window (how many missed
+        polls before red?), and whether a fault taken mid-charge latches vs. clears
+        soft like the idle case.
 - [ ] **Validate end-to-end with a car:** report all-zeros → confirm full-current
       charge; sweep reported current upward → confirm charge amps drop ~linearly;
       nail the exact headroom math, any rounding/clamping, and the on/off
