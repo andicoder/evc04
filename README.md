@@ -43,6 +43,9 @@ hardware facts, the full reverse-engineered RS485 protocol and register map, the
 control math, the service behaviour, the MQTT contract, configuration, and the
 open questions that still need answering on real hardware (with a car plugged in).
 
+The finalised **MQTT control contract** (target/status payload schemas, retention,
+failsafe semantics, Home Assistant wiring) lives in **[`docs/mqtt.md`](docs/mqtt.md)**.
+
 ## License
 
 TBD.
