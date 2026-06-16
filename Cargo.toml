@@ -23,7 +23,7 @@ rumqttc = "0.25"
 envy = "0.4"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { version = "1", features = ["macros", "rt", "test-util"] }
 
 [profile.release]
 strip = true
