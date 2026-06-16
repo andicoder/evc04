@@ -10,22 +10,25 @@ cannot be controlled over Modbus-TCP or OCPP the way the SW/Connect variants can
 
 This service controls the charger **indirectly**, by **emulating the Inepro
 PRO380 energy meter** that the EVC04's built-in *Power Optimizer* polls over
-RS485. The charger computes its available charge current as
-`fuse_limit − household_current`; by reporting a fabricated household current we
-make the box raise, lower, pause, or resume charging. An external controller
-(e.g. Home Assistant following Tibber day-ahead prices or PV surplus) sets the
-target over MQTT.
+RS485. The optimizer runs a **closed feedback loop** that ramps the charge current
+until the measured total reaches a fuse limit; by feeding it a value that tracks
+the **live measured current** we close that loop and the box **modulates**, and by
+feeding a static value we get **on/off** gating (see [`SPECS.md`](SPECS.md) §6). An
+external controller (Home Assistant, or **evcc** as a custom charger) sets the
+target and publishes the live measured current over MQTT — the charging brain
+(price / PV / departure) stays there, not in this mode-agnostic service.
 
 ```
-Home Assistant ──MQTT──▶ evc04-charge ──RS485 (Modbus RTU slave)──▶ EVC04 Power Optimizer
- (Tibber price /          (this repo:        via a TCP↔RS485 gateway      (polls us as a meter
-  PV surplus → target)     meter emulator)    e.g. Waveshare RS485-TO-ETH   at 1 Hz, FC03)
+Home Assistant / evcc ──MQTT──▶ evc04-charge ──RS485 (Modbus RTU slave)──▶ EVC04 Power Optimizer
+ (price / PV brain;             (this repo:        via a TCP↔RS485 gateway      (polls us as a meter
+  target + measured current)     meter emulator)    e.g. Waveshare RS485-TO-ETH   at 1 Hz, FC03)
 ```
 
-> **Status: specification only.** This repo currently contains the design and the
-> reverse-engineered protocol (`SPECS.md`). No implementation yet. A fresh
-> contributor should be able to build the service from `SPECS.md` alone, with no
-> outside context.
+> **Status: in development.** The meter emulation, gateway link + watchdog, MQTT
+> control surface, env config, and target-staleness failsafe are implemented (v0.1,
+> currently **on/off** via the static model). **Closed-loop current modulation** —
+> feeding a live measured current so the box modulates — is in progress (#21).
+> `SPECS.md` remains the complete, self-contained brief.
 
 ## What this is (and isn't)
 
