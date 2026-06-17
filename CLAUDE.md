@@ -14,8 +14,11 @@ current the charger reads, raising/lowering/pausing charging.
 (hardware, wire protocol, register map, control math, service behaviour, MQTT
 contract, open hardware questions). Do not start coding without it.
 
-> Current state: **spec only, no implementation.** The first code lands against
-> `SPECS.md`.
+> Current state: **daemon implemented** against `SPECS.md` — env config, gateway
+> link + Modbus slave, MQTT target/measurement intake, and the **open-loop** control
+> math (`reported = MAX_BOX_AMPERE − target`). The **closed-loop modulation** epic
+> (#21: feed `offset + measured`, soft-ramp, min-charge cutoff, measurement failsafe)
+> is in progress.
 
 ## Mandatory discipline
 
@@ -25,7 +28,7 @@ project-specific deltas are spelled out here:
 
 - **TDD — non-negotiable** (`tdd` skill). Red test before production code; exempt
   only docs, packaging/CI config, pure renames. The Modbus framing, the Inepro
-  float encoding, and the `report = fuse_limit − target` math are all pure
+  float encoding, and the `report = MAX_BOX_AMPERE − target` math are all pure
   functions — unit-test them against the verified frames in `SPECS.md` §5/§11,
   using those exact hex frames as fixtures.
 - **Options first.** More than one reasonable approach → list 2–3 numbered options
@@ -89,9 +92,16 @@ Follow the `commit-conventions` and `pr-workflow` skills. Project deltas:
 
 ## Safety reminders (real hardware involved)
 
-- The control loop drives a **3-phase 11 kW charger**. The failsafe behaviour
-  (what happens when the meter goes silent or the service crashes) is an **open
-  question that must be resolved on hardware** — see `SPECS.md` §9. Treat
-  fail-toward-no-charge as the default assumption until proven otherwise.
+- The control loop drives a **3-phase 11 kW charger**. **Failsafe direction: full
+  charge.** The box's baseline without a meter is full 11 kW; this service only
+  throttles *below* it for PV / price / load optimisation. So every control-layer
+  failure (stale MQTT target or measurement, cold start) falls back to **full
+  charge** (`reported = 0`), never a pause — *never worse than no tool*. **Fuse
+  protection is out of scope** (the installation + the DIP-set limit handle it).
+- **A process crash is different.** With the Power Optimizer enabled, a *silent*
+  meter **hard-faults the box (solid red, no charge)** — it does **not** fall back
+  to full charge. So the deployment must **auto-restart** the service and make
+  rollouts **overlap** (the new instance must answer polls before the old stops).
+  See `SPECS.md` §9 for both failsafe layers.
 - Before changing anything on the physical box (DIP switches, wiring), photograph
   the current state for a clean revert.
