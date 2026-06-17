@@ -8,13 +8,6 @@ measured)` with `offset = MAX_BOX_AMPERE − target` (the closed loop, see
 [`SPECS.md`](../SPECS.md) §6). The charging *brain* (price / PV / departure) lives
 in the controller, never here.
 
-> **Implementation status.** The current build implements the **target** topic and
-> the base **status** fields, serving the open-loop `reported = MAX_BOX_AMPERE − target`
-> (on/off only). The **measured** topic and the closed-loop status fields below
-> (`measured_a`, `offset_a`, `measurement_age_s`, `ramping`, `measurement_failsafe`)
-> are the target contract, tracked by #21–#25; they are documented here so
-> publishers and the HA/evcc wiring stay stable across the rollout.
-
 Topics, all configured via env vars ([`SPECS.md`](../SPECS.md) §7):
 
 | Direction          | Env var               | Default          |
@@ -58,10 +51,6 @@ publishes (closed loop, [`SPECS.md`](../SPECS.md) §6):
 
 Out-of-range numbers are accepted and clamped, not rejected.
 
-> The current open-loop build serves `reported = MAX_BOX_AMPERE − target` directly,
-> which gives **on/off** only — full below `MAX_BOX_AMPERE`, pause at/above it —
-> until the measured loop lands (#21).
-
 - **Retained** so a restart resumes the last commanded target without waiting for
   the controller to re-publish.
 - **Invalid payloads are ignored, not applied:** malformed JSON, missing `amps`,
@@ -80,7 +69,7 @@ Out-of-range numbers are accepted and clamped, not rejected.
 
 ## Inbound — measured current (closes the loop)
 
-**Topic:** `MQTT_TOPIC_MEASURED` · **QoS 1** · **publish retained** · *(planned, #22)*
+**Topic:** `MQTT_TOPIC_MEASURED` · **QoS 1** · **publish retained**
 
 The live per-phase current the meter should reflect so the box's feedback loop sees
 its own draw rise and modulates ([`SPECS.md`](../SPECS.md) §6). Same payload shape
@@ -123,10 +112,10 @@ on every state transition). Home Assistant reads it via one MQTT sensor using
 ```json
 {
   "online": true,
-  "target_a": 6.5,
-  "measured_a": 5.2,
-  "offset_a": 1.3,
-  "reported_a": 6.5,
+  "target_ampere": 6.5,
+  "measured_ampere": 5.2,
+  "offset_ampere": 1.3,
+  "reported_ampere": 6.5,
   "last_poll_age_s": 0.4,
   "measurement_age_s": 1.1,
   "gateway": "connected",
@@ -141,15 +130,15 @@ on every state transition). Home Assistant reads it via one MQTT sensor using
 | Field                  | Type           | Meaning |
 | ---------------------- | -------------- | ------- |
 | `online`               | bool           | Service running and the control loop live. Set `false` by the broker via LWT if the service dies. |
-| `target_a`             | number         | Effective target (post-clamp), amps. Reads `MAX_BOX_AMPERE` (full charge) when `failsafe` is true. |
-| `measured_a`           | number         | Last live measured current consumed, amps. *(planned, #22)* |
-| `offset_a`             | number         | Current soft-ramped offset `= MAX_BOX_AMPERE − target`, amps. *(planned, #24)* |
-| `reported_a`           | number         | Current the slave is serving per phase: `clamp(offset_a + measured_a)` (closed-loop) or `MAX_BOX_AMPERE − target_a` (open-loop build), amps. |
+| `target_ampere`        | number         | Effective target (post-clamp), amps. Reads `MAX_BOX_AMPERE` (full charge) when `failsafe` is true. |
+| `measured_ampere`      | number         | Last live measured current consumed, amps. |
+| `offset_ampere`        | number         | Current soft-ramped offset `= MAX_BOX_AMPERE − target`, amps. |
+| `reported_ampere`      | number         | Current the slave is serving per phase: `clamp(offset_ampere + measured_ampere)`, amps. |
 | `last_poll_age_s`      | number         | Seconds since the EVC04 last polled us (~1 Hz; a growing value signals a dead RS485 link). |
 | `measurement_age_s`    | number         | Seconds since the last valid measured value; drives the measurement failsafe. |
 | `gateway`              | string         | RS485↔TCP gateway link: `connected` / `reconnecting` / `down`. |
 | `mqtt`                 | string         | Broker link as seen by the service: `connected` / `reconnecting`. |
-| `ramping`              | bool           | `true` while the offset is still soft-ramping toward its setpoint. *(planned, #24)* |
+| `ramping`              | bool           | `true` while the offset is still soft-ramping toward its setpoint. |
 | `failsafe`             | bool           | `true` while serving **full charge** because the **target** went stale (the meterless-box default). |
 | `measurement_failsafe` | bool           | `true` while serving full charge because the **measured** input went stale. |
 | `last_error`           | string or null | Reason for the most recent rejected input or link fault; `null` when healthy. |

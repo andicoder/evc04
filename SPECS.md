@@ -271,11 +271,11 @@ target it publishes:
 expected; the DIP value itself trades full-charge headroom against modulation
 range (§9).
 
-> **Implementation status.** The closed-loop model above is the **target design**
-> (tracked by #21–#28). The current code still serves the **static** open-loop
-> value (`reported = MAX_BOX_AMPERE − target`) — on/off only — as the shipped stepping
-> stone; #22–#25 add the measured input, the soft-ramp, the min-charge cutoff, and
-> the measurement-loss failsafe.
+> **Implementation status.** The closed-loop model above is **implemented** (#22–#25):
+> the measured input, `reported = clamp(soft_ramped_offset + measured)`, the
+> min-charge cutoff, and both staleness failsafes (target + measurement, always
+> toward full charge) ship in the daemon. Still open: the operating DIP current
+> limit (#27, needs a high-DIP hardware test) and an evcc charger template (#28).
 
 ---
 
@@ -344,8 +344,8 @@ payloads are UTF-8 JSON; QoS 1; target/measured/status retained. Summary:
   per-phase current that closes the loop (§6). Source-agnostic; same
   hold-last-good / staleness discipline as the target.
 - **Outbound — status** (`MQTT_TOPIC_STATUS`, retained, + offline LWT): `online`,
-  `target_a`, `reported_a`, `last_poll_age_s`, `gateway`, `mqtt`, `last_error`,
-  plus the closed-loop fields `measured_a`, `offset_a`, `measurement_age_s`,
+  `target_ampere`, `reported_ampere`, `last_poll_age_s`, `gateway`, `mqtt`, `last_error`,
+  plus the closed-loop fields `measured_ampere`, `offset_ampere`, `measurement_age_s`,
   `ramping`, and the two failsafe flags (`failsafe` for target, plus a measurement
   failsafe).
 
@@ -418,10 +418,10 @@ These are **not** answerable from the bus alone; they need an observable
       DIP (e.g. 32 A)?** Untested — re-run the offset/soft-ramp sweep at DIP 32 A
       with simulated household load and decide. Photograph DIP state first (revert
       safety).
-- [ ] **Measurement-input staleness failsafe (#25).** Distinct from the target
-      staleness above: serving `offset + stale_measured` is meaningless — a frozen
-      value no longer tracks the draw — so a stale **measured** input must abandon
-      the closed loop and fall back to **full charge** (`reported = 0`) within
+- [x] **Measurement-input staleness failsafe (#25) — done.** Distinct from the
+      target staleness above: serving `offset + stale_measured` is meaningless — a
+      frozen value no longer tracks the draw — so a stale **measured** input abandons
+      the closed loop and falls back to **full charge** (`reported = 0`) within
       `MEAS_STALE_TIMEOUT_S`. Same static baseline as the target failsafe, never a
       pause (§1); fuse protection is out of scope, so there is nothing to protect by
       cutting off.
