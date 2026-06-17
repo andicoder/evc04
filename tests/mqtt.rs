@@ -2,7 +2,7 @@
 //! target-payload parser and the outbound status schema. The live rumqttc task
 //! is an I/O boundary and is exercised against a broker, not here.
 
-use evc04_charge::control::{Controller, TargetSink};
+use evc04_charge::control::{Controller, MeasurementSink, TargetSink};
 use evc04_charge::mqtt::{assemble_status, parse_target, Status, OFFLINE_PAYLOAD};
 use evc04_charge::slave::LinkHealth;
 use evc04_charge::{control, Ampere};
@@ -12,14 +12,16 @@ use tokio::time::Instant;
 const MAX: Ampere = Ampere(32.0);
 const MIN: Ampere = Ampere(6.0);
 const STALE_AFTER: Duration = Duration::from_secs(5);
+const MEAS_STALE: Duration = Duration::from_secs(10);
 
 /// A `Controller` over fresh target + measurement channels (measurement held at 0 A, so
-/// `reported_a` reflects the bare offset), plus the target sink to drive commands.
-fn controller() -> (TargetSink, Controller) {
+/// `reported_a` reflects the bare offset), plus both sinks to drive commands/measurements.
+fn controller() -> (TargetSink, MeasurementSink, Controller) {
     let (target_sink, target_view) = control::channel(MAX, STALE_AFTER);
-    let (_measured_sink, measured_view) = control::measurement_channel(Ampere(0.0));
+    let (measured_sink, measured_view) = control::measurement_channel(Ampere(0.0), MEAS_STALE);
     (
         target_sink,
+        measured_sink,
         Controller::new(target_view, measured_view, MIN),
     )
 }
@@ -83,6 +85,8 @@ fn status_serialises_to_the_documented_schema() {
         gateway: "connected".to_string(),
         mqtt: "connected".to_string(),
         failsafe: false,
+        measurement_failsafe: false,
+        measurement_age_s: 1.2,
         last_error: None,
     };
     let got: serde_json::Value = serde_json::from_str(&status.to_json()).unwrap();
@@ -94,6 +98,8 @@ fn status_serialises_to_the_documented_schema() {
         "gateway": "connected",
         "mqtt": "connected",
         "failsafe": false,
+        "measurement_failsafe": false,
+        "measurement_age_s": 1.2,
         "last_error": null,
     });
     assert_eq!(got, want);
@@ -109,6 +115,8 @@ fn status_last_error_serialises_as_a_string_when_set() {
         gateway: "down".to_string(),
         mqtt: "connected".to_string(),
         failsafe: true,
+        measurement_failsafe: false,
+        measurement_age_s: 0.5,
         last_error: Some("malformed target payload".to_string()),
     };
     let got: serde_json::Value = serde_json::from_str(&status.to_json()).unwrap();
@@ -118,8 +126,9 @@ fn status_last_error_serialises_as_a_string_when_set() {
 
 #[tokio::test]
 async fn assembled_status_reflects_the_live_control_state() {
-    let (sink, ctrl) = controller();
-    sink.apply(Ok(20.0)); // target 20 A on a 32 A ceiling, measured 0 → report 12 A
+    let (sink, msink, ctrl) = controller();
+    sink.apply(Ok(20.0)); // target 20 A on a 32 A ceiling
+    msink.apply(Ok(3.0)); // fresh measurement → offset 12 + 3 = 15
 
     let status = assemble_status(&ctrl, LinkHealth::Up, Instant::now(), None);
 
@@ -127,14 +136,15 @@ async fn assembled_status_reflects_the_live_control_state() {
     assert_eq!(status.mqtt, "connected");
     assert_eq!(status.gateway, "connected");
     assert_eq!(status.target_a, 20.0);
-    assert_eq!(status.reported_a, 12.0);
+    assert_eq!(status.reported_a, 15.0);
     assert!(!status.failsafe);
+    assert!(!status.measurement_failsafe);
     assert!(status.last_error.is_none());
 }
 
 #[tokio::test]
 async fn assembled_status_maps_each_gateway_health() {
-    let (_sink, ctrl) = controller();
+    let (_sink, _msink, ctrl) = controller();
     let label = |h| assemble_status(&ctrl, h, Instant::now(), None).gateway;
     assert_eq!(label(LinkHealth::Up), "connected");
     assert_eq!(label(LinkHealth::Stalled), "reconnecting");
@@ -144,7 +154,7 @@ async fn assembled_status_maps_each_gateway_health() {
 #[tokio::test(start_paused = true)]
 async fn assembled_status_reports_poll_age_and_failsafe_when_stale() {
     // Once the target goes stale the status must show the failsafe and full charge.
-    let (sink, ctrl) = controller();
+    let (sink, _msink, ctrl) = controller();
     sink.apply(Ok(20.0));
     let last_poll = Instant::now();
 
@@ -161,9 +171,30 @@ async fn assembled_status_reports_poll_age_and_failsafe_when_stale() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn assembled_status_reports_the_measurement_failsafe_and_age() {
+    // Once the measured input goes stale the status must show the measurement failsafe
+    // and full charge, independently of the target failsafe (#25).
+    let (sink, msink, ctrl) = controller();
+    msink.apply(Ok(5.0));
+
+    tokio::time::advance(MEAS_STALE + Duration::from_secs(1)).await;
+    sink.apply(Ok(20.0)); // republish the target so only the measurement is stale
+
+    let status = assemble_status(&ctrl, LinkHealth::Up, Instant::now(), None);
+    assert!(status.measurement_failsafe);
+    assert!(!status.failsafe); // target is still fresh; only the measurement is stale
+    assert_eq!(status.reported_a, 0.0); // full charge
+    assert!(
+        (status.measurement_age_s - 11.0).abs() < 0.01,
+        "got {}",
+        status.measurement_age_s
+    );
+}
+
 #[tokio::test]
 async fn assembled_status_surfaces_the_last_error() {
-    let (_sink, ctrl) = controller();
+    let (_sink, _msink, ctrl) = controller();
     let status = assemble_status(
         &ctrl,
         LinkHealth::Up,

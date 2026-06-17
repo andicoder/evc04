@@ -34,6 +34,12 @@ pub struct Config {
     /// (~6 A ≈ 4.1 kW) collapses to pause rather than holding a stable current
     /// (SPECS.md §6, issue #23). A target below this serves a hard pause.
     pub min_charge: Ampere,
+    /// How long the last measured current stays valid before the measurement-loss
+    /// failsafe engages (SPECS.md §9, issue #25). Serving `offset + stale_measured`
+    /// would hold the box at the wrong current, so once stale we revert to full charge
+    /// (the meterless-box default). Tighter than `failsafe_after`: the measurement
+    /// republishes faster (~3–6 s) than the target.
+    pub meas_stale_timeout: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +109,9 @@ impl RawConfig {
         if self.failsafe_after_s == 0 {
             problems.push("FAILSAFE_AFTER_S must be greater than 0".to_string());
         }
+        if self.meas_stale_timeout_s == 0 {
+            problems.push("MEAS_STALE_TIMEOUT_S must be greater than 0".to_string());
+        }
         if !(self.min_charge_a.is_finite()
             && self.min_charge_a > 0.0
             && self.min_charge_a <= self.max_box_ampere)
@@ -137,6 +146,7 @@ impl RawConfig {
             },
             failsafe_after: Duration::from_secs(self.failsafe_after_s),
             min_charge: Ampere(self.min_charge_a),
+            meas_stale_timeout: Duration::from_secs(self.meas_stale_timeout_s),
         })
     }
 }
@@ -165,6 +175,8 @@ struct RawConfig {
     failsafe_after_s: u64,
     #[serde(default = "default_min_charge_a")]
     min_charge_a: f32,
+    #[serde(default = "default_meas_stale_timeout_s")]
+    meas_stale_timeout_s: u64,
 }
 
 fn default_slave_addr() -> u8 {
@@ -191,6 +203,12 @@ fn default_topic_measured() -> String {
 /// current (SPECS.md §6), so it's the default minimum the closed loop attempts.
 fn default_min_charge_a() -> f32 {
     6.0
+}
+
+/// Measurement republishes every ~3–6 s (SPECS.md §6), so ~2–3 missed updates before we
+/// stop trusting the closed loop and revert to full charge (#25).
+fn default_meas_stale_timeout_s() -> u64 {
+    15
 }
 
 /// Why a configuration could not be loaded.

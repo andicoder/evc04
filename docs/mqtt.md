@@ -146,12 +146,12 @@ on every state transition). Home Assistant reads it via one MQTT sensor using
 | `offset_a`             | number         | Current soft-ramped offset `= MAX_BOX_AMPERE − target`, amps. *(planned, #24)* |
 | `reported_a`           | number         | Current the slave is serving per phase: `clamp(offset_a + measured_a)` (closed-loop) or `MAX_BOX_AMPERE − target_a` (open-loop build), amps. |
 | `last_poll_age_s`      | number         | Seconds since the EVC04 last polled us (~1 Hz; a growing value signals a dead RS485 link). |
-| `measurement_age_s`    | number         | Seconds since the last valid measured value; drives the measurement failsafe. *(planned, #25)* |
+| `measurement_age_s`    | number         | Seconds since the last valid measured value; drives the measurement failsafe. |
 | `gateway`              | string         | RS485↔TCP gateway link: `connected` / `reconnecting` / `down`. |
 | `mqtt`                 | string         | Broker link as seen by the service: `connected` / `reconnecting`. |
 | `ramping`              | bool           | `true` while the offset is still soft-ramping toward its setpoint. *(planned, #24)* |
 | `failsafe`             | bool           | `true` while serving **full charge** because the **target** went stale (the meterless-box default). |
-| `measurement_failsafe` | bool           | `true` while serving full charge because the **measured** input went stale. *(planned, #25)* |
+| `measurement_failsafe` | bool           | `true` while serving full charge because the **measured** input went stale. |
 | `last_error`           | string or null | Reason for the most recent rejected input or link fault; `null` when healthy. |
 
 ### Last Will and Testament
