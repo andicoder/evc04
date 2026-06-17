@@ -30,6 +30,10 @@ pub struct Config {
     /// How long the last MQTT target stays valid before the full-charge failsafe
     /// engages (SPECS.md §9). Must exceed the controller's republish interval.
     pub failsafe_after: Duration,
+    /// Minimum charge current the closed loop attempts; below it the 3-phase floor
+    /// (~6 A ≈ 4.1 kW) collapses to pause rather than holding a stable current
+    /// (SPECS.md §6, issue #23). A target below this serves a hard pause.
+    pub min_charge: Ampere,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +103,15 @@ impl RawConfig {
         if self.failsafe_after_s == 0 {
             problems.push("FAILSAFE_AFTER_S must be greater than 0".to_string());
         }
+        if !(self.min_charge_a.is_finite()
+            && self.min_charge_a > 0.0
+            && self.min_charge_a <= self.max_box_ampere)
+        {
+            problems.push(format!(
+                "MIN_CHARGE_A must be in (0, MAX_BOX_AMPERE={}] A, got {}",
+                self.max_box_ampere, self.min_charge_a
+            ));
+        }
 
         if !problems.is_empty() {
             return Err(ConfigError::Invalid(problems));
@@ -123,6 +136,7 @@ impl RawConfig {
                 qty: self.poll_qty,
             },
             failsafe_after: Duration::from_secs(self.failsafe_after_s),
+            min_charge: Ampere(self.min_charge_a),
         })
     }
 }
@@ -149,6 +163,8 @@ struct RawConfig {
     poll_qty: u16,
     #[serde(default = "default_failsafe_after_s")]
     failsafe_after_s: u64,
+    #[serde(default = "default_min_charge_a")]
+    min_charge_a: f32,
 }
 
 fn default_slave_addr() -> u8 {
@@ -169,6 +185,12 @@ fn default_failsafe_after_s() -> u64 {
 
 fn default_topic_measured() -> String {
     "evc04/measured".to_string()
+}
+
+/// 3-phase charging floor (~6 A ≈ 4.1 kW); below it the box can't hold a stable
+/// current (SPECS.md §6), so it's the default minimum the closed loop attempts.
+fn default_min_charge_a() -> f32 {
+    6.0
 }
 
 /// Why a configuration could not be loaded.

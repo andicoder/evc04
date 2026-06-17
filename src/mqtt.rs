@@ -6,7 +6,7 @@
 //! is exercised against a real broker, not in unit tests.
 
 use crate::config::MqttConfig;
-use crate::control::ControlView;
+use crate::control::Controller;
 use crate::slave::LinkHealth;
 use rumqttc::{AsyncClient, Event, LastWill, MqttOptions, Packet, QoS};
 use serde::{Deserialize, Serialize};
@@ -94,10 +94,10 @@ impl Status {
 /// The `mqtt` field is always `connected`: this only runs inside the live event
 /// loop, and an ungraceful disconnect is reported by the broker via the LWT, not
 /// by us. `gateway` maps the slave's [`LinkHealth`]; the target/reported/failsafe
-/// fields come from the failsafe-aware [`ControlView`]; `last_poll_age_s` is the
-/// time since the slave last answered a poll (a growing value signals a dead bus).
+/// fields come from the closed-loop [`Controller`]; `last_poll_age_s` is the time
+/// since the slave last answered a poll (a growing value signals a dead bus).
 pub fn assemble_status(
-    view: &ControlView,
+    controller: &Controller,
     gateway: LinkHealth,
     last_poll: Instant,
     last_error: Option<String>,
@@ -109,12 +109,12 @@ pub fn assemble_status(
     };
     Status {
         online: true,
-        target_a: view.effective_target().0,
-        reported_a: view.reported_frame()[0],
+        target_a: controller.effective_target().0,
+        reported_a: controller.reported_frame()[0],
         last_poll_age_s: last_poll.elapsed().as_secs_f32(),
         gateway: gateway.to_string(),
         mqtt: "connected".to_string(),
-        failsafe: view.failsafe_active(),
+        failsafe: controller.failsafe_active(),
         last_error,
     }
 }

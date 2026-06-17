@@ -44,8 +44,8 @@ impl TargetSink {
     }
 }
 
-/// Read half (cloneable, lock-free reads): the slave's reported-frame source and the
-/// status publisher's view of the effective target and failsafe state.
+/// Read half (cloneable, lock-free reads) of the target stream: the [`Controller`]'s
+/// failsafe-aware target source and the status publisher's view of target/failsafe state.
 #[derive(Clone)]
 pub struct ControlView {
     rx: watch::Receiver<Sample>,
@@ -54,12 +54,6 @@ pub struct ControlView {
 }
 
 impl ControlView {
-    /// Per-phase household current to report for the current effective target, as the
-    /// raw `f32` triple the Modbus frame carries (the wire boundary).
-    pub fn reported_frame(&self) -> [f32; 3] {
-        [reported_household(self.max_box_ampere, self.target()).0; 3]
-    }
-
     /// Effective target, post-clamp and failsafe-aware: the last commanded value while
     /// fresh, else full charge (`MAX_BOX_AMPERE`) once stale. This is what the status
     /// topic reports as `target_a` (docs/mqtt.md).
@@ -144,6 +138,56 @@ pub fn measurement_channel(initial: Ampere) -> (MeasurementSink, MeasurementView
         at: Instant::now(),
     });
     (MeasurementSink { tx }, MeasurementView { rx })
+}
+
+/// Joins the two inbound streams into the single per-poll answer the slave serves: the
+/// failsafe-aware [`ControlView`] target and the live [`MeasurementView`] current, run
+/// through the closed-loop [`reported_household`] math (#23). Cloneable, lock-free reads.
+#[derive(Clone)]
+pub struct Controller {
+    target: ControlView,
+    measured: MeasurementView,
+    min_charge: Ampere,
+}
+
+impl Controller {
+    pub fn new(target: ControlView, measured: MeasurementView, min_charge: Ampere) -> Controller {
+        Controller {
+            target,
+            measured,
+            min_charge,
+        }
+    }
+
+    /// Per-phase household current to report, as the raw `f32` triple the Modbus frame
+    /// carries (the wire boundary).
+    ///
+    /// A stale/absent target hard-faults into the **static** full-charge failsafe (report
+    /// 0 A, the meterless-box default — SPECS §9), *not* the closed loop: serving
+    /// `offset + measured` while the command is stale would throttle, the wrong failsafe
+    /// direction. While the target is fresh we close the loop on the live measurement.
+    pub fn reported_frame(&self) -> [f32; 3] {
+        if self.target.failsafe_active() {
+            return [0.0; 3];
+        }
+        let reported = reported_household(
+            self.target.max_box_ampere,
+            self.target.effective_target(),
+            self.measured.measured(),
+            self.min_charge,
+        );
+        [reported.0; 3]
+    }
+
+    /// Failsafe-aware effective target for the status topic's `target_a` (docs/mqtt.md).
+    pub fn effective_target(&self) -> Ampere {
+        self.target.effective_target()
+    }
+
+    /// Whether the target-staleness full-charge failsafe is engaged (status `failsafe`).
+    pub fn failsafe_active(&self) -> bool {
+        self.target.failsafe_active()
+    }
 }
 
 /// Wire the MQTT command stream to the bytes the slave serves (SPECS §6/§9).
