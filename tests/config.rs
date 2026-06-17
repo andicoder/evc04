@@ -1,6 +1,7 @@
 //! Boundary-validation tests for the env-var config loader (SPECS.md §7).
 
 use evc04_charge::config::Config;
+use evc04_charge::Ampere;
 
 /// A complete, valid set of env vars — required ones only (optionals omitted so
 /// the defaults/None paths are exercised).
@@ -8,12 +9,11 @@ fn valid_vars() -> Vec<(String, String)> {
     [
         ("GATEWAY_HOST", "192.168.1.50"),
         ("GATEWAY_PORT", "4196"),
-        ("FUSE_LIMIT_A", "16"),
+        ("MAX_BOX_AMPERE", "16"),
         ("MQTT_HOST", "broker.local"),
         ("MQTT_PORT", "1883"),
         ("MQTT_TOPIC_TARGET", "evc04/target"),
         ("MQTT_TOPIC_STATUS", "evc04/status"),
-        ("FAILSAFE_TARGET_A", "0"),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -51,11 +51,11 @@ fn defaults_apply_for_optional_vars() {
 }
 
 #[test]
-fn out_of_range_fuse_limit_is_rejected() {
-    let err = Config::from_vars(with(valid_vars(), "FUSE_LIMIT_A", "0")).unwrap_err();
+fn out_of_range_max_box_ampere_is_rejected() {
+    let err = Config::from_vars(with(valid_vars(), "MAX_BOX_AMPERE", "0")).unwrap_err();
     assert!(
-        format!("{err}").to_lowercase().contains("fuse"),
-        "error should mention the fuse limit, got: {err}"
+        format!("{err}").to_uppercase().contains("MAX_BOX_AMPERE"),
+        "error should name MAX_BOX_AMPERE, got: {err}"
     );
 }
 
@@ -90,6 +90,18 @@ fn zero_failsafe_after_is_rejected() {
 }
 
 #[test]
+fn measured_topic_defaults_when_unset() {
+    let cfg = Config::from_vars(valid_vars()).unwrap();
+    assert_eq!(cfg.mqtt.topic_measured, "evc04/measured");
+}
+
+#[test]
+fn parses_measured_topic() {
+    let cfg = Config::from_vars(with(valid_vars(), "MQTT_TOPIC_MEASURED", "site/ct/L1")).unwrap();
+    assert_eq!(cfg.mqtt.topic_measured, "site/ct/L1");
+}
+
+#[test]
 fn parses_a_full_valid_config() {
     let vars = with(
         with(
@@ -102,7 +114,7 @@ fn parses_a_full_valid_config() {
     );
     let cfg = Config::from_vars(vars).unwrap();
     assert_eq!(cfg.gateway_addr(), "192.168.1.50:4196");
-    assert_eq!(cfg.fuse_limit_a, 16.0);
+    assert_eq!(cfg.max_box_ampere, Ampere(16.0));
     assert_eq!(cfg.mqtt.user.as_deref(), Some("svc"));
     assert_eq!(cfg.mqtt.pass.as_deref(), Some("secret"));
     assert_eq!(cfg.poll.addr, 2);

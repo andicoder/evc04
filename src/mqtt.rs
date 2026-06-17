@@ -109,8 +109,8 @@ pub fn assemble_status(
     };
     Status {
         online: true,
-        target_a: view.effective_target_a(),
-        reported_a: view.currents()[0],
+        target_a: view.effective_target().0,
+        reported_a: view.reported_frame()[0],
         last_poll_age_s: last_poll.elapsed().as_secs_f32(),
         gateway: gateway.to_string(),
         mqtt: "connected".to_string(),
@@ -126,10 +126,14 @@ pub fn assemble_status(
 ///
 /// `apply_target` is the seam the control loop (#6) fills: it receives every parsed
 /// command — `Ok(amps)` to adopt, `Err` to surface in `status.last_error` while
-/// holding the last good value. `status` snapshots the live state to publish.
+/// holding the last good value. `apply_measured` is the same seam for the live
+/// measured current that closes the loop (#22); both inbound topics carry the
+/// identical `{"amps": N}` shape, so they share [`parse_target`]. `status`
+/// snapshots the live state to publish.
 pub async fn run_mqtt(
     cfg: MqttConfig,
     apply_target: impl Fn(Result<f32, TargetError>),
+    apply_measured: impl Fn(Result<f32, TargetError>),
     status: impl Fn() -> Status,
 ) {
     let mut opts = MqttOptions::new(CLIENT_ID, &cfg.host, cfg.port);
@@ -149,10 +153,15 @@ pub async fn run_mqtt(
                 // the target subscription and republish status after every ConnAck.
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     let _ = client.subscribe(&cfg.topic_target, QOS).await;
+                    let _ = client.subscribe(&cfg.topic_measured, QOS).await;
                     publish_status(&client, &cfg.topic_status, &status).await;
                 }
                 Ok(Event::Incoming(Packet::Publish(p))) if p.topic == cfg.topic_target => {
                     apply_target(parse_target(&p.payload));
+                    publish_status(&client, &cfg.topic_status, &status).await;
+                }
+                Ok(Event::Incoming(Packet::Publish(p))) if p.topic == cfg.topic_measured => {
+                    apply_measured(parse_target(&p.payload));
                     publish_status(&client, &cfg.topic_status, &status).await;
                 }
                 Ok(_) => {}

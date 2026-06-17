@@ -4,12 +4,14 @@
 //! rest of the app trusts the resulting [`Config`].
 
 use crate::slave::PollMatch;
+use crate::Ampere;
 use serde::Deserialize;
 use std::time::Duration;
 
-/// Reject implausible fuse limits. Domestic AC charging tops out well below this;
-/// 80 A leaves headroom while still catching typos and unit mistakes.
-const MAX_FUSE_A: f32 = 80.0;
+/// Sanity check on `MAX_BOX_AMPERE`: reject implausible ceilings. Domestic AC charging
+/// tops out well below this; 80 A (the top of the EVC04 DIP table) leaves headroom while
+/// still catching typos and unit mistakes (e.g. watts entered as amps).
+const AMPERE_SANITY_LIMIT: f32 = 80.0;
 
 /// Modbus addresses 1..=247 are assignable to a slave (0 is broadcast, 248..=255
 /// reserved).
@@ -20,13 +22,13 @@ const SLAVE_ADDR_RANGE: std::ops::RangeInclusive<u8> = 1..=247;
 pub struct Config {
     pub gateway_host: String,
     pub gateway_port: u16,
-    pub fuse_limit_a: f32,
+    /// The box's own current ceiling, set by its DIP switches 4-5-6 (SPECS.md §6).
+    /// Our reference for 100 % charge; not a fuse we protect.
+    pub max_box_ampere: Ampere,
     pub mqtt: MqttConfig,
     pub poll: PollMatch,
-    /// Target charge current to serve if the MQTT command goes stale (SPECS.md §9).
-    pub failsafe_target_a: f32,
-    /// How long the last MQTT target stays valid before the failsafe engages
-    /// (SPECS.md §9). Must exceed the controller's republish interval.
+    /// How long the last MQTT target stays valid before the full-charge failsafe
+    /// engages (SPECS.md §9). Must exceed the controller's republish interval.
     pub failsafe_after: Duration,
 }
 
@@ -38,6 +40,9 @@ pub struct MqttConfig {
     pub pass: Option<String>,
     pub topic_target: String,
     pub topic_status: String,
+    /// Inbound live measured per-phase current that closes the control loop
+    /// (SPECS.md §6, issue #22). Source-agnostic: grid/total today, charger CT later.
+    pub topic_measured: String,
 }
 
 impl Config {
@@ -65,13 +70,13 @@ impl RawConfig {
     fn validate(self) -> Result<Config, ConfigError> {
         let mut problems = Vec::new();
 
-        if !(self.fuse_limit_a.is_finite()
-            && self.fuse_limit_a > 0.0
-            && self.fuse_limit_a <= MAX_FUSE_A)
+        if !(self.max_box_ampere.is_finite()
+            && self.max_box_ampere > 0.0
+            && self.max_box_ampere <= AMPERE_SANITY_LIMIT)
         {
             problems.push(format!(
-                "FUSE_LIMIT_A must be in (0, {MAX_FUSE_A}] A, got {}",
-                self.fuse_limit_a
+                "MAX_BOX_AMPERE must be in (0, {AMPERE_SANITY_LIMIT}] A, got {}",
+                self.max_box_ampere
             ));
         }
         if self.gateway_port == 0 {
@@ -94,16 +99,6 @@ impl RawConfig {
         if self.failsafe_after_s == 0 {
             problems.push("FAILSAFE_AFTER_S must be greater than 0".to_string());
         }
-        // Failsafe is a charge target, so it cannot exceed the fuse headroom.
-        if !(self.failsafe_target_a.is_finite()
-            && self.failsafe_target_a >= 0.0
-            && self.failsafe_target_a <= self.fuse_limit_a)
-        {
-            problems.push(format!(
-                "FAILSAFE_TARGET_A must be in [0, FUSE_LIMIT_A], got {}",
-                self.failsafe_target_a
-            ));
-        }
 
         if !problems.is_empty() {
             return Err(ConfigError::Invalid(problems));
@@ -112,7 +107,7 @@ impl RawConfig {
         Ok(Config {
             gateway_host: self.gateway_host,
             gateway_port: self.gateway_port,
-            fuse_limit_a: self.fuse_limit_a,
+            max_box_ampere: Ampere(self.max_box_ampere),
             mqtt: MqttConfig {
                 host: self.mqtt_host,
                 port: self.mqtt_port,
@@ -120,13 +115,13 @@ impl RawConfig {
                 pass: self.mqtt_pass,
                 topic_target: self.mqtt_topic_target,
                 topic_status: self.mqtt_topic_status,
+                topic_measured: self.mqtt_topic_measured,
             },
             poll: PollMatch {
                 addr: self.slave_addr,
                 register: self.poll_register,
                 qty: self.poll_qty,
             },
-            failsafe_target_a: self.failsafe_target_a,
             failsafe_after: Duration::from_secs(self.failsafe_after_s),
         })
     }
@@ -137,20 +132,21 @@ impl RawConfig {
 struct RawConfig {
     gateway_host: String,
     gateway_port: u16,
-    fuse_limit_a: f32,
+    max_box_ampere: f32,
     mqtt_host: String,
     mqtt_port: u16,
     mqtt_user: Option<String>,
     mqtt_pass: Option<String>,
     mqtt_topic_target: String,
     mqtt_topic_status: String,
+    #[serde(default = "default_topic_measured")]
+    mqtt_topic_measured: String,
     #[serde(default = "default_slave_addr")]
     slave_addr: u8,
     #[serde(default = "default_poll_register")]
     poll_register: u16,
     #[serde(default = "default_poll_qty")]
     poll_qty: u16,
-    failsafe_target_a: f32,
     #[serde(default = "default_failsafe_after_s")]
     failsafe_after_s: u64,
 }
@@ -169,6 +165,10 @@ fn default_poll_qty() -> u16 {
 
 fn default_failsafe_after_s() -> u64 {
     60
+}
+
+fn default_topic_measured() -> String {
+    "evc04/measured".to_string()
 }
 
 /// Why a configuration could not be loaded.

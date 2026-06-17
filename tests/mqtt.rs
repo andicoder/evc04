@@ -2,13 +2,13 @@
 //! target-payload parser and the outbound status schema. The live rumqttc task
 //! is an I/O boundary and is exercised against a broker, not here.
 
-use evc04_charge::control;
 use evc04_charge::mqtt::{assemble_status, parse_target, Status, OFFLINE_PAYLOAD};
 use evc04_charge::slave::LinkHealth;
+use evc04_charge::{control, Ampere};
 use std::time::Duration;
 use tokio::time::Instant;
 
-const FUSE: f32 = 32.0;
+const MAX: Ampere = Ampere(32.0);
 const STALE_AFTER: Duration = Duration::from_secs(5);
 
 #[test]
@@ -105,8 +105,8 @@ fn status_last_error_serialises_as_a_string_when_set() {
 
 #[tokio::test]
 async fn assembled_status_reflects_the_live_control_state() {
-    let (sink, view) = control::channel(FUSE, 0.0, STALE_AFTER, 0.0);
-    sink.apply(Ok(20.0)); // target 20 A on a 32 A fuse → report 12 A
+    let (sink, view) = control::channel(MAX, STALE_AFTER);
+    sink.apply(Ok(20.0)); // target 20 A on a 32 A ceiling → report 12 A
 
     let status = assemble_status(&view, LinkHealth::Up, Instant::now(), None);
 
@@ -121,7 +121,7 @@ async fn assembled_status_reflects_the_live_control_state() {
 
 #[tokio::test]
 async fn assembled_status_maps_each_gateway_health() {
-    let (_sink, view) = control::channel(FUSE, 0.0, STALE_AFTER, 0.0);
+    let (_sink, view) = control::channel(MAX, STALE_AFTER);
     let label = |h| assemble_status(&view, h, Instant::now(), None).gateway;
     assert_eq!(label(LinkHealth::Up), "connected");
     assert_eq!(label(LinkHealth::Stalled), "reconnecting");
@@ -130,16 +130,17 @@ async fn assembled_status_maps_each_gateway_health() {
 
 #[tokio::test(start_paused = true)]
 async fn assembled_status_reports_poll_age_and_failsafe_when_stale() {
-    // failsafe 8 A; once the target goes stale the status must show it.
-    let (_sink, view) = control::channel(FUSE, 8.0, STALE_AFTER, 20.0);
+    // Once the target goes stale the status must show the failsafe and full charge.
+    let (sink, view) = control::channel(MAX, STALE_AFTER);
+    sink.apply(Ok(20.0));
     let last_poll = Instant::now();
 
     tokio::time::advance(STALE_AFTER + Duration::from_secs(2)).await;
 
     let status = assemble_status(&view, LinkHealth::Up, last_poll, None);
     assert!(status.failsafe);
-    assert_eq!(status.target_a, 8.0);
-    assert_eq!(status.reported_a, 24.0);
+    assert_eq!(status.target_a, MAX.0); // full charge
+    assert_eq!(status.reported_a, 0.0);
     assert!(
         (status.last_poll_age_s - 7.0).abs() < 0.01,
         "got {}",
@@ -149,7 +150,7 @@ async fn assembled_status_reports_poll_age_and_failsafe_when_stale() {
 
 #[tokio::test]
 async fn assembled_status_surfaces_the_last_error() {
-    let (_sink, view) = control::channel(FUSE, 0.0, STALE_AFTER, 0.0);
+    let (_sink, view) = control::channel(MAX, STALE_AFTER);
     let status = assemble_status(
         &view,
         LinkHealth::Up,
