@@ -56,7 +56,7 @@ pub struct ControlView {
 impl ControlView {
     /// Effective target, post-clamp and failsafe-aware: the last commanded value while
     /// fresh, else full charge (`MAX_BOX_AMPERE`) once stale. This is what the status
-    /// topic reports as `target_a` (docs/mqtt.md).
+    /// topic reports as `target_ampere` (docs/mqtt.md).
     pub fn effective_target(&self) -> Ampere {
         self.target().clamp(Ampere(0.0), self.max_box_ampere)
     }
@@ -259,9 +259,27 @@ impl Controller {
         [reported.0; 3]
     }
 
-    /// Failsafe-aware effective target for the status topic's `target_a` (docs/mqtt.md).
+    /// Failsafe-aware effective target for the status topic's `target_ampere` (docs/mqtt.md).
     pub fn effective_target(&self) -> Ampere {
         self.target.effective_target()
+    }
+
+    /// Last live measured current consumed, for the status topic's `measured_ampere`.
+    pub fn measured(&self) -> Ampere {
+        self.measured.measured()
+    }
+
+    /// Current soft-ramped offset, for the status topic's `offset_ampere`.
+    pub fn offset(&self) -> Ampere {
+        self.offset.offset()
+    }
+
+    /// Whether the soft-ramped offset is still chasing its setpoint (`max − target`), for
+    /// the status topic's `ramping` (#24). Settled means the ramp has snapped exactly onto
+    /// the setpoint, so a small epsilon guards only float noise, not a real gap.
+    pub fn ramping(&self) -> bool {
+        let setpoint = self.target.max_box_ampere - self.effective_target();
+        (self.offset.offset().0 - setpoint.0).abs() > 0.05
     }
 
     /// Whether the target-staleness full-charge failsafe is engaged (status `failsafe`).

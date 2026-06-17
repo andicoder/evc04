@@ -72,11 +72,17 @@ pub fn parse_target(payload: &[u8]) -> Result<f32, TargetError> {
 #[derive(Debug, Clone, Serialize)]
 pub struct Status {
     pub online: bool,
-    pub target_a: f32,
-    pub reported_a: f32,
+    pub target_ampere: f32,
+    /// Last live measured current consumed (the closed-loop input, #22).
+    pub measured_ampere: f32,
+    /// Current soft-ramped offset, `= MAX_BOX_AMPERE − target` once settled (#24).
+    pub offset_ampere: f32,
+    pub reported_ampere: f32,
     pub last_poll_age_s: f32,
     pub gateway: String,
     pub mqtt: String,
+    /// `true` while the offset is still soft-ramping toward its setpoint (#24).
+    pub ramping: bool,
     pub failsafe: bool,
     /// The measurement-loss failsafe (#25): the live measured input went stale, so the
     /// closed loop is bypassed and we serve full charge. Independent of `failsafe`
@@ -116,11 +122,14 @@ pub fn assemble_status(
     };
     Status {
         online: true,
-        target_a: controller.effective_target().0,
-        reported_a: controller.reported_frame()[0],
+        target_ampere: controller.effective_target().0,
+        measured_ampere: controller.measured().0,
+        offset_ampere: controller.offset().0,
+        reported_ampere: controller.reported_frame()[0],
         last_poll_age_s: last_poll.elapsed().as_secs_f32(),
         gateway: gateway.to_string(),
         mqtt: "connected".to_string(),
+        ramping: controller.ramping(),
         failsafe: controller.failsafe_active(),
         measurement_failsafe: controller.measurement_failsafe_active(),
         measurement_age_s: controller.measurement_age().as_secs_f32(),

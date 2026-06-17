@@ -17,7 +17,7 @@ const MEAS_STALE: Duration = Duration::from_secs(10);
 
 /// A `Controller` over fresh target, measurement, and offset channels, plus the sinks and
 /// offset sender to drive them. The measurement starts at 0 A; tests set the offset
-/// directly so `reported_a` is deterministic (the soft-ramp driver isn't run here).
+/// directly so `reported_ampere` is deterministic (the soft-ramp driver isn't run here).
 fn controller() -> (
     TargetSink,
     MeasurementSink,
@@ -88,11 +88,14 @@ fn non_finite_amps_is_rejected() {
 fn status_serialises_to_the_documented_schema() {
     let status = Status {
         online: true,
-        target_a: 6.5,
-        reported_a: 9.5,
+        target_ampere: 6.5,
+        measured_ampere: 5.2,
+        offset_ampere: 1.3,
+        reported_ampere: 9.5,
         last_poll_age_s: 0.4,
         gateway: "connected".to_string(),
         mqtt: "connected".to_string(),
+        ramping: false,
         failsafe: false,
         measurement_failsafe: false,
         measurement_age_s: 1.2,
@@ -101,11 +104,14 @@ fn status_serialises_to_the_documented_schema() {
     let got: serde_json::Value = serde_json::from_str(&status.to_json()).unwrap();
     let want = serde_json::json!({
         "online": true,
-        "target_a": 6.5,
-        "reported_a": 9.5,
+        "target_ampere": 6.5,
+        "measured_ampere": 5.2,
+        "offset_ampere": 1.3,
+        "reported_ampere": 9.5,
         "last_poll_age_s": 0.4,
         "gateway": "connected",
         "mqtt": "connected",
+        "ramping": false,
         "failsafe": false,
         "measurement_failsafe": false,
         "measurement_age_s": 1.2,
@@ -118,11 +124,14 @@ fn status_serialises_to_the_documented_schema() {
 fn status_last_error_serialises_as_a_string_when_set() {
     let status = Status {
         online: true,
-        target_a: 0.0,
-        reported_a: 16.0,
+        target_ampere: 0.0,
+        measured_ampere: 0.0,
+        offset_ampere: 16.0,
+        reported_ampere: 16.0,
         last_poll_age_s: 1.0,
         gateway: "down".to_string(),
         mqtt: "connected".to_string(),
+        ramping: false,
         failsafe: true,
         measurement_failsafe: false,
         measurement_age_s: 0.5,
@@ -137,7 +146,7 @@ fn status_last_error_serialises_as_a_string_when_set() {
 async fn assembled_status_reflects_the_live_control_state() {
     let (sink, msink, offset, ctrl) = controller();
     sink.apply(Ok(20.0)); // target 20 A on a 32 A ceiling
-    offset.send(Ampere(12.0)).unwrap(); // ramped offset = max − target
+    offset.send(Ampere(12.0)).unwrap(); // ramped offset = max − target → settled
     msink.apply(Ok(3.0)); // fresh measurement → offset 12 + 3 = 15
 
     let status = assemble_status(&ctrl, LinkHealth::Up, Instant::now(), None);
@@ -145,11 +154,28 @@ async fn assembled_status_reflects_the_live_control_state() {
     assert!(status.online);
     assert_eq!(status.mqtt, "connected");
     assert_eq!(status.gateway, "connected");
-    assert_eq!(status.target_a, 20.0);
-    assert_eq!(status.reported_a, 15.0);
+    assert_eq!(status.target_ampere, 20.0);
+    assert_eq!(status.measured_ampere, 3.0);
+    assert_eq!(status.offset_ampere, 12.0);
+    assert_eq!(status.reported_ampere, 15.0);
+    assert!(!status.ramping); // offset == setpoint (max − target)
     assert!(!status.failsafe);
     assert!(!status.measurement_failsafe);
     assert!(status.last_error.is_none());
+}
+
+#[tokio::test]
+async fn assembled_status_flags_ramping_until_the_offset_settles() {
+    let (sink, _msink, offset, ctrl) = controller();
+    sink.apply(Ok(20.0)); // setpoint offset = max − 20 = 12
+
+    // Offset still short of the setpoint → ramping.
+    offset.send(Ampere(5.0)).unwrap();
+    assert!(assemble_status(&ctrl, LinkHealth::Up, Instant::now(), None).ramping);
+
+    // Offset reaches the setpoint → settled.
+    offset.send(Ampere(12.0)).unwrap();
+    assert!(!assemble_status(&ctrl, LinkHealth::Up, Instant::now(), None).ramping);
 }
 
 #[tokio::test]
@@ -172,8 +198,8 @@ async fn assembled_status_reports_poll_age_and_failsafe_when_stale() {
 
     let status = assemble_status(&ctrl, LinkHealth::Up, last_poll, None);
     assert!(status.failsafe);
-    assert_eq!(status.target_a, MAX.0); // full charge
-    assert_eq!(status.reported_a, 0.0);
+    assert_eq!(status.target_ampere, MAX.0); // full charge
+    assert_eq!(status.reported_ampere, 0.0);
     assert!(
         (status.last_poll_age_s - 7.0).abs() < 0.01,
         "got {}",
@@ -194,7 +220,7 @@ async fn assembled_status_reports_the_measurement_failsafe_and_age() {
     let status = assemble_status(&ctrl, LinkHealth::Up, Instant::now(), None);
     assert!(status.measurement_failsafe);
     assert!(!status.failsafe); // target is still fresh; only the measurement is stale
-    assert_eq!(status.reported_a, 0.0); // full charge
+    assert_eq!(status.reported_ampere, 0.0); // full charge
     assert!(
         (status.measurement_age_s - 11.0).abs() < 0.01,
         "got {}",
