@@ -8,9 +8,9 @@
 //! - the control seam + failsafe ([`control::channel`]) bridging the two.
 
 use evc04_charge::config::Config;
-use evc04_charge::control;
 use evc04_charge::mqtt::{assemble_status, run_mqtt};
 use evc04_charge::slave::{run_link, LinkConfig, LinkHealth};
+use evc04_charge::{control, Ampere};
 use std::process::ExitCode;
 use tokio::sync::watch;
 use tokio::time::Instant;
@@ -25,14 +25,14 @@ async fn main() -> ExitCode {
         }
     };
 
-    // Serve the failsafe value until the first MQTT target arrives, so startup and
-    // the grace window are already safe (SPECS.md §9).
-    let (sink, view) = control::channel(
-        cfg.fuse_limit_a,
-        cfg.failsafe_target_a,
-        cfg.failsafe_after,
-        cfg.failsafe_target_a,
-    );
+    // Serve full charge (report 0 A) until the first MQTT target arrives, so startup
+    // and the grace window match the meterless-box default (SPECS.md §9).
+    let (sink, view) = control::channel(cfg.max_box_ampere, cfg.failsafe_after);
+
+    // The second inbound channel that closes the loop (#22): the live measured
+    // current the box's draw rises into. Held at 0 A until the first publish; the
+    // slave starts consuming it with the closed-loop math (#23).
+    let (measured_sink, _measured_view) = control::measurement_channel(Ampere(0.0));
 
     // Cross-subsystem signals the status publisher reads.
     let (gateway_tx, gateway_rx) = watch::channel(LinkHealth::Down);
@@ -42,9 +42,9 @@ async fn main() -> ExitCode {
     // `serve_connection` calls this exactly once per answered poll, so stamping the
     // poll time here records bus liveness without touching the slave's framing code.
     let slave_view = view.clone();
-    let currents = move || {
+    let reported_frame = move || {
         let _ = poll_tx.send(Instant::now());
-        slave_view.currents()
+        slave_view.reported_frame()
     };
     tokio::spawn(run_link(
         cfg.gateway_addr(),
@@ -52,16 +52,24 @@ async fn main() -> ExitCode {
             poll: cfg.poll,
             ..Default::default()
         },
-        currents,
+        reported_frame,
         gateway_tx,
     ));
 
+    let target_error_tx = error_tx.clone();
     let apply = move |target| {
-        let _ = error_tx.send(match &target {
+        let _ = target_error_tx.send(match &target {
             Ok(_) => None,
             Err(e) => Some(format!("{e}")),
         });
         sink.apply(target);
+    };
+    let apply_measured = move |measured| {
+        let _ = error_tx.send(match &measured {
+            Ok(_) => None,
+            Err(e) => Some(format!("{e}")),
+        });
+        measured_sink.apply(measured);
     };
     let status = move || {
         assemble_status(
@@ -73,6 +81,6 @@ async fn main() -> ExitCode {
     };
 
     // Runs until cancelled; the gateway link task runs alongside it.
-    run_mqtt(cfg.mqtt, apply, status).await;
+    run_mqtt(cfg.mqtt, apply, apply_measured, status).await;
     ExitCode::SUCCESS
 }
