@@ -116,19 +116,19 @@ impl RawConfig {
         if self.meas_stale_timeout_s == 0 {
             problems.push("MEAS_STALE_TIMEOUT_S must be greater than 0".to_string());
         }
-        if !(self.ramp_rate_a_per_s.is_finite() && self.ramp_rate_a_per_s > 0.0) {
+        if !(self.ramp_rate_ampere_per_s.is_finite() && self.ramp_rate_ampere_per_s > 0.0) {
             problems.push(format!(
-                "RAMP_RATE_A_PER_S must be a finite value greater than 0, got {}",
-                self.ramp_rate_a_per_s
+                "RAMP_RATE_AMPERE_PER_S must be a finite value greater than 0, got {}",
+                self.ramp_rate_ampere_per_s
             ));
         }
-        if !(self.min_charge_a.is_finite()
-            && self.min_charge_a > 0.0
-            && self.min_charge_a <= self.max_box_ampere)
+        if !(self.min_charge_ampere.is_finite()
+            && self.min_charge_ampere > 0.0
+            && self.min_charge_ampere <= self.max_box_ampere)
         {
             problems.push(format!(
-                "MIN_CHARGE_A must be in (0, MAX_BOX_AMPERE={}] A, got {}",
-                self.max_box_ampere, self.min_charge_a
+                "MIN_CHARGE_AMPERE must be in (0, MAX_BOX_AMPERE={}] A, got {}",
+                self.max_box_ampere, self.min_charge_ampere
             ));
         }
 
@@ -155,9 +155,9 @@ impl RawConfig {
                 qty: self.poll_qty,
             },
             failsafe_after: Duration::from_secs(self.failsafe_after_s),
-            min_charge: Ampere(self.min_charge_a),
+            min_charge: Ampere(self.min_charge_ampere),
             meas_stale_timeout: Duration::from_secs(self.meas_stale_timeout_s),
-            ramp_rate: self.ramp_rate_a_per_s,
+            ramp_rate: self.ramp_rate_ampere_per_s,
         })
     }
 }
@@ -184,12 +184,12 @@ struct RawConfig {
     poll_qty: u16,
     #[serde(default = "default_failsafe_after_s")]
     failsafe_after_s: u64,
-    #[serde(default = "default_min_charge_a")]
-    min_charge_a: f32,
+    #[serde(default = "default_min_charge_ampere")]
+    min_charge_ampere: f32,
     #[serde(default = "default_meas_stale_timeout_s")]
     meas_stale_timeout_s: u64,
-    #[serde(default = "default_ramp_rate_a_per_s")]
-    ramp_rate_a_per_s: f32,
+    #[serde(default = "default_ramp_rate_ampere_per_s")]
+    ramp_rate_ampere_per_s: f32,
 }
 
 fn default_slave_addr() -> u8 {
@@ -214,7 +214,7 @@ fn default_topic_measured() -> String {
 
 /// 3-phase charging floor (~6 A ≈ 4.1 kW); below it the box can't hold a stable
 /// current (SPECS.md §6), so it's the default minimum the closed loop attempts.
-fn default_min_charge_a() -> f32 {
+fn default_min_charge_ampere() -> f32 {
     6.0
 }
 
@@ -226,7 +226,7 @@ fn default_meas_stale_timeout_s() -> u64 {
 
 /// Gentle default offset slope (A/s): on bench testing ~0.5 A/s extended the stable
 /// range down to ~9 A without the box over-throttling on a step change (SPECS.md §6).
-fn default_ramp_rate_a_per_s() -> f32 {
+fn default_ramp_rate_ampere_per_s() -> f32 {
     0.5
 }
 

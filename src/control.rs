@@ -179,7 +179,7 @@ pub fn offset_channel(initial: Ampere) -> (watch::Sender<Ampere>, OffsetView) {
 }
 
 /// Drive the soft-ramp (#24): every `tick`, move the offset toward its setpoint
-/// (`max − effective_target`) by at most `rate_a_per_s × dt` and publish it for the slave
+/// (`max − effective_target`) by at most `rate_ampere_per_s × dt` and publish it for the slave
 /// to read. A step change of the target then reaches the box gradually instead of shocking
 /// its closed loop below the car's floor. Runs until every reader is dropped.
 ///
@@ -187,7 +187,7 @@ pub fn offset_channel(initial: Ampere) -> (watch::Sender<Ampere>, OffsetView) {
 /// is unit-tested in [`ramp_step`], not here.
 pub async fn run_ramp(
     target: ControlView,
-    rate_a_per_s: f32,
+    rate_ampere_per_s: f32,
     tick: Duration,
     tx: watch::Sender<Ampere>,
 ) {
@@ -200,7 +200,7 @@ pub async fn run_ramp(
         last = now;
 
         let setpoint = target.max_box_ampere - target.effective_target();
-        let max_step = Ampere(rate_a_per_s * dt.as_secs_f32());
+        let max_step = Ampere(rate_ampere_per_s * dt.as_secs_f32());
         let next = ramp_step(*tx.borrow(), setpoint, max_step);
         if tx.send(next).is_err() {
             return; // all readers gone; nothing left to drive
