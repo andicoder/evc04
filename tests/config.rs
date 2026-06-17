@@ -102,6 +102,37 @@ fn parses_measured_topic() {
 }
 
 #[test]
+fn min_charge_defaults_when_unset() {
+    let cfg = Config::from_vars(valid_vars()).unwrap();
+    assert_eq!(cfg.min_charge, Ampere(6.0));
+}
+
+#[test]
+fn parses_min_charge_a() {
+    let cfg = Config::from_vars(with(valid_vars(), "MIN_CHARGE_A", "8")).unwrap();
+    assert_eq!(cfg.min_charge, Ampere(8.0));
+}
+
+#[test]
+fn min_charge_above_the_ceiling_is_rejected() {
+    // MAX_BOX_AMPERE is 16 in valid_vars(); a floor above the ceiling is nonsense.
+    let err = Config::from_vars(with(valid_vars(), "MIN_CHARGE_A", "20")).unwrap_err();
+    assert!(
+        format!("{err}").to_uppercase().contains("MIN_CHARGE_A"),
+        "error should name MIN_CHARGE_A, got: {err}"
+    );
+}
+
+#[test]
+fn zero_min_charge_is_rejected() {
+    let err = Config::from_vars(with(valid_vars(), "MIN_CHARGE_A", "0")).unwrap_err();
+    assert!(
+        format!("{err}").to_uppercase().contains("MIN_CHARGE_A"),
+        "error should name MIN_CHARGE_A, got: {err}"
+    );
+}
+
+#[test]
 fn parses_a_full_valid_config() {
     let vars = with(
         with(

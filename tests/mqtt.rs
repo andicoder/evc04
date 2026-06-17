@@ -2,6 +2,7 @@
 //! target-payload parser and the outbound status schema. The live rumqttc task
 //! is an I/O boundary and is exercised against a broker, not here.
 
+use evc04_charge::control::{Controller, TargetSink};
 use evc04_charge::mqtt::{assemble_status, parse_target, Status, OFFLINE_PAYLOAD};
 use evc04_charge::slave::LinkHealth;
 use evc04_charge::{control, Ampere};
@@ -9,7 +10,19 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 const MAX: Ampere = Ampere(32.0);
+const MIN: Ampere = Ampere(6.0);
 const STALE_AFTER: Duration = Duration::from_secs(5);
+
+/// A `Controller` over fresh target + measurement channels (measurement held at 0 A, so
+/// `reported_a` reflects the bare offset), plus the target sink to drive commands.
+fn controller() -> (TargetSink, Controller) {
+    let (target_sink, target_view) = control::channel(MAX, STALE_AFTER);
+    let (_measured_sink, measured_view) = control::measurement_channel(Ampere(0.0));
+    (
+        target_sink,
+        Controller::new(target_view, measured_view, MIN),
+    )
+}
 
 #[test]
 fn parses_valid_target_amps() {
@@ -105,10 +118,10 @@ fn status_last_error_serialises_as_a_string_when_set() {
 
 #[tokio::test]
 async fn assembled_status_reflects_the_live_control_state() {
-    let (sink, view) = control::channel(MAX, STALE_AFTER);
-    sink.apply(Ok(20.0)); // target 20 A on a 32 A ceiling → report 12 A
+    let (sink, ctrl) = controller();
+    sink.apply(Ok(20.0)); // target 20 A on a 32 A ceiling, measured 0 → report 12 A
 
-    let status = assemble_status(&view, LinkHealth::Up, Instant::now(), None);
+    let status = assemble_status(&ctrl, LinkHealth::Up, Instant::now(), None);
 
     assert!(status.online);
     assert_eq!(status.mqtt, "connected");
@@ -121,8 +134,8 @@ async fn assembled_status_reflects_the_live_control_state() {
 
 #[tokio::test]
 async fn assembled_status_maps_each_gateway_health() {
-    let (_sink, view) = control::channel(MAX, STALE_AFTER);
-    let label = |h| assemble_status(&view, h, Instant::now(), None).gateway;
+    let (_sink, ctrl) = controller();
+    let label = |h| assemble_status(&ctrl, h, Instant::now(), None).gateway;
     assert_eq!(label(LinkHealth::Up), "connected");
     assert_eq!(label(LinkHealth::Stalled), "reconnecting");
     assert_eq!(label(LinkHealth::Down), "down");
@@ -131,13 +144,13 @@ async fn assembled_status_maps_each_gateway_health() {
 #[tokio::test(start_paused = true)]
 async fn assembled_status_reports_poll_age_and_failsafe_when_stale() {
     // Once the target goes stale the status must show the failsafe and full charge.
-    let (sink, view) = control::channel(MAX, STALE_AFTER);
+    let (sink, ctrl) = controller();
     sink.apply(Ok(20.0));
     let last_poll = Instant::now();
 
     tokio::time::advance(STALE_AFTER + Duration::from_secs(2)).await;
 
-    let status = assemble_status(&view, LinkHealth::Up, last_poll, None);
+    let status = assemble_status(&ctrl, LinkHealth::Up, last_poll, None);
     assert!(status.failsafe);
     assert_eq!(status.target_a, MAX.0); // full charge
     assert_eq!(status.reported_a, 0.0);
@@ -150,9 +163,9 @@ async fn assembled_status_reports_poll_age_and_failsafe_when_stale() {
 
 #[tokio::test]
 async fn assembled_status_surfaces_the_last_error() {
-    let (_sink, view) = control::channel(MAX, STALE_AFTER);
+    let (_sink, ctrl) = controller();
     let status = assemble_status(
-        &view,
+        &ctrl,
         LinkHealth::Up,
         Instant::now(),
         Some("malformed target payload".to_string()),

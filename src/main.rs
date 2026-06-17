@@ -30,9 +30,11 @@ async fn main() -> ExitCode {
     let (sink, view) = control::channel(cfg.max_box_ampere, cfg.failsafe_after);
 
     // The second inbound channel that closes the loop (#22): the live measured
-    // current the box's draw rises into. Held at 0 A until the first publish; the
-    // slave starts consuming it with the closed-loop math (#23).
-    let (measured_sink, _measured_view) = control::measurement_channel(Ampere(0.0));
+    // current the box's draw rises into. Held at 0 A until the first publish.
+    let (measured_sink, measured_view) = control::measurement_channel(Ampere(0.0));
+
+    // Join target + measurement into the closed-loop answer the slave serves (#23).
+    let controller = control::Controller::new(view, measured_view, cfg.min_charge);
 
     // Cross-subsystem signals the status publisher reads.
     let (gateway_tx, gateway_rx) = watch::channel(LinkHealth::Down);
@@ -41,10 +43,10 @@ async fn main() -> ExitCode {
 
     // `serve_connection` calls this exactly once per answered poll, so stamping the
     // poll time here records bus liveness without touching the slave's framing code.
-    let slave_view = view.clone();
+    let slave_controller = controller.clone();
     let reported_frame = move || {
         let _ = poll_tx.send(Instant::now());
-        slave_view.reported_frame()
+        slave_controller.reported_frame()
     };
     tokio::spawn(run_link(
         cfg.gateway_addr(),
@@ -73,7 +75,7 @@ async fn main() -> ExitCode {
     };
     let status = move || {
         assemble_status(
-            &view,
+            &controller,
             *gateway_rx.borrow(),
             *poll_rx.borrow(),
             error_rx.borrow().clone(),
