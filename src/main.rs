@@ -30,8 +30,10 @@ async fn main() -> ExitCode {
     let (sink, view) = control::channel(cfg.max_box_ampere, cfg.failsafe_after);
 
     // The second inbound channel that closes the loop (#22): the live measured
-    // current the box's draw rises into. Held at 0 A until the first publish.
-    let (measured_sink, measured_view) = control::measurement_channel(Ampere(0.0));
+    // current the box's draw rises into. Held at 0 A until the first publish; once it
+    // goes stale the controller reverts to full charge (#25).
+    let (measured_sink, measured_view) =
+        control::measurement_channel(Ampere(0.0), cfg.meas_stale_timeout);
 
     // Join target + measurement into the closed-loop answer the slave serves (#23).
     let controller = control::Controller::new(view, measured_view, cfg.min_charge);

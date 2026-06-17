@@ -90,6 +90,29 @@ fn zero_failsafe_after_is_rejected() {
 }
 
 #[test]
+fn meas_stale_timeout_defaults_when_unset() {
+    let cfg = Config::from_vars(valid_vars()).unwrap();
+    assert_eq!(cfg.meas_stale_timeout, std::time::Duration::from_secs(15));
+}
+
+#[test]
+fn parses_meas_stale_timeout_seconds() {
+    let cfg = Config::from_vars(with(valid_vars(), "MEAS_STALE_TIMEOUT_S", "8")).unwrap();
+    assert_eq!(cfg.meas_stale_timeout, std::time::Duration::from_secs(8));
+}
+
+#[test]
+fn zero_meas_stale_timeout_is_rejected() {
+    let err = Config::from_vars(with(valid_vars(), "MEAS_STALE_TIMEOUT_S", "0")).unwrap_err();
+    assert!(
+        format!("{err}")
+            .to_uppercase()
+            .contains("MEAS_STALE_TIMEOUT"),
+        "error should name MEAS_STALE_TIMEOUT_S, got: {err}"
+    );
+}
+
+#[test]
 fn measured_topic_defaults_when_unset() {
     let cfg = Config::from_vars(valid_vars()).unwrap();
     assert_eq!(cfg.mqtt.topic_measured, "evc04/measured");

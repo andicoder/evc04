@@ -323,7 +323,7 @@ the image). At minimum:
 | `MIN_CHARGE_AMPERE` | below this target → hard pause; don't modulate the 3φ floor (default 6) |
 | `RAMP_RATE_AMPERE_PER_S` | soft-ramp slope for the offset, A per second (default ~0.5) |
 | `FAILSAFE_AFTER_S` | seconds the last target stays valid before the **full-charge** failsafe engages (default 60; must exceed the controller's republish interval) |
-| `MEAS_STALE_TIMEOUT_S` | seconds the last measured value stays valid before the measurement failsafe falls back to **full charge** (see §9) |
+| `MEAS_STALE_TIMEOUT_S` | seconds the last measured value stays valid before the measurement failsafe falls back to **full charge** (default 15; see §9) |
 
 **Origin:** a hand-rolled pymodbus RTU slave first proved the `0x500C × 6` poll
 could be answered cleanly over the Waveshare in transparent mode (no resync

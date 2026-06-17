@@ -109,11 +109,12 @@ impl MeasurementSink {
 }
 
 /// Read half (cloneable, lock-free reads) of the live measured current that closes
-/// the loop. The closed loop (#23) reads [`Self::measured`]; the failsafe (#25) reads
-/// [`Self::age`].
+/// the loop. The closed loop (#23) reads [`Self::measured`]; the measurement-loss
+/// failsafe (#25) reads [`Self::failsafe_active`]/[`Self::age`].
 #[derive(Clone)]
 pub struct MeasurementView {
     rx: watch::Receiver<Measurement>,
+    failsafe_after: Duration,
 }
 
 impl MeasurementView {
@@ -123,21 +124,35 @@ impl MeasurementView {
         self.rx.borrow().amps
     }
 
-    /// Time since the last accepted measurement — the input to the staleness
-    /// failsafe (#25) and the status topic's `measurement_age_s`.
+    /// Time since the last accepted measurement — the status topic's `measurement_age_s`.
     pub fn age(&self) -> Duration {
         self.rx.borrow().at.elapsed()
+    }
+
+    /// True once the measured input is older than `failsafe_after`: the closed loop can
+    /// no longer be trusted (serving `offset + stale_measured` would hold the box at the
+    /// wrong current), so the [`Controller`] reverts to full charge (#25).
+    pub fn failsafe_active(&self) -> bool {
+        self.age() > self.failsafe_after
     }
 }
 
 /// Wire the MQTT measured-current stream to a lock-free view the closed loop reads on
-/// the poll path (#22). `initial` is held until the first measurement arrives.
-pub fn measurement_channel(initial: Ampere) -> (MeasurementSink, MeasurementView) {
+/// the poll path (#22). `initial` is held until the first measurement arrives;
+/// `failsafe_after` is the staleness window past which the measurement-loss failsafe
+/// engages (#25).
+pub fn measurement_channel(
+    initial: Ampere,
+    failsafe_after: Duration,
+) -> (MeasurementSink, MeasurementView) {
     let (tx, rx) = watch::channel(Measurement {
         amps: initial,
         at: Instant::now(),
     });
-    (MeasurementSink { tx }, MeasurementView { rx })
+    (
+        MeasurementSink { tx },
+        MeasurementView { rx, failsafe_after },
+    )
 }
 
 /// Joins the two inbound streams into the single per-poll answer the slave serves: the
@@ -162,12 +177,13 @@ impl Controller {
     /// Per-phase household current to report, as the raw `f32` triple the Modbus frame
     /// carries (the wire boundary).
     ///
-    /// A stale/absent target hard-faults into the **static** full-charge failsafe (report
-    /// 0 A, the meterless-box default — SPECS §9), *not* the closed loop: serving
-    /// `offset + measured` while the command is stale would throttle, the wrong failsafe
-    /// direction. While the target is fresh we close the loop on the live measurement.
+    /// Either staleness failsafe falls back to the **static** full charge (report 0 A, the
+    /// meterless-box default — SPECS §9), never a pause: a stale *target* (#7) or a stale
+    /// *measurement* (#25) both make the closed loop untrustworthy, and serving
+    /// `offset + measured` then would throttle — the wrong failsafe direction. Only with a
+    /// fresh target *and* a fresh measurement do we close the loop.
     pub fn reported_frame(&self) -> [f32; 3] {
-        if self.target.failsafe_active() {
+        if self.target.failsafe_active() || self.measured.failsafe_active() {
             return [0.0; 3];
         }
         let reported = reported_household(
@@ -187,6 +203,17 @@ impl Controller {
     /// Whether the target-staleness full-charge failsafe is engaged (status `failsafe`).
     pub fn failsafe_active(&self) -> bool {
         self.target.failsafe_active()
+    }
+
+    /// Whether the measurement-loss full-charge failsafe is engaged (status
+    /// `measurement_failsafe`, #25).
+    pub fn measurement_failsafe_active(&self) -> bool {
+        self.measured.failsafe_active()
+    }
+
+    /// Age of the live measured input for the status topic's `measurement_age_s` (#25).
+    pub fn measurement_age(&self) -> Duration {
+        self.measured.age()
     }
 }
 

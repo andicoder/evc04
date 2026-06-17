@@ -78,6 +78,13 @@ pub struct Status {
     pub gateway: String,
     pub mqtt: String,
     pub failsafe: bool,
+    /// The measurement-loss failsafe (#25): the live measured input went stale, so the
+    /// closed loop is bypassed and we serve full charge. Independent of `failsafe`
+    /// (the target-staleness failsafe); either can be active on its own.
+    pub measurement_failsafe: bool,
+    /// Age of the live measured input in seconds; a growing value signals the
+    /// publisher/broker went quiet before the failsafe latches.
+    pub measurement_age_s: f32,
     pub last_error: Option<String>,
 }
 
@@ -115,6 +122,8 @@ pub fn assemble_status(
         gateway: gateway.to_string(),
         mqtt: "connected".to_string(),
         failsafe: controller.failsafe_active(),
+        measurement_failsafe: controller.measurement_failsafe_active(),
+        measurement_age_s: controller.measurement_age().as_secs_f32(),
         last_error,
     }
 }
