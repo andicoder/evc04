@@ -172,29 +172,12 @@ fn default_failsafe_after_s() -> u64 {
 }
 
 /// Why a configuration could not be loaded.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     /// A required var was missing or a value failed to parse to its type.
-    Env(envy::Error),
+    #[error("{0}")]
+    Env(#[from] envy::Error),
     /// Values parsed but fell outside their allowed range.
+    #[error("invalid configuration: {}", .0.join("; "))]
     Invalid(Vec<String>),
-}
-
-impl std::fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ConfigError::Env(e) => write!(f, "{e}"),
-            ConfigError::Invalid(problems) => {
-                write!(f, "invalid configuration: {}", problems.join("; "))
-            }
-        }
-    }
-}
-
-impl std::error::Error for ConfigError {}
-
-impl From<envy::Error> for ConfigError {
-    fn from(e: envy::Error) -> Self {
-        ConfigError::Env(e)
-    }
 }

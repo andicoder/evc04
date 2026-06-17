@@ -33,27 +33,15 @@ pub const OFFLINE_PAYLOAD: &[u8] = br#"{"online":false}"#;
 
 /// Why an inbound target payload was rejected. The message feeds `status.last_error`
 /// so a controller bug is visible rather than silently changing the charge current.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum TargetError {
     /// Body was not valid JSON, or `amps` was missing or not a number.
+    #[error("malformed target payload (expected {{\"amps\": number}})")]
     Malformed,
     /// `amps` parsed but is not finite (e.g. an overflowing exponent).
+    #[error("target amps is not finite")]
     NonFinite,
 }
-
-impl std::fmt::Display for TargetError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TargetError::Malformed => write!(
-                f,
-                "malformed target payload (expected {{\"amps\": number}})"
-            ),
-            TargetError::NonFinite => write!(f, "target amps is not finite"),
-        }
-    }
-}
-
-impl std::error::Error for TargetError {}
 
 /// Inbound command shape. Additive fields are ignored so newer publishers stay
 /// compatible with older service versions (docs/mqtt.md).
