@@ -113,6 +113,27 @@ fn zero_meas_stale_timeout_is_rejected() {
 }
 
 #[test]
+fn ramp_rate_defaults_when_unset() {
+    let cfg = Config::from_vars(valid_vars()).unwrap();
+    assert_eq!(cfg.ramp_rate, 0.5);
+}
+
+#[test]
+fn parses_ramp_rate() {
+    let cfg = Config::from_vars(with(valid_vars(), "RAMP_RATE_A_PER_S", "1.25")).unwrap();
+    assert_eq!(cfg.ramp_rate, 1.25);
+}
+
+#[test]
+fn zero_ramp_rate_is_rejected() {
+    let err = Config::from_vars(with(valid_vars(), "RAMP_RATE_A_PER_S", "0")).unwrap_err();
+    assert!(
+        format!("{err}").to_uppercase().contains("RAMP_RATE"),
+        "error should name RAMP_RATE_A_PER_S, got: {err}"
+    );
+}
+
+#[test]
 fn measured_topic_defaults_when_unset() {
     let cfg = Config::from_vars(valid_vars()).unwrap();
     assert_eq!(cfg.mqtt.topic_measured, "evc04/measured");

@@ -12,8 +12,12 @@ use evc04_charge::mqtt::{assemble_status, run_mqtt};
 use evc04_charge::slave::{run_link, LinkConfig, LinkHealth};
 use evc04_charge::{control, Ampere};
 use std::process::ExitCode;
+use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time::Instant;
+
+/// Soft-ramp tick (#24): advance the offset ~1 Hz, matching the box's poll cadence.
+const RAMP_TICK: Duration = Duration::from_secs(1);
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -35,8 +39,19 @@ async fn main() -> ExitCode {
     let (measured_sink, measured_view) =
         control::measurement_channel(Ampere(0.0), cfg.meas_stale_timeout);
 
-    // Join target + measurement into the closed-loop answer the slave serves (#23).
-    let controller = control::Controller::new(view, measured_view, cfg.min_charge);
+    // Soft-ramp the offset toward `max − target` so a step change of the setpoint reaches
+    // the box gradually instead of shocking its loop below the car's floor (#24). The
+    // driver reads the live target and writes the offset the slave serves.
+    let (offset_tx, offset_view) = control::offset_channel(Ampere(0.0));
+    tokio::spawn(control::run_ramp(
+        view.clone(),
+        cfg.ramp_rate,
+        RAMP_TICK,
+        offset_tx,
+    ));
+
+    // Join target + measurement + ramped offset into the answer the slave serves (#23/#24).
+    let controller = control::Controller::new(view, measured_view, offset_view, cfg.min_charge);
 
     // Cross-subsystem signals the status publisher reads.
     let (gateway_tx, gateway_rx) = watch::channel(LinkHealth::Down);

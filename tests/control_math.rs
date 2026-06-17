@@ -4,10 +4,11 @@
 //! reported "household" current rises with the car's real draw and the box modulates
 //! toward `target`. Below `min_charge` the 3-phase floor can't hold, so we pause.
 
-use evc04_charge::{reported_household, Ampere};
+use evc04_charge::{ramp_step, reported_household, Ampere};
 
 const MAX: Ampere = Ampere(32.0);
 const MIN: Ampere = Ampere(6.0);
+const STEP: Ampere = Ampere(0.5);
 
 #[test]
 fn offset_zero_reports_just_the_measured_current() {
@@ -68,4 +69,29 @@ fn clamps_target_above_the_ceiling_to_offset_zero() {
         reported_household(MAX, Ampere(100.0), Ampere(7.0), MIN),
         Ampere(7.0)
     );
+}
+
+// --- Soft-ramp rate limiter (#24): move the offset toward its setpoint by a bounded step. ---
+
+#[test]
+fn ramp_steps_up_by_at_most_the_max_step() {
+    // Far below the setpoint → advance by exactly one step, not the whole gap.
+    assert_eq!(ramp_step(Ampere(0.0), Ampere(10.0), STEP), Ampere(0.5));
+}
+
+#[test]
+fn ramp_steps_down_by_at_most_the_max_step() {
+    assert_eq!(ramp_step(Ampere(10.0), Ampere(0.0), STEP), Ampere(9.5));
+}
+
+#[test]
+fn ramp_snaps_to_setpoint_within_one_step() {
+    // Closer than a step → land exactly on the setpoint, never overshoot.
+    assert_eq!(ramp_step(Ampere(9.8), Ampere(10.0), STEP), Ampere(10.0));
+    assert_eq!(ramp_step(Ampere(0.2), Ampere(0.0), STEP), Ampere(0.0));
+}
+
+#[test]
+fn ramp_holds_when_already_at_the_setpoint() {
+    assert_eq!(ramp_step(Ampere(5.0), Ampere(5.0), STEP), Ampere(5.0));
 }

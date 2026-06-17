@@ -51,7 +51,27 @@ pub fn reported_household(
         return max;
     }
     let offset = max - target.clamp(Ampere(0.0), max);
+    reported_from_offset(max, offset, measured)
+}
+
+/// Report for an already-resolved `offset` (steady-state `max − target`, or the
+/// soft-ramped value the live loop serves — #24): `clamp(offset + measured, 0, max)`.
+pub(crate) fn reported_from_offset(max: Ampere, offset: Ampere, measured: Ampere) -> Ampere {
     Ampere(offset.0 + measured.0).clamp(Ampere(0.0), max)
+}
+
+/// Move `offset` toward `setpoint` by at most `max_step`, without overshooting (#24).
+///
+/// The EVC04's closed loop over-throttles below the car's floor when the offset jumps in
+/// one step (measured on hardware); rate-limiting it keeps the loop stable. `max_step` is
+/// the per-tick budget the ramp driver derives from `RAMP_RATE_A_PER_S × dt`.
+pub fn ramp_step(offset: Ampere, setpoint: Ampere, max_step: Ampere) -> Ampere {
+    let delta = setpoint.0 - offset.0;
+    if delta.abs() <= max_step.0 {
+        setpoint
+    } else {
+        Ampere(offset.0 + max_step.0 * delta.signum())
+    }
 }
 
 pub mod config;

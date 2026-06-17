@@ -12,7 +12,7 @@
 //! than going quiet. Staleness is derived on read against the last command's timestamp.
 
 use crate::mqtt::TargetError;
-use crate::{reported_household, Ampere};
+use crate::{ramp_step, reported_from_offset, Ampere};
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time::Instant;
@@ -155,21 +155,82 @@ pub fn measurement_channel(
     )
 }
 
-/// Joins the two inbound streams into the single per-poll answer the slave serves: the
-/// failsafe-aware [`ControlView`] target and the live [`MeasurementView`] current, run
-/// through the closed-loop [`reported_household`] math (#23). Cloneable, lock-free reads.
+/// Read half (cloneable, lock-free reads) of the soft-ramped offset the loop serves
+/// (#24). The driver ([`run_ramp`]) writes it; the [`Controller`] reads it on the poll
+/// path.
+#[derive(Clone)]
+pub struct OffsetView {
+    rx: watch::Receiver<Ampere>,
+}
+
+impl OffsetView {
+    /// Latest ramped offset (it converges to `max − target` once the setpoint settles).
+    pub fn offset(&self) -> Ampere {
+        *self.rx.borrow()
+    }
+}
+
+/// Wire the soft-ramp driver to a lock-free view the closed loop reads on the poll path
+/// (#24). `initial` is the offset before the ramp moves it — 0 (full charge) at startup,
+/// so the box charges at the meterless default until the first target ramps it down.
+pub fn offset_channel(initial: Ampere) -> (watch::Sender<Ampere>, OffsetView) {
+    let (tx, rx) = watch::channel(initial);
+    (tx, OffsetView { rx })
+}
+
+/// Drive the soft-ramp (#24): every `tick`, move the offset toward its setpoint
+/// (`max − effective_target`) by at most `rate_a_per_s × dt` and publish it for the slave
+/// to read. A step change of the target then reaches the box gradually instead of shocking
+/// its closed loop below the car's floor. Runs until every reader is dropped.
+///
+/// This is the I/O boundary (like [`run_link`]/[`run_mqtt`]); the bounded-step arithmetic
+/// is unit-tested in [`ramp_step`], not here.
+pub async fn run_ramp(
+    target: ControlView,
+    rate_a_per_s: f32,
+    tick: Duration,
+    tx: watch::Sender<Ampere>,
+) {
+    let mut interval = tokio::time::interval(tick);
+    let mut last = Instant::now();
+    loop {
+        interval.tick().await;
+        let now = Instant::now();
+        let dt = now.duration_since(last);
+        last = now;
+
+        let setpoint = target.max_box_ampere - target.effective_target();
+        let max_step = Ampere(rate_a_per_s * dt.as_secs_f32());
+        let next = ramp_step(*tx.borrow(), setpoint, max_step);
+        if tx.send(next).is_err() {
+            return; // all readers gone; nothing left to drive
+        }
+    }
+}
+
+/// Joins the inbound streams into the single per-poll answer the slave serves: the
+/// failsafe-aware [`ControlView`] target (for the min-charge cutoff), the soft-ramped
+/// [`OffsetView`], and the live [`MeasurementView`] current — `clamp(offset + measured)`
+/// (#23/#24). Cloneable, lock-free reads.
 #[derive(Clone)]
 pub struct Controller {
     target: ControlView,
     measured: MeasurementView,
+    offset: OffsetView,
     min_charge: Ampere,
 }
 
 impl Controller {
-    pub fn new(target: ControlView, measured: MeasurementView, min_charge: Ampere) -> Controller {
+    pub fn new(
+        target: ControlView,
+        measured: MeasurementView,
+        offset: OffsetView,
+        min_charge: Ampere,
+    ) -> Controller {
         Controller {
             target,
             measured,
+            offset,
             min_charge,
         }
     }
@@ -180,17 +241,20 @@ impl Controller {
     /// Either staleness failsafe falls back to the **static** full charge (report 0 A, the
     /// meterless-box default — SPECS §9), never a pause: a stale *target* (#7) or a stale
     /// *measurement* (#25) both make the closed loop untrustworthy, and serving
-    /// `offset + measured` then would throttle — the wrong failsafe direction. Only with a
-    /// fresh target *and* a fresh measurement do we close the loop.
+    /// `offset + measured` then would throttle — the wrong failsafe direction. Below the
+    /// min-charge floor we hard-pause (#23). Otherwise we close the loop on the live
+    /// measurement and the **soft-ramped** offset (#24).
     pub fn reported_frame(&self) -> [f32; 3] {
         if self.target.failsafe_active() || self.measured.failsafe_active() {
             return [0.0; 3];
         }
-        let reported = reported_household(
+        if self.target.effective_target().0 < self.min_charge.0 {
+            return [self.target.max_box_ampere.0; 3];
+        }
+        let reported = reported_from_offset(
             self.target.max_box_ampere,
-            self.target.effective_target(),
+            self.offset.offset(),
             self.measured.measured(),
-            self.min_charge,
         );
         [reported.0; 3]
     }

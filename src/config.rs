@@ -40,6 +40,10 @@ pub struct Config {
     /// (the meterless-box default). Tighter than `failsafe_after`: the measurement
     /// republishes faster (~3–6 s) than the target.
     pub meas_stale_timeout: Duration,
+    /// Soft-ramp slope for the offset, in amps per second (SPECS.md §6, issue #24). A
+    /// step change of the setpoint shocks the box into over-throttling below the car's
+    /// floor; rate-limiting the offset keeps the closed loop stable.
+    pub ramp_rate: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +116,12 @@ impl RawConfig {
         if self.meas_stale_timeout_s == 0 {
             problems.push("MEAS_STALE_TIMEOUT_S must be greater than 0".to_string());
         }
+        if !(self.ramp_rate_a_per_s.is_finite() && self.ramp_rate_a_per_s > 0.0) {
+            problems.push(format!(
+                "RAMP_RATE_A_PER_S must be a finite value greater than 0, got {}",
+                self.ramp_rate_a_per_s
+            ));
+        }
         if !(self.min_charge_a.is_finite()
             && self.min_charge_a > 0.0
             && self.min_charge_a <= self.max_box_ampere)
@@ -147,6 +157,7 @@ impl RawConfig {
             failsafe_after: Duration::from_secs(self.failsafe_after_s),
             min_charge: Ampere(self.min_charge_a),
             meas_stale_timeout: Duration::from_secs(self.meas_stale_timeout_s),
+            ramp_rate: self.ramp_rate_a_per_s,
         })
     }
 }
@@ -177,6 +188,8 @@ struct RawConfig {
     min_charge_a: f32,
     #[serde(default = "default_meas_stale_timeout_s")]
     meas_stale_timeout_s: u64,
+    #[serde(default = "default_ramp_rate_a_per_s")]
+    ramp_rate_a_per_s: f32,
 }
 
 fn default_slave_addr() -> u8 {
@@ -209,6 +222,12 @@ fn default_min_charge_a() -> f32 {
 /// stop trusting the closed loop and revert to full charge (#25).
 fn default_meas_stale_timeout_s() -> u64 {
     15
+}
+
+/// Gentle default offset slope (A/s): on bench testing ~0.5 A/s extended the stable
+/// range down to ~9 A without the box over-throttling on a step change (SPECS.md §6).
+fn default_ramp_rate_a_per_s() -> f32 {
+    0.5
 }
 
 /// Why a configuration could not be loaded.

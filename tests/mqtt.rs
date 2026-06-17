@@ -7,6 +7,7 @@ use evc04_charge::mqtt::{assemble_status, parse_target, Status, OFFLINE_PAYLOAD}
 use evc04_charge::slave::LinkHealth;
 use evc04_charge::{control, Ampere};
 use std::time::Duration;
+use tokio::sync::watch;
 use tokio::time::Instant;
 
 const MAX: Ampere = Ampere(32.0);
@@ -14,15 +15,23 @@ const MIN: Ampere = Ampere(6.0);
 const STALE_AFTER: Duration = Duration::from_secs(5);
 const MEAS_STALE: Duration = Duration::from_secs(10);
 
-/// A `Controller` over fresh target + measurement channels (measurement held at 0 A, so
-/// `reported_a` reflects the bare offset), plus both sinks to drive commands/measurements.
-fn controller() -> (TargetSink, MeasurementSink, Controller) {
+/// A `Controller` over fresh target, measurement, and offset channels, plus the sinks and
+/// offset sender to drive them. The measurement starts at 0 A; tests set the offset
+/// directly so `reported_a` is deterministic (the soft-ramp driver isn't run here).
+fn controller() -> (
+    TargetSink,
+    MeasurementSink,
+    watch::Sender<Ampere>,
+    Controller,
+) {
     let (target_sink, target_view) = control::channel(MAX, STALE_AFTER);
     let (measured_sink, measured_view) = control::measurement_channel(Ampere(0.0), MEAS_STALE);
+    let (offset_tx, offset_view) = control::offset_channel(Ampere(0.0));
     (
         target_sink,
         measured_sink,
-        Controller::new(target_view, measured_view, MIN),
+        offset_tx,
+        Controller::new(target_view, measured_view, offset_view, MIN),
     )
 }
 
@@ -126,8 +135,9 @@ fn status_last_error_serialises_as_a_string_when_set() {
 
 #[tokio::test]
 async fn assembled_status_reflects_the_live_control_state() {
-    let (sink, msink, ctrl) = controller();
+    let (sink, msink, offset, ctrl) = controller();
     sink.apply(Ok(20.0)); // target 20 A on a 32 A ceiling
+    offset.send(Ampere(12.0)).unwrap(); // ramped offset = max − target
     msink.apply(Ok(3.0)); // fresh measurement → offset 12 + 3 = 15
 
     let status = assemble_status(&ctrl, LinkHealth::Up, Instant::now(), None);
@@ -144,7 +154,7 @@ async fn assembled_status_reflects_the_live_control_state() {
 
 #[tokio::test]
 async fn assembled_status_maps_each_gateway_health() {
-    let (_sink, _msink, ctrl) = controller();
+    let (_sink, _msink, _offset, ctrl) = controller();
     let label = |h| assemble_status(&ctrl, h, Instant::now(), None).gateway;
     assert_eq!(label(LinkHealth::Up), "connected");
     assert_eq!(label(LinkHealth::Stalled), "reconnecting");
@@ -154,7 +164,7 @@ async fn assembled_status_maps_each_gateway_health() {
 #[tokio::test(start_paused = true)]
 async fn assembled_status_reports_poll_age_and_failsafe_when_stale() {
     // Once the target goes stale the status must show the failsafe and full charge.
-    let (sink, _msink, ctrl) = controller();
+    let (sink, _msink, _offset, ctrl) = controller();
     sink.apply(Ok(20.0));
     let last_poll = Instant::now();
 
@@ -175,7 +185,7 @@ async fn assembled_status_reports_poll_age_and_failsafe_when_stale() {
 async fn assembled_status_reports_the_measurement_failsafe_and_age() {
     // Once the measured input goes stale the status must show the measurement failsafe
     // and full charge, independently of the target failsafe (#25).
-    let (sink, msink, ctrl) = controller();
+    let (sink, msink, _offset, ctrl) = controller();
     msink.apply(Ok(5.0));
 
     tokio::time::advance(MEAS_STALE + Duration::from_secs(1)).await;
@@ -194,7 +204,7 @@ async fn assembled_status_reports_the_measurement_failsafe_and_age() {
 
 #[tokio::test]
 async fn assembled_status_surfaces_the_last_error() {
-    let (_sink, _msink, ctrl) = controller();
+    let (_sink, _msink, _offset, ctrl) = controller();
     let status = assemble_status(
         &ctrl,
         LinkHealth::Up,
