@@ -120,16 +120,16 @@ fn ramp_rate_defaults_when_unset() {
 
 #[test]
 fn parses_ramp_rate() {
-    let cfg = Config::from_vars(with(valid_vars(), "RAMP_RATE_A_PER_S", "1.25")).unwrap();
+    let cfg = Config::from_vars(with(valid_vars(), "RAMP_RATE_AMPERE_PER_S", "1.25")).unwrap();
     assert_eq!(cfg.ramp_rate, 1.25);
 }
 
 #[test]
 fn zero_ramp_rate_is_rejected() {
-    let err = Config::from_vars(with(valid_vars(), "RAMP_RATE_A_PER_S", "0")).unwrap_err();
+    let err = Config::from_vars(with(valid_vars(), "RAMP_RATE_AMPERE_PER_S", "0")).unwrap_err();
     assert!(
         format!("{err}").to_uppercase().contains("RAMP_RATE"),
-        "error should name RAMP_RATE_A_PER_S, got: {err}"
+        "error should name RAMP_RATE_AMPERE_PER_S, got: {err}"
     );
 }
 
@@ -152,27 +152,31 @@ fn min_charge_defaults_when_unset() {
 }
 
 #[test]
-fn parses_min_charge_a() {
-    let cfg = Config::from_vars(with(valid_vars(), "MIN_CHARGE_A", "8")).unwrap();
+fn parses_min_charge_ampere() {
+    let cfg = Config::from_vars(with(valid_vars(), "MIN_CHARGE_AMPERE", "8")).unwrap();
     assert_eq!(cfg.min_charge, Ampere(8.0));
 }
 
 #[test]
 fn min_charge_above_the_ceiling_is_rejected() {
     // MAX_BOX_AMPERE is 16 in valid_vars(); a floor above the ceiling is nonsense.
-    let err = Config::from_vars(with(valid_vars(), "MIN_CHARGE_A", "20")).unwrap_err();
+    let err = Config::from_vars(with(valid_vars(), "MIN_CHARGE_AMPERE", "20")).unwrap_err();
     assert!(
-        format!("{err}").to_uppercase().contains("MIN_CHARGE_A"),
-        "error should name MIN_CHARGE_A, got: {err}"
+        format!("{err}")
+            .to_uppercase()
+            .contains("MIN_CHARGE_AMPERE"),
+        "error should name MIN_CHARGE_AMPERE, got: {err}"
     );
 }
 
 #[test]
 fn zero_min_charge_is_rejected() {
-    let err = Config::from_vars(with(valid_vars(), "MIN_CHARGE_A", "0")).unwrap_err();
+    let err = Config::from_vars(with(valid_vars(), "MIN_CHARGE_AMPERE", "0")).unwrap_err();
     assert!(
-        format!("{err}").to_uppercase().contains("MIN_CHARGE_A"),
-        "error should name MIN_CHARGE_A, got: {err}"
+        format!("{err}")
+            .to_uppercase()
+            .contains("MIN_CHARGE_AMPERE"),
+        "error should name MIN_CHARGE_AMPERE, got: {err}"
     );
 }
 

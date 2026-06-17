@@ -320,8 +320,8 @@ the image). At minimum:
 | `MQTT_TOPIC_STATUS` | outbound: liveness/state (retained) |
 | `SLAVE_ADDR` | default 1 |
 | `POLL_REGISTER` / `POLL_QTY` | default 0x500C / 6 (override only for debugging) |
-| `MIN_CHARGE_A` | below this target → hard pause; don't modulate the 3φ floor (default 6) |
-| `RAMP_RATE_A_PER_S` | soft-ramp slope for the offset, A per second (default 0.5) |
+| `MIN_CHARGE_AMPERE` | below this target → hard pause; don't modulate the 3φ floor (default 6) |
+| `RAMP_RATE_AMPERE_PER_S` | soft-ramp slope for the offset, A per second (default 0.5) |
 | `FAILSAFE_AFTER_S` | seconds the last target stays valid before the **full-charge** failsafe engages (default 60; must exceed the controller's republish interval) |
 | `MEAS_STALE_TIMEOUT_S` | seconds the last measured value stays valid before the measurement failsafe falls back to **full charge** (default 15; see §9) |
 
