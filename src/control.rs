@@ -297,6 +297,16 @@ impl Controller {
     pub fn measurement_age(&self) -> Duration {
         self.measured.age()
     }
+
+    /// Approximated evcc charge status (`A`/`B`/`C`) for the status topic's `charge_state`
+    /// (#28), derived from the per-poll served value and the live measurement.
+    pub fn charge_state(&self) -> &'static str {
+        crate::charge_state(
+            Ampere(self.reported_frame()[0]),
+            self.target.max_box_ampere,
+            self.measured.measured(),
+        )
+    }
 }
 
 /// Wire the MQTT command stream to the bytes the slave serves (SPECS §6/§9).

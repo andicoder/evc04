@@ -426,8 +426,10 @@ range (§9).
 > **Implementation status.** The closed-loop model above is **implemented** (#22–#25):
 > the measured input, `reported = clamp(soft_ramped_offset + measured)`, the
 > min-charge cutoff, and both staleness failsafes (target + measurement, always
-> toward full charge) ship in the daemon. Still open: the operating DIP current
-> limit (#27, needs a high-DIP hardware test) and an evcc charger template (#28).
+> toward full charge) ship in the daemon. The status topic also exposes the
+> approximated evcc `charge_state` and ships an evcc charger template
+> ([`docs/evcc.md`](docs/evcc.md), #28). Only the high-DIP modulation question
+> (#27, needs a hardware test) is deferred beyond v0.1.
 
 ---
 
@@ -476,6 +478,7 @@ the image). At minimum:
 | `RAMP_RATE_AMPERE_PER_SECOND` | soft-ramp slope for the offset, A per second (default 0.5) |
 | `TARGET_TIMEOUT_SECONDS` | seconds the last target stays valid before the **full-charge** failsafe engages (default 60; must exceed the controller's republish interval) |
 | `MEASURED_TIMEOUT_SECONDS` | seconds the last measured value stays valid before the measurement failsafe falls back to **full charge** (default 15; see §9) |
+| `RUST_LOG` | log verbosity (`tracing` `EnvFilter` syntax; default `info`). E.g. `info`, `debug`, or `evc04_charge=debug,rumqttc=warn`. Logs go to stdout; the 1 Hz poll path is at `trace`, so `info` stays quiet and never prints `MQTT_PASS` (#43) |
 
 **Origin:** a hand-rolled pymodbus RTU slave first proved the `0x500C × 6` poll
 could be answered cleanly over the Waveshare in transparent mode (no resync
@@ -498,14 +501,17 @@ payloads are UTF-8 JSON; QoS 1; target/measured/status retained. Summary:
 - **Outbound — status** (`MQTT_TOPIC_STATUS`, retained, + offline LWT): `online`,
   `target_ampere`, `reported_ampere`, `last_poll_age_s`, `gateway`, `mqtt`, `last_error`,
   plus the closed-loop fields `measured_ampere`, `offset_ampere`, `measurement_age_s`,
-  `ramping`, and the two failsafe flags (`failsafe` for target, plus a measurement
-  failsafe).
+  `ramping`, the two failsafe flags (`failsafe` for target, plus a measurement
+  failsafe), and `charge_state` — the approximated evcc `B`/`C` charging state (#28;
+  `A` is never asserted, the emulation has no control-pilot line).
 
 **The brain is evcc** (#28): this service is a mode-agnostic actuator, driven as an
 **evcc custom charger** — `maxcurrent` → target, `enable=false` → target below the
-cutoff, status → A/B/C charging state. evcc's control interval must exceed the
-inner loop's settle time (~30–60 s) or the two loops hunt. A HA-only setup (number
-entity → target, sensor ← status) also works for simple on/off + manual current.
+cutoff, `status` ← our `charge_state`. evcc's control interval must exceed the
+inner loop's settle time (~30–60 s) or the two loops hunt. The working charger
+template, min/max-current band, and nested-loop timing live in
+[`docs/evcc.md`](docs/evcc.md). A HA-only setup (number entity → target, sensor ←
+status) also works for simple on/off + manual current.
 
 ---
 

@@ -11,23 +11,34 @@ use evc04_charge::config::Config;
 use evc04_charge::mqtt::{assemble_status, run_mqtt};
 use evc04_charge::slave::{run_link, LinkConfig, LinkHealth};
 use evc04_charge::{control, Ampere};
+use std::cell::Cell;
 use std::process::ExitCode;
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time::Instant;
+use tracing_subscriber::EnvFilter;
 
 /// Soft-ramp tick (#24): advance the offset ~1 Hz, matching the box's poll cadence.
 const RAMP_TICK: Duration = Duration::from_secs(1);
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
+    // Logging (#43): level via RUST_LOG (e.g. `info`, `evc04_charge=debug,rumqttc=warn`),
+    // defaulting to `info`. The 1 Hz poll path logs at `trace`, so `info` stays quiet.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+
     let cfg = match Config::from_env() {
         Ok(cfg) => cfg,
         Err(e) => {
-            eprintln!("evc04-charge: {e}");
+            tracing::error!("configuration error: {e}");
             return ExitCode::FAILURE;
         }
     };
+    tracing::info!("starting evc04-charge: {}", cfg.log_summary());
 
     // Serve full charge (report 0 A) until the first MQTT target arrives, so startup
     // and the grace window match the meterless-box default (SPECS.md §9).
@@ -63,7 +74,9 @@ async fn main() -> ExitCode {
     let slave_controller = controller.clone();
     let reported_frame = move || {
         let _ = poll_tx.send(Instant::now());
-        slave_controller.reported_frame()
+        let frame = slave_controller.reported_frame();
+        tracing::trace!("answered poll: reported {} A/phase", frame[0]);
+        frame
     };
     tokio::spawn(run_link(
         cfg.gateway_addr(),
@@ -77,6 +90,10 @@ async fn main() -> ExitCode {
 
     let target_error_tx = error_tx.clone();
     let apply = move |target| {
+        match &target {
+            Ok(amps) => tracing::debug!("target accepted: {amps} A"),
+            Err(e) => tracing::warn!("target rejected: {e}"),
+        }
         let _ = target_error_tx.send(match &target {
             Ok(_) => None,
             Err(e) => Some(format!("{e}")),
@@ -84,19 +101,53 @@ async fn main() -> ExitCode {
         sink.apply(target);
     };
     let apply_measured = move |measured| {
+        match &measured {
+            Ok(amps) => tracing::debug!("measured accepted: {amps} A"),
+            Err(e) => tracing::warn!("measured rejected: {e}"),
+        }
         let _ = error_tx.send(match &measured {
             Ok(_) => None,
             Err(e) => Some(format!("{e}")),
         });
         measured_sink.apply(measured);
     };
+
+    // Log the headline control edges (#43): both staleness failsafes entering/leaving
+    // full charge, and the charge starting/stopping. Edge-detected so the steady state
+    // is silent. `Cell` is fine — this closure runs only on the single-threaded runtime.
+    let prev_failsafe = Cell::new(false);
+    let prev_measurement_failsafe = Cell::new(false);
+    let prev_charging = Cell::new(false);
     let status = move || {
-        assemble_status(
+        let s = assemble_status(
             &controller,
             *gateway_rx.borrow(),
             *poll_rx.borrow(),
             error_rx.borrow().clone(),
-        )
+        );
+        if s.failsafe != prev_failsafe.replace(s.failsafe) {
+            if s.failsafe {
+                tracing::warn!("target stale: failing over to full charge");
+            } else {
+                tracing::info!("target fresh again: resuming control");
+            }
+        }
+        if s.measurement_failsafe != prev_measurement_failsafe.replace(s.measurement_failsafe) {
+            if s.measurement_failsafe {
+                tracing::warn!("measurement stale: abandoning closed loop, full charge");
+            } else {
+                tracing::info!("measurement fresh again: resuming closed loop");
+            }
+        }
+        let charging = s.charge_state == "C";
+        if charging != prev_charging.replace(charging) {
+            tracing::info!(
+                "charge state {} (reported {} A/phase)",
+                s.charge_state,
+                s.reported_ampere
+            );
+        }
+        s
     };
 
     // Runs until cancelled; the gateway link task runs alongside it.

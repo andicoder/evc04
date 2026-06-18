@@ -74,6 +74,31 @@ pub fn ramp_step(offset: Ampere, setpoint: Ampere, max_step: Ampere) -> Ampere {
     }
 }
 
+/// Below this measured current the loop is treated as no charge actually flowing
+/// (float noise / standby), so the state reads "B" rather than "C". A coarse floor:
+/// the measured input is source-agnostic (grid current today), so this is a
+/// best-effort proxy, not a precise car-draw threshold.
+const CHARGING_FLOOR: Ampere = Ampere(1.0);
+
+/// evcc charge status (`api.ChargeStatus`: A idle / B connected, not charging / C
+/// charging), approximated from what the meter emulation can observe.
+///
+/// We have **no control-pilot line**, so this is best-effort: "C" while charge is
+/// allowed (`reported` below the ceiling — not a hard pause) *and* current is
+/// actually flowing, otherwise "B" (connected, not charging — a paused box, or
+/// enabled-but-not-yet-drawing). **"A" (no vehicle) is never asserted**: a meter
+/// emulation can't tell an unplugged car from a connected-but-idle one, so evcc must
+/// rely on its own vehicle detection for that (docs/evcc.md).
+pub fn charge_state(reported: Ampere, max: Ampere, measured: Ampere) -> &'static str {
+    let charge_allowed = reported.0 < max.0;
+    let current_flowing = measured.0 > CHARGING_FLOOR.0;
+    if charge_allowed && current_flowing {
+        "C"
+    } else {
+        "B"
+    }
+}
+
 pub mod config;
 pub mod control;
 pub mod frame;
@@ -101,5 +126,25 @@ mod tests {
             reported_household(Ampere(16.0), Ampere(5.0), Ampere(0.0), MIN),
             Ampere(16.0)
         );
+    }
+
+    const MAX: Ampere = Ampere(16.0);
+
+    #[test]
+    fn charging_state_is_c_while_charge_is_allowed_and_current_flows() {
+        // reported below the ceiling → not paused; measured current flowing → the car draws.
+        assert_eq!(charge_state(Ampere(2.0), MAX, Ampere(9.0)), "C");
+    }
+
+    #[test]
+    fn charging_state_is_b_when_paused_at_the_ceiling() {
+        // A hard pause serves the ceiling; evcc must read "connected, not charging".
+        assert_eq!(charge_state(MAX, MAX, Ampere(0.0)), "B");
+    }
+
+    #[test]
+    fn charging_state_is_b_while_charge_is_allowed_but_no_current_flows() {
+        // Enabled but nothing drawing yet (ramp-up, or no car) → connected, not charging.
+        assert_eq!(charge_state(Ampere(0.0), MAX, Ampere(0.0)), "B");
     }
 }

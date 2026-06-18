@@ -51,6 +51,25 @@ fn defaults_apply_for_optional_vars() {
 }
 
 #[test]
+fn log_summary_never_leaks_the_broker_password() {
+    let vars = with(
+        with(valid_vars(), "MQTT_USER", "homeassistant"),
+        "MQTT_PASS",
+        "s3cr3t-broker-password",
+    );
+    let cfg = Config::from_vars(vars).unwrap();
+    let summary = cfg.log_summary();
+
+    assert!(
+        !summary.contains("s3cr3t-broker-password"),
+        "startup summary must redact MQTT_PASS, got: {summary}"
+    );
+    // It must still be useful: name the gateway and the box ceiling.
+    assert!(summary.contains("192.168.1.50:4196"), "got: {summary}");
+    assert!(summary.contains("16"), "got: {summary}");
+}
+
+#[test]
 fn out_of_range_max_box_ampere_is_rejected() {
     let err = Config::from_vars(with(valid_vars(), "MAX_BOX_AMPERE", "0")).unwrap_err();
     assert!(
