@@ -15,7 +15,7 @@ const AMPERE_SANITY_LIMIT: f32 = 80.0;
 
 /// Modbus addresses 1..=247 are assignable to a slave (0 is broadcast, 248..=255
 /// reserved).
-const SLAVE_ADDR_RANGE: std::ops::RangeInclusive<u8> = 1..=247;
+const SLAVE_ADDRESS_RANGE: std::ops::RangeInclusive<u8> = 1..=247;
 
 /// Validated runtime configuration.
 #[derive(Debug, Clone)]
@@ -29,7 +29,7 @@ pub struct Config {
     pub poll: PollMatch,
     /// How long the last MQTT target stays valid before the full-charge failsafe
     /// engages (SPECS.md §9). Must exceed the controller's republish interval.
-    pub failsafe_after: Duration,
+    pub target_timeout: Duration,
     /// Minimum charge current the closed loop attempts; below it the 3-phase floor
     /// (~6 A ≈ 4.1 kW) collapses to pause rather than holding a stable current
     /// (SPECS.md §6, issue #23). A target below this serves a hard pause.
@@ -37,9 +37,9 @@ pub struct Config {
     /// How long the last measured current stays valid before the measurement-loss
     /// failsafe engages (SPECS.md §9, issue #25). Serving `offset + stale_measured`
     /// would hold the box at the wrong current, so once stale we revert to full charge
-    /// (the meterless-box default). Tighter than `failsafe_after`: the measurement
+    /// (the meterless-box default). Tighter than `target_timeout`: the measurement
     /// republishes faster (~3–6 s) than the target.
-    pub meas_stale_timeout: Duration,
+    pub measured_timeout: Duration,
     /// Soft-ramp slope for the offset, in amps per second (SPECS.md §6, issue #24). A
     /// step change of the setpoint shocks the box into over-throttling below the car's
     /// floor; rate-limiting the offset keeps the closed loop stable.
@@ -99,27 +99,28 @@ impl RawConfig {
         if self.mqtt_port == 0 {
             problems.push("MQTT_PORT must be 1..=65535".to_string());
         }
-        if !SLAVE_ADDR_RANGE.contains(&self.slave_addr) {
+        if !SLAVE_ADDRESS_RANGE.contains(&self.slave_address) {
             problems.push(format!(
-                "SLAVE_ADDR must be {}..={}, got {}",
-                SLAVE_ADDR_RANGE.start(),
-                SLAVE_ADDR_RANGE.end(),
-                self.slave_addr
+                "SLAVE_ADDRESS must be {}..={}, got {}",
+                SLAVE_ADDRESS_RANGE.start(),
+                SLAVE_ADDRESS_RANGE.end(),
+                self.slave_address
             ));
         }
-        if self.poll_qty == 0 {
-            problems.push("POLL_QTY must be greater than 0".to_string());
+        if self.poll_quantity == 0 {
+            problems.push("POLL_QUANTITY must be greater than 0".to_string());
         }
-        if self.failsafe_after_s == 0 {
-            problems.push("FAILSAFE_AFTER_S must be greater than 0".to_string());
+        if self.target_timeout_seconds == 0 {
+            problems.push("TARGET_TIMEOUT_SECONDS must be greater than 0".to_string());
         }
-        if self.meas_stale_timeout_s == 0 {
-            problems.push("MEAS_STALE_TIMEOUT_S must be greater than 0".to_string());
+        if self.measured_timeout_seconds == 0 {
+            problems.push("MEASURED_TIMEOUT_SECONDS must be greater than 0".to_string());
         }
-        if !(self.ramp_rate_ampere_per_s.is_finite() && self.ramp_rate_ampere_per_s > 0.0) {
+        if !(self.ramp_rate_ampere_per_second.is_finite() && self.ramp_rate_ampere_per_second > 0.0)
+        {
             problems.push(format!(
-                "RAMP_RATE_AMPERE_PER_S must be a finite value greater than 0, got {}",
-                self.ramp_rate_ampere_per_s
+                "RAMP_RATE_AMPERE_PER_SECOND must be a finite value greater than 0, got {}",
+                self.ramp_rate_ampere_per_second
             ));
         }
         if !(self.min_charge_ampere.is_finite()
@@ -150,14 +151,14 @@ impl RawConfig {
                 topic_measured: self.mqtt_topic_measured,
             },
             poll: PollMatch {
-                addr: self.slave_addr,
+                addr: self.slave_address,
                 register: self.poll_register,
-                qty: self.poll_qty,
+                qty: self.poll_quantity,
             },
-            failsafe_after: Duration::from_secs(self.failsafe_after_s),
+            target_timeout: Duration::from_secs(self.target_timeout_seconds),
             min_charge: Ampere(self.min_charge_ampere),
-            meas_stale_timeout: Duration::from_secs(self.meas_stale_timeout_s),
-            ramp_rate: self.ramp_rate_ampere_per_s,
+            measured_timeout: Duration::from_secs(self.measured_timeout_seconds),
+            ramp_rate: self.ramp_rate_ampere_per_second,
         })
     }
 }
@@ -176,23 +177,23 @@ struct RawConfig {
     mqtt_topic_status: String,
     #[serde(default = "default_topic_measured")]
     mqtt_topic_measured: String,
-    #[serde(default = "default_slave_addr")]
-    slave_addr: u8,
+    #[serde(default = "default_slave_address")]
+    slave_address: u8,
     #[serde(default = "default_poll_register")]
     poll_register: u16,
-    #[serde(default = "default_poll_qty")]
-    poll_qty: u16,
-    #[serde(default = "default_failsafe_after_s")]
-    failsafe_after_s: u64,
+    #[serde(default = "default_poll_quantity")]
+    poll_quantity: u16,
+    #[serde(default = "default_target_timeout_seconds")]
+    target_timeout_seconds: u64,
     #[serde(default = "default_min_charge_ampere")]
     min_charge_ampere: f32,
-    #[serde(default = "default_meas_stale_timeout_s")]
-    meas_stale_timeout_s: u64,
-    #[serde(default = "default_ramp_rate_ampere_per_s")]
-    ramp_rate_ampere_per_s: f32,
+    #[serde(default = "default_measured_timeout_seconds")]
+    measured_timeout_seconds: u64,
+    #[serde(default = "default_ramp_rate_ampere_per_second")]
+    ramp_rate_ampere_per_second: f32,
 }
 
-fn default_slave_addr() -> u8 {
+fn default_slave_address() -> u8 {
     1
 }
 
@@ -200,11 +201,11 @@ fn default_poll_register() -> u16 {
     0x500C
 }
 
-fn default_poll_qty() -> u16 {
+fn default_poll_quantity() -> u16 {
     6
 }
 
-fn default_failsafe_after_s() -> u64 {
+fn default_target_timeout_seconds() -> u64 {
     60
 }
 
@@ -220,13 +221,13 @@ fn default_min_charge_ampere() -> f32 {
 
 /// Measurement republishes every ~3–6 s (SPECS.md §6), so ~2–3 missed updates before we
 /// stop trusting the closed loop and revert to full charge (#25).
-fn default_meas_stale_timeout_s() -> u64 {
+fn default_measured_timeout_seconds() -> u64 {
     15
 }
 
 /// Gentle default offset slope (A/s): on bench testing ~0.5 A/s extended the stable
 /// range down to ~9 A without the box over-throttling on a step change (SPECS.md §6).
-fn default_ramp_rate_ampere_per_s() -> f32 {
+fn default_ramp_rate_ampere_per_second() -> f32 {
     0.5
 }
 

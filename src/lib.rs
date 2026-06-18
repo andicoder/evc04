@@ -64,7 +64,7 @@ pub(crate) fn reported_from_offset(max: Ampere, offset: Ampere, measured: Ampere
 ///
 /// The EVC04's closed loop over-throttles below the car's floor when the offset jumps in
 /// one step (measured on hardware); rate-limiting it keeps the loop stable. `max_step` is
-/// the per-tick budget the ramp driver derives from `RAMP_RATE_AMPERE_PER_S × dt`.
+/// the per-tick budget the ramp driver derives from `RAMP_RATE_AMPERE_PER_SECOND × dt`.
 pub fn ramp_step(offset: Ampere, setpoint: Ampere, max_step: Ampere) -> Ampere {
     let delta = setpoint.0 - offset.0;
     if delta.abs() <= max_step.0 {

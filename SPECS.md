@@ -318,12 +318,12 @@ the image). At minimum:
 | `MQTT_TOPIC_TARGET` | inbound: target charge current (A) |
 | `MQTT_TOPIC_MEASURED` | inbound: live measured per-phase current (A), closes the loop (default `evc04/measured`) |
 | `MQTT_TOPIC_STATUS` | outbound: liveness/state (retained) |
-| `SLAVE_ADDR` | default 1 |
-| `POLL_REGISTER` / `POLL_QTY` | default 0x500C / 6 (override only for debugging) |
+| `SLAVE_ADDRESS` | default 1 |
+| `POLL_REGISTER` / `POLL_QUANTITY` | default 0x500C / 6 (override only for debugging) |
 | `MIN_CHARGE_AMPERE` | below this target → hard pause; don't modulate the 3φ floor (default 6) |
-| `RAMP_RATE_AMPERE_PER_S` | soft-ramp slope for the offset, A per second (default 0.5) |
-| `FAILSAFE_AFTER_S` | seconds the last target stays valid before the **full-charge** failsafe engages (default 60; must exceed the controller's republish interval) |
-| `MEAS_STALE_TIMEOUT_S` | seconds the last measured value stays valid before the measurement failsafe falls back to **full charge** (default 15; see §9) |
+| `RAMP_RATE_AMPERE_PER_SECOND` | soft-ramp slope for the offset, A per second (default 0.5) |
+| `TARGET_TIMEOUT_SECONDS` | seconds the last target stays valid before the **full-charge** failsafe engages (default 60; must exceed the controller's republish interval) |
+| `MEASURED_TIMEOUT_SECONDS` | seconds the last measured value stays valid before the measurement failsafe falls back to **full charge** (default 15; see §9) |
 
 **Origin:** a hand-rolled pymodbus RTU slave first proved the `0x500C × 6` poll
 could be answered cleanly over the Waveshare in transparent mode (no resync
@@ -379,8 +379,8 @@ These are **not** answerable from the bus alone; they need an observable
   - **Design consequence — two failsafe layers, both toward full charge:**
     1. **Control input stale, slave still answering** (broker down, controller
        offline, cold start): keep answering, but serve **full charge** (`reported
-       = 0`) — the meterless-box baseline. `FAILSAFE_AFTER_S` bounds the target
-       staleness and `MEAS_STALE_TIMEOUT_S` the measured one; neither ever pauses.
+       = 0`) — the meterless-box baseline. `TARGET_TIMEOUT_SECONDS` bounds the target
+       staleness and `MEASURED_TIMEOUT_SECONDS` the measured one; neither ever pauses.
        Fuse protection is out of scope (§1), so there is no reason to fail toward
        no-charge — *never worse than no tool*.
     2. **Process dead, slave silent** (crash): with the Power Optimizer enabled the
@@ -410,19 +410,22 @@ These are **not** answerable from the bus alone; they need an observable
       ~9 A (~9–15 A with HA-speed measurement; the 6–8 A bottom hunts). Static feed
       still cliffs on/off at any DIP. This is what replaced the open-loop model
       (§6).
-- [ ] **Decide the operating DIP current limit (#27).** The DIP couples two opposed
-      goals: **modulation** wants a low limit (16 A maps onto the car's 6–16 A
-      envelope, tested) while **guaranteed full charge** wants a high limit (offset
-      0 holds the *total* at the limit, so at 16 A a loaded household throttles the
-      car). Open sub-question: **does closed-loop modulation stay stable at a higher
-      DIP (e.g. 32 A)?** Untested — re-run the offset/soft-ramp sweep at DIP 32 A
-      with simulated household load and decide. Photograph DIP state first (revert
-      safety).
+- [x] **Operating DIP current limit decided = 16 A (#27).** The DIP couples two
+      opposed goals: **modulation** wants a low limit (16 A maps onto the car's
+      6–16 A envelope, tested) while **guaranteed full charge** wants a high limit
+      (offset 0 holds the *total* at the limit, so at 16 A a loaded household
+      throttles the car). The installation is set to **DIP 16 A**, trading some
+      full-charge headroom for the proven stable modulation band — so `MAX_BOX_AMPERE`
+      = 16 must match the physical DIP 4-5-6 setting. Open sub-question (only if more
+      full-charge headroom is later needed): **does closed-loop modulation stay stable
+      at a higher DIP (e.g. 32 A)?** Untested; re-run the offset/soft-ramp sweep at
+      DIP 32 A with simulated household load before changing it. Photograph DIP state
+      first (revert safety).
 - [x] **Measurement-input staleness failsafe (#25) — done.** Distinct from the
       target staleness above: serving `offset + stale_measured` is meaningless — a
       frozen value no longer tracks the draw — so a stale **measured** input abandons
       the closed loop and falls back to **full charge** (`reported = 0`) within
-      `MEAS_STALE_TIMEOUT_S`. Same static baseline as the target failsafe, never a
+      `MEASURED_TIMEOUT_SECONDS`. Same static baseline as the target failsafe, never a
       pause (§1); fuse protection is out of scope, so there is nothing to protect by
       cutting off.
 - [ ] **Mid-charge meter-loss latch:** confirm whether a meter dropout *during an

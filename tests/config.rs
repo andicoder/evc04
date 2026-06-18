@@ -69,46 +69,44 @@ fn zero_port_is_rejected() {
 }
 
 #[test]
-fn failsafe_after_defaults_when_unset() {
+fn target_timeout_defaults_when_unset() {
     let cfg = Config::from_vars(valid_vars()).unwrap();
-    assert_eq!(cfg.failsafe_after, std::time::Duration::from_secs(60));
+    assert_eq!(cfg.target_timeout, std::time::Duration::from_secs(60));
 }
 
 #[test]
-fn parses_failsafe_after_seconds() {
-    let cfg = Config::from_vars(with(valid_vars(), "FAILSAFE_AFTER_S", "30")).unwrap();
-    assert_eq!(cfg.failsafe_after, std::time::Duration::from_secs(30));
+fn parses_target_timeout_seconds() {
+    let cfg = Config::from_vars(with(valid_vars(), "TARGET_TIMEOUT_SECONDS", "30")).unwrap();
+    assert_eq!(cfg.target_timeout, std::time::Duration::from_secs(30));
 }
 
 #[test]
-fn zero_failsafe_after_is_rejected() {
-    let err = Config::from_vars(with(valid_vars(), "FAILSAFE_AFTER_S", "0")).unwrap_err();
+fn zero_target_timeout_is_rejected() {
+    let err = Config::from_vars(with(valid_vars(), "TARGET_TIMEOUT_SECONDS", "0")).unwrap_err();
     assert!(
-        format!("{err}").to_uppercase().contains("FAILSAFE_AFTER"),
-        "error should name FAILSAFE_AFTER_S, got: {err}"
+        format!("{err}").to_uppercase().contains("TARGET_TIMEOUT"),
+        "error should name TARGET_TIMEOUT_SECONDS, got: {err}"
     );
 }
 
 #[test]
-fn meas_stale_timeout_defaults_when_unset() {
+fn measured_timeout_defaults_when_unset() {
     let cfg = Config::from_vars(valid_vars()).unwrap();
-    assert_eq!(cfg.meas_stale_timeout, std::time::Duration::from_secs(15));
+    assert_eq!(cfg.measured_timeout, std::time::Duration::from_secs(15));
 }
 
 #[test]
-fn parses_meas_stale_timeout_seconds() {
-    let cfg = Config::from_vars(with(valid_vars(), "MEAS_STALE_TIMEOUT_S", "8")).unwrap();
-    assert_eq!(cfg.meas_stale_timeout, std::time::Duration::from_secs(8));
+fn parses_measured_timeout_seconds() {
+    let cfg = Config::from_vars(with(valid_vars(), "MEASURED_TIMEOUT_SECONDS", "8")).unwrap();
+    assert_eq!(cfg.measured_timeout, std::time::Duration::from_secs(8));
 }
 
 #[test]
-fn zero_meas_stale_timeout_is_rejected() {
-    let err = Config::from_vars(with(valid_vars(), "MEAS_STALE_TIMEOUT_S", "0")).unwrap_err();
+fn zero_measured_timeout_is_rejected() {
+    let err = Config::from_vars(with(valid_vars(), "MEASURED_TIMEOUT_SECONDS", "0")).unwrap_err();
     assert!(
-        format!("{err}")
-            .to_uppercase()
-            .contains("MEAS_STALE_TIMEOUT"),
-        "error should name MEAS_STALE_TIMEOUT_S, got: {err}"
+        format!("{err}").to_uppercase().contains("MEASURED_TIMEOUT"),
+        "error should name MEASURED_TIMEOUT_SECONDS, got: {err}"
     );
 }
 
@@ -120,16 +118,17 @@ fn ramp_rate_defaults_when_unset() {
 
 #[test]
 fn parses_ramp_rate() {
-    let cfg = Config::from_vars(with(valid_vars(), "RAMP_RATE_AMPERE_PER_S", "1.25")).unwrap();
+    let cfg = Config::from_vars(with(valid_vars(), "RAMP_RATE_AMPERE_PER_SECOND", "1.25")).unwrap();
     assert_eq!(cfg.ramp_rate, 1.25);
 }
 
 #[test]
 fn zero_ramp_rate_is_rejected() {
-    let err = Config::from_vars(with(valid_vars(), "RAMP_RATE_AMPERE_PER_S", "0")).unwrap_err();
+    let err =
+        Config::from_vars(with(valid_vars(), "RAMP_RATE_AMPERE_PER_SECOND", "0")).unwrap_err();
     assert!(
         format!("{err}").to_uppercase().contains("RAMP_RATE"),
-        "error should name RAMP_RATE_AMPERE_PER_S, got: {err}"
+        "error should name RAMP_RATE_AMPERE_PER_SECOND, got: {err}"
     );
 }
 
@@ -188,7 +187,7 @@ fn parses_a_full_valid_config() {
             "MQTT_PASS",
             "secret",
         ),
-        "SLAVE_ADDR",
+        "SLAVE_ADDRESS",
         "2",
     );
     let cfg = Config::from_vars(vars).unwrap();
