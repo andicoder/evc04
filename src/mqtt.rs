@@ -10,6 +10,7 @@ use crate::control::Controller;
 use crate::slave::LinkHealth;
 use rumqttc::{AsyncClient, Event, LastWill, MqttOptions, Packet, QoS};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;
 
@@ -171,6 +172,8 @@ pub async fn run_mqtt(
     opts.set_last_will(LastWill::new(&cfg.topic_status, OFFLINE_PAYLOAD, QOS, true));
 
     let (client, mut eventloop) = AsyncClient::new(opts, 16);
+    // Shared so each reconnect's setup task can borrow the configs without re-cloning them.
+    let discovery = Arc::new(discovery);
     let mut ticker = tokio::time::interval(STATUS_INTERVAL);
 
     loop {
@@ -180,15 +183,17 @@ pub async fn run_mqtt(
                 // the target subscription and republish status after every ConnAck.
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     tracing::info!(host = %cfg.host, port = cfg.port, "mqtt connected");
-                    let _ = client.subscribe(&cfg.topic_target, QOS).await;
-                    let _ = client.subscribe(&cfg.topic_measured, QOS).await;
-                    tracing::debug!(target = %cfg.topic_target, measured = %cfg.topic_measured, "subscribed");
-                    for (topic, payload) in &discovery {
-                        let _ = client.publish(topic, QOS, true, payload.as_bytes()).await;
-                    }
-                    if !discovery.is_empty() {
-                        tracing::info!(count = discovery.len(), "published HA discovery configs");
-                    }
+                    // (Re)subscribe + publish the retained discovery burst from a detached
+                    // task, so this loop returns to polling the eventloop immediately.
+                    // Doing it inline floods rumqttc's bounded request channel while nothing
+                    // drains it: the publish `.await` blocks, the keepalive PING is missed,
+                    // the broker drops us, and we never recover (#49).
+                    spawn_session_setup(
+                        client.clone(),
+                        cfg.topic_target.clone(),
+                        cfg.topic_measured.clone(),
+                        Arc::clone(&discovery),
+                    );
                     publish_status(&client, &cfg.topic_status, &status).await;
                 }
                 Ok(Event::Incoming(Packet::Publish(p))) if p.topic == cfg.topic_target => {
@@ -211,6 +216,31 @@ pub async fn run_mqtt(
             }
         }
     }
+}
+
+/// Issue the per-connection (re)subscribes and the retained HA discovery burst on a
+/// detached task. [`run_mqtt`]'s loop must keep draining the eventloop while these go
+/// out — `AsyncClient` only enqueues into a bounded channel that the eventloop drains,
+/// so emitting the whole burst inline (≈16 ops) fills it, blocks the loop, and stalls
+/// the connection past its keepalive (#49). Each op is fire-and-forget: a failed
+/// publish is retried on the next `ConnAck` (discovery is retained and idempotent).
+fn spawn_session_setup(
+    client: AsyncClient,
+    topic_target: String,
+    topic_measured: String,
+    discovery: Arc<Vec<(String, String)>>,
+) {
+    tokio::spawn(async move {
+        let _ = client.subscribe(&topic_target, QOS).await;
+        let _ = client.subscribe(&topic_measured, QOS).await;
+        tracing::debug!(target = %topic_target, measured = %topic_measured, "subscribed");
+        for (topic, payload) in discovery.iter() {
+            let _ = client.publish(topic, QOS, true, payload.as_bytes()).await;
+        }
+        if !discovery.is_empty() {
+            tracing::info!(count = discovery.len(), "published HA discovery configs");
+        }
+    });
 }
 
 async fn publish_status(client: &AsyncClient, topic: &str, status: &impl Fn() -> Status) {
