@@ -6,6 +6,158 @@ behaviour, and the open hardware questions are below.
 
 ---
 
+## At a glance
+
+The whole system in one picture — the closed control/data loop and the physical
+wiring. Labels are the real env vars (§7) and MQTT topics (§8) so the diagram
+doubles as a map into the rest of this spec. No new claims here; details and
+evidence live in §2–§9.
+
+```
+                   CONTROL / DATA FLOW  —  the closed loop
+                   ═════════════════════════════════════════
+
+  ┌────────────────────────────────────────────────────────┐
+  │ Home Assistant / evcc              (the "brain")       │
+  │ day-ahead price | PV surplus | departure planning      │
+  └────────────────────────────┬───────────────────────────┘
+                     target +  │
+                     measured  │
+                               ▼
+  ┌────────────────────────────────────────────────────────┐
+  │ MQTT broker                                            │
+  │   in   MQTT_TOPIC_TARGET     desired current (A)       │
+  │   in   MQTT_TOPIC_MEASURED   live current (A)          │
+  │   out  MQTT_TOPIC_STATUS     liveness (retained)       │
+  └────────────────────────────┬───────────────────────────┘
+                     target +  │
+                     measured  │
+                               ▼
+  ┌────────────────────────────────────────────────────────┐
+  │ evc04-charge daemon                                    │
+  │   Modbus-RTU slave  ==  emulated Inepro PRO380         │
+  │   reported = clamp(offset + measured)                  │
+  │   offset   = MAX_BOX_AMPERE - target                   │
+  │   soft-ramp | min-charge cutoff | failsafes->full      │
+  └────────────────────────────┬───────────────────────────┘
+                      raw RTU  │
+                     over TCP  │
+                               ▼
+  ┌────────────────────────────────────────────────────────┐
+  │ TCP<->RS485 gateway     (Waveshare, transparent)       │
+  └────────────────────────────┬───────────────────────────┘
+                        RS485  │
+                     9600 8E1  │
+                               ▼
+  ┌────────────────────────────────────────────────────────┐
+  │ EVC04 wallbox  ·  Power Optimizer                      │
+  │   polls the emulated meter @ ~1 Hz                     │
+  │   own closed loop: ramps charge current until          │
+  │   total main-line current = MAX_BOX_AMPERE (DIP 4-5-6) │
+  └────────────────────────────┬───────────────────────────┘
+                     delivers  │
+                       charge  │
+                               ▼
+                           ┌─────────┐
+                           │   car   │
+                           └─────────┘
+
+   feedback that closes the loop: the car's real draw raises the
+   measured main-line current → a CT reports it → MQTT_TOPIC_MEASURED
+   → daemon serves offset + measured → the box settles at `target`.
+
+   legend — the two inbound values:
+     desired current  (MQTT_TOPIC_TARGET)    setpoint: how fast you WANT to charge,
+                                             from the brain (price / PV / departure)
+     live current     (MQTT_TOPIC_MEASURED)  measurement: what is ACTUALLY flowing
+                                             now, read from a CT — closes the loop
+
+
+                   PHYSICAL WIRING
+                   ═══════════════════
+
+   measured-current source                 ┌───────────────────────────┐
+   (grid / total CT today,                 │  broker + daemon host     │
+    e.g. sensor.net_power;     ──MQTT──►    │  (container)              │
+    charger-side CT later —                 └─────────────┬─────────────┘
+    same MQTT_TOPIC_MEASURED)                             │ LAN / PoE
+                                                          ▼
+                                            ┌───────────────────────────┐
+                                            │ Waveshare RS485-TO-ETH (B) │
+                                            └─────────────┬─────────────┘
+                                                          │ one twisted pair
+                                                          │ A / B, 9600 8E1
+                                                          ▼
+                                            EVC04  CN20  ( V │ GND │ A │ B )
+                                            ────────────────────────────────
+                                            DIP 4-5-6  =  MAX_BOX_AMPERE
+                                            the box's current ceiling (16 A)
+
+
+              SOFTWARE COMPONENTS  —  tasks & tokio channels
+              ════════════════════════════════════════════════
+
+  Runtime: #[tokio::main(current_thread)].  Three cooperating tasks,
+  wired only through lock-free tokio::sync::watch channels (no locks).
+
+  ══════════════════════════ MQTT broker ══════════════════════════
+                       │  target ▼   measured ▼                      status ▲ (each poll)
+                       │
+  ┌────────────────────────────────────────────────────────────┐
+  │ TASK 1 · run_mqtt    (main · rumqttc event loop)           │
+  │   on target   → apply()           writes «target»          │
+  │   on measured → apply_measured()  writes «measured»        │
+  │   on parse    → last_error        writes «error»           │
+  │   serves status() back to the broker each poll             │
+  └────────────────────┬───────────────────────────────────────┘
+                       │  watch<Sample> «target»        → run_ramp AND Controller
+                       │  watch<Measurement> «measured» ───────────→ Controller
+                       ▼
+  ┌────────────────────────────────────────────────────────────┐
+  │ TASK 2 · run_ramp    (spawned)                             │
+  │   read «target» · soft-ramp the offset @ ~1 Hz             │
+  │   offset = MAX_BOX_AMPERE − target  (rate-limited)         │
+  └────────────────────┬───────────────────────────────────────┘
+                       │  watch<Ampere> «offset»        ───────────→ Controller
+                       ▼
+  ┌────────────────────────────────────────────────────────────┐
+  │ Controller   (Clone — pure snapshot reader)                │
+  │   reads «target» + «measured» + «offset»                   │
+  │   reported = clamp(offset + measured)                      │
+  │   min-charge cutoff · staleness failsafes → full           │
+  └────────────────────┬───────────────────────────────────────┘
+                       │  Controller.reported_frame()   (cloned; read every poll)
+                       ▼
+  ┌────────────────────────────────────────────────────────────┐
+  │ TASK 3 · run_link    (spawned — gateway TCP + RTU slave)   │
+  │   answer 0x500C×6 poll · validate/emit CRC16 · watchdog    │
+  │   per poll     → writes «poll»     (watch<Instant>)        │
+  │   link up/down → writes «gateway»  (watch<LinkHealth>)     │
+  └────────────────────┬───────────────────────────────────────┘
+                       │  raw RTU frames over TCP
+                       ▼
+  ═══════════════════ EVC04  (via TCP↔RS485 gateway) ═══════════════
+
+  status() (in TASK 1) reads Controller + «gateway» + «poll» + «error»
+  → publishes MQTT_TOPIC_STATUS (retained, + offline LWT).
+```
+
+The six `watch` channels (all `tokio::sync::watch`, last-value-wins, lock-free):
+
+| channel    | payload           | written by                     | read by               | carries                                   |
+|------------|-------------------|--------------------------------|-----------------------|-------------------------------------------|
+| «target»   | `Sample`          | `run_mqtt` → `apply()`         | `run_ramp`,`Controller` | desired current + arrival time (staleness) |
+| «measured» | `Measurement`     | `run_mqtt` → `apply_measured()`| `Controller`          | live current that closes the loop          |
+| «offset»   | `Ampere`          | `run_ramp`                     | `Controller`          | soft-ramped `MAX_BOX_AMPERE − target`      |
+| «poll»     | `Instant`         | `run_link` (each answered poll)| `status()`            | bus liveness (`last_poll_age_s`)           |
+| «gateway»  | `LinkHealth`      | `run_link`                     | `status()`            | TCP link up/down                           |
+| «error»    | `Option<String>`  | `run_mqtt` callbacks           | `status()`            | last parse/validation error                |
+
+`Controller` itself is `Clone`, not a channel: each clone holds the three receiver
+handles, so `run_link` and `status()` read a consistent snapshot without locking.
+
+---
+
 ## 1. Goal
 
 Control charging on a **Vestel EVC04-AC11-T2P** wallbox so that an external
