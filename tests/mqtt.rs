@@ -36,28 +36,28 @@ fn controller() -> (
 }
 
 #[test]
-fn parses_valid_target_amps() {
-    assert_eq!(parse_target(br#"{"amps": 6.5}"#).unwrap(), 6.5);
+fn parses_valid_target_ampere() {
+    assert_eq!(parse_target(br#"{"ampere": 6.5}"#).unwrap(), 6.5);
 }
 
 #[test]
-fn parses_integer_amps() {
-    assert_eq!(parse_target(br#"{"amps": 10}"#).unwrap(), 10.0);
+fn parses_integer_ampere() {
+    assert_eq!(parse_target(br#"{"ampere": 10}"#).unwrap(), 10.0);
 }
 
 #[test]
-fn out_of_range_amps_is_accepted_not_rejected() {
-    // The contract clamps in the control math (reported_current), so the parser
+fn out_of_range_ampere_is_accepted_not_rejected() {
+    // The contract clampere in the control math (reported_current), so the parser
     // accepts over- and under-range values; staleness/range handling is downstream.
-    assert_eq!(parse_target(br#"{"amps": 999}"#).unwrap(), 999.0);
-    assert_eq!(parse_target(br#"{"amps": -5}"#).unwrap(), -5.0);
+    assert_eq!(parse_target(br#"{"ampere": 999}"#).unwrap(), 999.0);
+    assert_eq!(parse_target(br#"{"ampere": -5}"#).unwrap(), -5.0);
 }
 
 #[test]
 fn additive_fields_are_ignored() {
     // The object shape leaves room for future fields; older versions ignore them.
     assert_eq!(
-        parse_target(br#"{"amps": 6.5, "mode": "eco"}"#).unwrap(),
+        parse_target(br#"{"ampere": 6.5, "mode": "eco"}"#).unwrap(),
         6.5
     );
 }
@@ -68,20 +68,20 @@ fn malformed_json_is_rejected() {
 }
 
 #[test]
-fn missing_amps_is_rejected() {
+fn missing_ampere_is_rejected() {
     assert!(parse_target(br#"{"volts": 230}"#).is_err());
 }
 
 #[test]
-fn non_numeric_amps_is_rejected() {
-    assert!(parse_target(br#"{"amps": "lots"}"#).is_err());
+fn non_numeric_ampere_is_rejected() {
+    assert!(parse_target(br#"{"ampere": "lots"}"#).is_err());
 }
 
 #[test]
-fn non_finite_amps_is_rejected() {
+fn non_finite_ampere_is_rejected() {
     // JSON can't carry NaN/Inf literals, but an overflowing exponent decodes to
     // an infinity — guard against pushing that into the control math.
-    assert!(parse_target(br#"{"amps": 1e400}"#).is_err());
+    assert!(parse_target(br#"{"ampere": 1e400}"#).is_err());
 }
 
 #[test]
