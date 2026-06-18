@@ -99,6 +99,7 @@ fn status_serialises_to_the_documented_schema() {
         failsafe: false,
         measurement_failsafe: false,
         measurement_age_s: 1.2,
+        charge_state: "C".to_string(),
         last_error: None,
     };
     let got: serde_json::Value = serde_json::from_str(&status.to_json()).unwrap();
@@ -115,6 +116,7 @@ fn status_serialises_to_the_documented_schema() {
         "failsafe": false,
         "measurement_failsafe": false,
         "measurement_age_s": 1.2,
+        "charge_state": "C",
         "last_error": null,
     });
     assert_eq!(got, want);
@@ -135,6 +137,7 @@ fn status_last_error_serialises_as_a_string_when_set() {
         failsafe: true,
         measurement_failsafe: false,
         measurement_age_s: 0.5,
+        charge_state: "B".to_string(),
         last_error: Some("malformed target payload".to_string()),
     };
     let got: serde_json::Value = serde_json::from_str(&status.to_json()).unwrap();
@@ -158,10 +161,22 @@ async fn assembled_status_reflects_the_live_control_state() {
     assert_eq!(status.measured_ampere, 3.0);
     assert_eq!(status.offset_ampere, 12.0);
     assert_eq!(status.reported_ampere, 15.0);
+    assert_eq!(status.charge_state, "C"); // charge allowed (15 < 32) and 3 A flowing
     assert!(!status.ramping); // offset == setpoint (max − target)
     assert!(!status.failsafe);
     assert!(!status.measurement_failsafe);
     assert!(status.last_error.is_none());
+}
+
+#[tokio::test]
+async fn assembled_status_reports_charge_state_b_when_paused() {
+    // A target below MIN_CHARGE serves a hard pause (reported = max), which evcc must
+    // read as "connected, not charging" (B) so its enable=false is seen as effective.
+    let (sink, _msink, _offset, ctrl) = controller();
+    sink.apply(Ok(3.0)); // below MIN (6 A) → pause
+    let status = assemble_status(&ctrl, LinkHealth::Up, Instant::now(), None);
+    assert_eq!(status.reported_ampere, MAX.0); // hard pause
+    assert_eq!(status.charge_state, "B");
 }
 
 #[tokio::test]

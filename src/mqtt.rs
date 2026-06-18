@@ -91,6 +91,10 @@ pub struct Status {
     /// Age of the live measured input in seconds; a growing value signals the
     /// publisher/broker went quiet before the failsafe latches.
     pub measurement_age_s: f32,
+    /// Approximated evcc charge status (`A`/`B`/`C`, #28): `C` while charge is allowed
+    /// and current flows, else `B`. `A` is never asserted (no control-pilot line — see
+    /// [`crate::charge_state`]). evcc's custom-charger `status` reads this field.
+    pub charge_state: String,
     pub last_error: Option<String>,
 }
 
@@ -133,6 +137,7 @@ pub fn assemble_status(
         failsafe: controller.failsafe_active(),
         measurement_failsafe: controller.measurement_failsafe_active(),
         measurement_age_s: controller.measurement_age().as_secs_f32(),
+        charge_state: controller.charge_state().to_string(),
         last_error,
     }
 }
@@ -170,8 +175,10 @@ pub async fn run_mqtt(
                 // (Re)connected: rumqttc does not replay subscriptions, so re-arm
                 // the target subscription and republish status after every ConnAck.
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
+                    tracing::info!(host = %cfg.host, port = cfg.port, "mqtt connected");
                     let _ = client.subscribe(&cfg.topic_target, QOS).await;
                     let _ = client.subscribe(&cfg.topic_measured, QOS).await;
+                    tracing::debug!(target = %cfg.topic_target, measured = %cfg.topic_measured, "subscribed");
                     publish_status(&client, &cfg.topic_status, &status).await;
                 }
                 Ok(Event::Incoming(Packet::Publish(p))) if p.topic == cfg.topic_target => {
@@ -184,7 +191,10 @@ pub async fn run_mqtt(
                 }
                 Ok(_) => {}
                 // Broker dropped: the next poll reconnects; pause so we don't spin.
-                Err(_) => tokio::time::sleep(Duration::from_secs(1)).await,
+                Err(e) => {
+                    tracing::warn!(error = %e, "mqtt disconnected; reconnecting");
+                    tokio::time::sleep(Duration::from_secs(1)).await
+                }
             },
             _ = ticker.tick() => {
                 publish_status(&client, &cfg.topic_status, &status).await;

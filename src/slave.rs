@@ -171,25 +171,40 @@ pub async fn run_link<A>(
     A: ToSocketAddrs + Clone,
 {
     let mut backoff = Backoff::new(config.backoff_initial, config.backoff_max);
+    // Log only health *edges*, not the per-loop resends — the box polls at 1 Hz, so an
+    // unconditional log here would be noise (issue #43).
+    let mut last = *health.borrow();
+    let mut announce = |to: LinkHealth| {
+        if to != last {
+            match to {
+                LinkHealth::Up => tracing::info!("gateway link up"),
+                LinkHealth::Stalled => tracing::warn!("gateway link stalled (no poll in window)"),
+                LinkHealth::Down => tracing::warn!("gateway link down"),
+            }
+            last = to;
+        }
+        let _ = health.send(to);
+    };
     loop {
         match TcpStream::connect(addr.clone()).await {
             Ok(stream) => {
-                let _ = health.send(LinkHealth::Up);
+                announce(LinkHealth::Up);
                 backoff.reset();
                 match serve_connection(stream, config.poll, Some(config.stall_timeout), &currents)
                     .await
                 {
                     Err(e) if e.kind() == io::ErrorKind::TimedOut => {
-                        let _ = health.send(LinkHealth::Stalled);
+                        announce(LinkHealth::Stalled);
                     }
                     // Clean close (Ok) or any other I/O error: link is down.
                     _ => {
-                        let _ = health.send(LinkHealth::Down);
+                        announce(LinkHealth::Down);
                     }
                 }
             }
-            Err(_) => {
-                let _ = health.send(LinkHealth::Down);
+            Err(e) => {
+                tracing::debug!(error = %e, "gateway connect failed; backing off");
+                announce(LinkHealth::Down);
             }
         }
         tokio::time::sleep(backoff.next_delay()).await;

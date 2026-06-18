@@ -1,6 +1,6 @@
 [package]
 name = "evc04-charge"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"
 description = "Emulates an Inepro PRO380 meter so an external controller can modulate a Vestel EVC04 wallbox over RS485."
@@ -22,6 +22,8 @@ serde_json = "1"
 rumqttc = "0.25"
 envy = "0.4"
 thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "test-util"] }

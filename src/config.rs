@@ -65,6 +65,32 @@ impl Config {
         format!("{}:{}", self.gateway_host, self.gateway_port)
     }
 
+    /// One-line startup summary for the logs (issue #43). Lists the operationally
+    /// relevant config so a deployment is self-documenting — **never the broker
+    /// password**: `MQTT_PASS` is reported only as present/absent, never its value.
+    pub fn log_summary(&self) -> String {
+        format!(
+            "gateway={} max_box={}A mqtt={}:{} auth={} target={:?} measured={:?} status={:?} \
+             min_charge={}A ramp={}A/s target_timeout={}s measured_timeout={}s",
+            self.gateway_addr(),
+            self.max_box_ampere.0,
+            self.mqtt.host,
+            self.mqtt.port,
+            if self.mqtt.pass.is_some() {
+                "set"
+            } else {
+                "none"
+            },
+            self.mqtt.topic_target,
+            self.mqtt.topic_measured,
+            self.mqtt.topic_status,
+            self.min_charge.0,
+            self.ramp_rate,
+            self.target_timeout.as_secs(),
+            self.measured_timeout.as_secs(),
+        )
+    }
+
     /// Load and validate from the process environment.
     pub fn from_env() -> Result<Config, ConfigError> {
         Config::from_vars(std::env::vars())

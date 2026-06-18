@@ -123,6 +123,7 @@ on every state transition). Home Assistant reads it via one MQTT sensor using
   "ramping": false,
   "failsafe": false,
   "measurement_failsafe": false,
+  "charge_state": "C",
   "last_error": null
 }
 ```
@@ -141,6 +142,7 @@ on every state transition). Home Assistant reads it via one MQTT sensor using
 | `ramping`              | bool           | `true` while the offset is still soft-ramping toward its setpoint. |
 | `failsafe`             | bool           | `true` while serving **full charge** because the **target** went stale (the meterless-box default). |
 | `measurement_failsafe` | bool           | `true` while serving full charge because the **measured** input went stale. |
+| `charge_state`         | string         | Approximated evcc charge status (#28): `C` while charge is allowed and current flows, else `B` (connected, not charging). `A` (no vehicle) is never asserted — a meter emulation has no control-pilot line. evcc's custom-charger `status` reads this. |
 | `last_error`           | string or null | Reason for the most recent rejected input or link fault; `null` when healthy. |
 
 ### Last Will and Testament
@@ -160,13 +162,14 @@ The charging brain is **evcc** (#28); this service is its **custom charger**:
 
 - evcc `maxcurrent` → the **target** topic (amps); `enable=false` → a target below
   `MIN_CHARGE_AMPERE` (pause), `enable=true` → resume the commanded target.
-- evcc reads the **status** topic for charging state / current.
+- evcc reads the **status** topic: `charge_state` (`B`/`C`) and `target_ampere`.
 - The **measured** topic is independent — HA/evcc publishes the live grid (or
   later car) current there.
 - **Timing:** evcc's control interval must exceed the inner loop's settle time
   (~30–60 s) or the two loops hunt; use a matching interval + hysteresis.
 
-A working evcc charger template is planned for `docs/` (#28).
+A working evcc charger template, the min/max-current guidance, and the
+nested-loop timing live in **[evcc.md](evcc.md)**.
 
 ---
 
