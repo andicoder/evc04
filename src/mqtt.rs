@@ -35,11 +35,11 @@ pub const OFFLINE_PAYLOAD: &[u8] = br#"{"online":false}"#;
 /// so a controller bug is visible rather than silently changing the charge current.
 #[derive(Debug, thiserror::Error)]
 pub enum TargetError {
-    /// Body was not valid JSON, or `amps` was missing or not a number.
-    #[error("malformed target payload (expected {{\"amps\": number}})")]
+    /// Body was not valid JSON, or `ampere` was missing or not a number.
+    #[error("malformed target payload (expected {{\"ampere\": number}})")]
     Malformed,
-    /// `amps` parsed but is not finite (e.g. an overflowing exponent).
-    #[error("target amps is not finite")]
+    /// `ampere` parsed but is not finite (e.g. an overflowing exponent).
+    #[error("target ampere is not finite")]
     NonFinite,
 }
 
@@ -47,23 +47,23 @@ pub enum TargetError {
 /// compatible with older service versions (docs/mqtt.md).
 #[derive(Deserialize)]
 struct TargetPayload {
-    amps: f64,
+    ampere: f64,
 }
 
-/// Parse the inbound target charge current (amps) from a `{"amps": N}` payload.
+/// Parse the inbound target charge current (ampere) from a `{"ampere": N}` payload.
 ///
 /// The value is returned as-is: range clamping is the control math's job
 /// ([`crate::reported_current`]), so over/under-range numbers are accepted here.
 /// Only structurally invalid payloads — malformed JSON, missing/non-numeric
-/// `amps`, or a non-finite value — are rejected; on rejection the last valid
+/// `ampere`, or a non-finite value — are rejected; on rejection the last valid
 /// target stays in effect (docs/mqtt.md).
 pub fn parse_target(payload: &[u8]) -> Result<f32, TargetError> {
     let parsed: TargetPayload =
         serde_json::from_slice(payload).map_err(|_| TargetError::Malformed)?;
-    if !parsed.amps.is_finite() {
+    if !parsed.ampere.is_finite() {
         return Err(TargetError::NonFinite);
     }
-    Ok(parsed.amps as f32)
+    Ok(parsed.ampere as f32)
 }
 
 /// Outbound retained status object (docs/mqtt.md "Outbound — status"). Field
@@ -148,10 +148,10 @@ pub fn assemble_status(
 /// on every `ConnAck` so a reconnect restores both. Runs until the task is cancelled.
 ///
 /// `apply_target` is the seam the control loop (#6) fills: it receives every parsed
-/// command — `Ok(amps)` to adopt, `Err` to surface in `status.last_error` while
+/// command — `Ok(ampere)` to adopt, `Err` to surface in `status.last_error` while
 /// holding the last good value. `apply_measured` is the same seam for the live
 /// measured current that closes the loop (#22); both inbound topics carry the
-/// identical `{"amps": N}` shape, so they share [`parse_target`]. `status`
+/// identical `{"ampere": N}` shape, so they share [`parse_target`]. `status`
 /// snapshots the live state to publish.
 pub async fn run_mqtt(
     cfg: MqttConfig,

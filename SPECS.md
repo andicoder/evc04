@@ -52,7 +52,7 @@ evidence live in §2–§9.
   ┌────────────────────────────────────────────────────────┐
   │ EVC04 wallbox  ·  Power Optimizer                      │
   │   polls the emulated meter @ ~1 Hz                     │
-  │   own closed loop: ramps charge current until          │
+  │   own closed loop: rampere charge current until          │
   │   total main-line current = MAX_BOX_AMPERE (DIP 4-5-6) │
   └────────────────────────────┬───────────────────────────┘
                      delivers  │
@@ -168,7 +168,7 @@ modulation** and **on/off** gating, the controller's choice.
 The constraint that shapes the entire design: **this box has no communication
 module**, so none of the "normal" control paths work (see §2). The only available
 lever is the box's **Power Optimizer**, which polls an external energy meter over
-RS485 and runs a **closed feedback loop** that ramps charge current until the
+RS485 and runs a **closed feedback loop** that rampere charge current until the
 measured total reaches its configured current limit. We **emulate that meter**:
 feeding it a value that tracks the **live measured current** closes the loop and
 the box **modulates** (proven on hardware); feeding a static value gives **on/off**
@@ -357,7 +357,7 @@ sits at `MAX_BOX_AMPERE`. This single fact drives the whole control design.
 
 Because a fabricated static value never rises as the car charges, a **static**
 `reported = MAX_BOX_AMPERE − target` cannot land the loop anywhere in between — the box
-always ramps to full (`reported < MAX_BOX_AMPERE`) or cuts off
+always rampere to full (`reported < MAX_BOX_AMPERE`) or cuts off
 (`reported ≥ MAX_BOX_AMPERE`). Bench tested with a car at `MAX_BOX_AMPERE = 65 A`
 (DIP on-on-off):
 
@@ -467,7 +467,7 @@ the image). At minimum:
 | Env var (suggested) | Meaning |
 |---|---|
 | `GATEWAY_HOST` / `GATEWAY_PORT` | RS485↔TCP gateway address (e.g. Waveshare) |
-| `MAX_BOX_AMPERE` | the box's DIP-set current ceiling, amps — our 100 % reference for the headroom math (must match DIP 4-5-6) |
+| `MAX_BOX_AMPERE` | the box's DIP-set current ceiling, ampere — our 100 % reference for the headroom math (must match DIP 4-5-6) |
 | `MQTT_HOST` / `MQTT_PORT` / `MQTT_USER` / `MQTT_PASS` | broker |
 | `MQTT_TOPIC_TARGET` | inbound: target charge current (A) |
 | `MQTT_TOPIC_MEASURED` | inbound: live measured per-phase current (A), closes the loop (default `evc04/measured`) |
@@ -492,10 +492,10 @@ rationale); the verified frames in §5/§11 make the protocol a fixed target.
 **The full, authoritative contract lives in [`docs/mqtt.md`](docs/mqtt.md).** All
 payloads are UTF-8 JSON; QoS 1; target/measured/status retained. Summary:
 
-- **Inbound — target** (`MQTT_TOPIC_TARGET`): `{ "amps": N }`, the desired charge
+- **Inbound — target** (`MQTT_TOPIC_TARGET`): `{ "ampere": N }`, the desired charge
   current. Out-of-range is clamped (not rejected); invalid payloads are ignored
   and the last good value held, surfaced in `last_error`.
-- **Inbound — measured** (`MQTT_TOPIC_MEASURED`): `{ "amps": N }`, the live
+- **Inbound — measured** (`MQTT_TOPIC_MEASURED`): `{ "ampere": N }`, the live
   per-phase current that closes the loop (§6). Source-agnostic; same
   hold-last-good / staleness discipline as the target.
 - **Outbound — status** (`MQTT_TOPIC_STATUS`, retained, + offline LWT): `online`,

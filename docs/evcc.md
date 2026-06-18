@@ -15,13 +15,13 @@ Home Assistant automation, never both. The `measured` topic is independent feedb
 
 | evcc charger field | our topic | mapping |
 | ------------------ | --------- | ------- |
-| `maxcurrent` (write) | `target` | `{"amps": <A>}` — the throttle. evcc never sends below its own `mincurrent`. |
-| `enable` (write) | `target` | `false` → `{"amps": 0}` (below `MIN_CHARGE_AMPERE` → **pause**); `true` is followed by a `maxcurrent` write that lands the charging value. |
+| `maxcurrent` (write) | `target` | `{"ampere": <A>}` — the throttle. evcc never sends below its own `mincurrent`. |
+| `enable` (write) | `target` | `false` → `{"ampere": 0}` (below `MIN_CHARGE_AMPERE` → **pause**); `true` is followed by a `maxcurrent` write that lands the charging value. |
 | `enabled` (read) | `status` | `target_ampere >= MIN_CHARGE_AMPERE` → charging is commanded. |
 | `status` (read) | `status` | our `charge_state` field: `B` (connected, not charging) / `C` (charging). |
 
 > **`enable=true` is transient.** With evcc's `${enable:%d}` substitution, `enable`
-> can only publish `0`/`1`, so `true` momentarily commands `{"amps": 1}` (a pause).
+> can only publish `0`/`1`, so `true` momentarily commands `{"ampere": 1}` (a pause).
 > evcc always issues `maxcurrent` (≥ its `mincurrent`) immediately after
 > `Enable(true)`, so the charging value lands a fraction of a second later; the
 > offset soft-ramp ([`SPECS.md`](../SPECS.md) §6) absorbs the blip. `enable` exists
@@ -53,16 +53,16 @@ chargers:
       topic: evc04/status
       jq: .target_ampere >= 6   # = MIN_CHARGE_AMPERE
       timeout: 90s
-    # Pause on disable: {"amps": 0} is below MIN_CHARGE_AMPERE → hard pause.
+    # Pause on disable: {"ampere": 0} is below MIN_CHARGE_AMPERE → hard pause.
     enable:
       source: mqtt
       topic: evc04/target
-      payload: '{"amps": ${enable:%d}}'
+      payload: '{"ampere": ${enable:%d}}'
     # The actual throttle.
     maxcurrent:
       source: mqtt
       topic: evc04/target
-      payload: '{"amps": ${maxcurrent}}'
+      payload: '{"ampere": ${maxcurrent}}'
 ```
 
 ## Loadpoint: min/max current
@@ -89,7 +89,7 @@ loadpoints:
 Two feedback loops are stacked:
 
 1. **Inner** (this service ↔ EVC04): settles in **~30–60 s** after a target change
-   — the offset soft-ramps and the box's own optimizer re-converges.
+   — the offset soft-rampere and the box's own optimizer re-converges.
 2. **Outer** (evcc ↔ this service): evcc reads its meters and re-commands
    `maxcurrent`.
 
@@ -109,7 +109,7 @@ hunt** (evcc keeps correcting before the box has settled). So:
         delay: 90s      # wait before stopping — avoids flapping at the floor
   ```
 
-- Keep evcc's current steps coarse (it already steps in whole amps); avoid
+- Keep evcc's current steps coarse (it already steps in whole ampere); avoid
   sub-amp chasing it can't observe through the inner loop anyway.
 
 ## Sanity check
@@ -117,7 +117,7 @@ hunt** (evcc keeps correcting before the box has settled). So:
 With the service running and the broker reachable:
 
 - evcc UI shows the loadpoint as **connected**; toggling the loadpoint on/off
-  flips our `target` between a charging current and `{"amps": 0}` (watch
+  flips our `target` between a charging current and `{"ampere": 0}` (watch
   `evc04/target` and `evc04/status`).
 - `evc04/status` `charge_state` reads `C` once current flows, `B` when paused.
 - Commanding a PV-surplus current in the 9–15 A band modulates; near 6 A it
