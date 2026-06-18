@@ -44,6 +44,21 @@ pub struct Config {
     /// step change of the setpoint shocks the box into over-throttling below the car's
     /// floor; rate-limiting the offset keeps the closed loop stable.
     pub ramp_rate: f32,
+    /// Home Assistant MQTT discovery (issue #46): publish retained config topics so HA
+    /// auto-creates the read-only status sensors.
+    pub discovery: DiscoveryConfig,
+}
+
+/// Home Assistant MQTT discovery settings (issue #46). Opt-in so an upgrade never
+/// sprays retained configs under the discovery prefix unasked.
+#[derive(Debug, Clone)]
+pub struct DiscoveryConfig {
+    pub enabled: bool,
+    /// HA's discovery prefix (HA default `homeassistant`).
+    pub prefix: String,
+    /// Node id segment in the config topic + the device identifier — make it unique
+    /// per install when several share a broker.
+    pub node_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -71,7 +86,7 @@ impl Config {
     pub fn log_summary(&self) -> String {
         format!(
             "gateway={} max_box={}A mqtt={}:{} auth={} target={:?} measured={:?} status={:?} \
-             min_charge={}A ramp={}A/s target_timeout={}s measured_timeout={}s",
+             min_charge={}A ramp={}A/s target_timeout={}s measured_timeout={}s ha_discovery={}",
             self.gateway_addr(),
             self.max_box_ampere.0,
             self.mqtt.host,
@@ -88,6 +103,11 @@ impl Config {
             self.ramp_rate,
             self.target_timeout.as_secs(),
             self.measured_timeout.as_secs(),
+            if self.discovery.enabled {
+                format!("{}/{}", self.discovery.prefix, self.discovery.node_id)
+            } else {
+                "off".to_string()
+            },
         )
     }
 
@@ -185,6 +205,11 @@ impl RawConfig {
             min_charge: Ampere(self.min_charge_ampere),
             measured_timeout: Duration::from_secs(self.measured_timeout_seconds),
             ramp_rate: self.ramp_rate_ampere_per_second,
+            discovery: DiscoveryConfig {
+                enabled: self.ha_discovery_enabled,
+                prefix: self.ha_discovery_prefix,
+                node_id: self.ha_discovery_node_id,
+            },
         })
     }
 }
@@ -217,6 +242,20 @@ struct RawConfig {
     measured_timeout_seconds: u64,
     #[serde(default = "default_ramp_rate_ampere_per_second")]
     ramp_rate_ampere_per_second: f32,
+    #[serde(default)]
+    ha_discovery_enabled: bool,
+    #[serde(default = "default_discovery_prefix")]
+    ha_discovery_prefix: String,
+    #[serde(default = "default_discovery_node_id")]
+    ha_discovery_node_id: String,
+}
+
+fn default_discovery_prefix() -> String {
+    "homeassistant".to_string()
+}
+
+fn default_discovery_node_id() -> String {
+    "evc04".to_string()
 }
 
 fn default_slave_address() -> u8 {

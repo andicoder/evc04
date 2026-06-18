@@ -101,6 +101,7 @@ pub fn charge_state(reported: Ampere, max: Ampere, measured: Ampere) -> &'static
 
 pub mod config;
 pub mod control;
+pub mod discovery;
 pub mod frame;
 pub mod mqtt;
 pub mod slave;

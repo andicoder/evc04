@@ -153,8 +153,12 @@ pub fn assemble_status(
 /// measured current that closes the loop (#22); both inbound topics carry the
 /// identical `{"ampere": N}` shape, so they share [`parse_target`]. `status`
 /// snapshots the live state to publish.
+///
+/// `discovery` is the retained HA discovery configs (#46), republished on every
+/// `ConnAck` (retained, so idempotent) — empty when discovery is disabled.
 pub async fn run_mqtt(
     cfg: MqttConfig,
+    discovery: Vec<(String, String)>,
     apply_target: impl Fn(Result<f32, TargetError>),
     apply_measured: impl Fn(Result<f32, TargetError>),
     status: impl Fn() -> Status,
@@ -179,6 +183,12 @@ pub async fn run_mqtt(
                     let _ = client.subscribe(&cfg.topic_target, QOS).await;
                     let _ = client.subscribe(&cfg.topic_measured, QOS).await;
                     tracing::debug!(target = %cfg.topic_target, measured = %cfg.topic_measured, "subscribed");
+                    for (topic, payload) in &discovery {
+                        let _ = client.publish(topic, QOS, true, payload.as_bytes()).await;
+                    }
+                    if !discovery.is_empty() {
+                        tracing::info!(count = discovery.len(), "published HA discovery configs");
+                    }
                     publish_status(&client, &cfg.topic_status, &status).await;
                 }
                 Ok(Event::Incoming(Packet::Publish(p))) if p.topic == cfg.topic_target => {

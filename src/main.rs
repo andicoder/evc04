@@ -150,7 +150,12 @@ async fn main() -> ExitCode {
         s
     };
 
+    // HA MQTT discovery configs to publish (retained) on connect (#46); empty when
+    // discovery is disabled (opt-in via HA_DISCOVERY_ENABLED).
+    let discovery =
+        evc04_charge::discovery::discovery_messages(&cfg.discovery, &cfg.mqtt.topic_status);
+
     // Runs until cancelled; the gateway link task runs alongside it.
-    run_mqtt(cfg.mqtt, apply, apply_measured, status).await;
+    run_mqtt(cfg.mqtt, discovery, apply, apply_measured, status).await;
     ExitCode::SUCCESS
 }
