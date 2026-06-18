@@ -70,6 +70,34 @@ fn log_summary_never_leaks_the_broker_password() {
 }
 
 #[test]
+fn ha_discovery_defaults_to_opt_in() {
+    let cfg = Config::from_vars(valid_vars()).unwrap();
+    assert!(
+        !cfg.discovery.enabled,
+        "discovery must be off unless opted in"
+    );
+    assert_eq!(cfg.discovery.prefix, "homeassistant");
+    assert_eq!(cfg.discovery.node_id, "evc04");
+}
+
+#[test]
+fn ha_discovery_reads_its_env_vars() {
+    let vars = with(
+        with(
+            with(valid_vars(), "HA_DISCOVERY_ENABLED", "true"),
+            "HA_DISCOVERY_PREFIX",
+            "ha",
+        ),
+        "HA_DISCOVERY_NODE_ID",
+        "garage",
+    );
+    let cfg = Config::from_vars(vars).unwrap();
+    assert!(cfg.discovery.enabled);
+    assert_eq!(cfg.discovery.prefix, "ha");
+    assert_eq!(cfg.discovery.node_id, "garage");
+}
+
+#[test]
 fn out_of_range_max_box_ampere_is_rejected() {
     let err = Config::from_vars(with(valid_vars(), "MAX_BOX_AMPERE", "0")).unwrap_err();
     assert!(

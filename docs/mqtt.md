@@ -203,3 +203,36 @@ mqtt:
 
 `max` must match the `MAX_BOX_AMPERE` / DIP setting for the box
 ([`SPECS.md`](../SPECS.md) §2/§9).
+
+---
+
+## Home Assistant auto-discovery (optional)
+
+Instead of the manual YAML above, the service can **self-register** read-only
+sensors via [HA MQTT discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery):
+on each broker connect it publishes retained config topics, and HA creates one
+**device** (the wallbox) with a sensor per status field.
+
+**Opt-in** (off by default) so an upgrade never sprays retained configs unasked:
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `HA_DISCOVERY_ENABLED` | `false` | set `true` to publish discovery configs on connect |
+| `HA_DISCOVERY_PREFIX` | `homeassistant` | HA's discovery prefix |
+| `HA_DISCOVERY_NODE_ID` | `evc04` | node-id segment + device identifier — make it unique per install when several share a broker |
+
+What you get (all read-only, grouped under one device, availability via the
+`online` flag/LWT):
+
+- **sensors** — `reported`, `target`, `measured`, `offset` current (A); `charge_state`;
+  and diagnostics: `gateway`/`mqtt` link, `last_poll_age_s`, `measurement_age_s`,
+  `last_error`.
+- **binary_sensors** (diagnostic) — `failsafe`, `measurement_failsafe` (device class
+  `problem`), `ramping`.
+
+**No command entity is published.** Setting the target from HA would make HA a
+*commander*, and there must be exactly one ([`SPECS.md`](../SPECS.md) §6). To control
+from HA, use the manual `number` above instead — and then don't also run evcc.
+
+> The broker user must be allowed to publish under `HA_DISCOVERY_PREFIX` (e.g.
+> `homeassistant/#`).

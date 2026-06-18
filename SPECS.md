@@ -479,6 +479,9 @@ the image). At minimum:
 | `TARGET_TIMEOUT_SECONDS` | seconds the last target stays valid before the **full-charge** failsafe engages (default 60; must exceed the controller's republish interval) |
 | `MEASURED_TIMEOUT_SECONDS` | seconds the last measured value stays valid before the measurement failsafe falls back to **full charge** (default 15; see §9) |
 | `RUST_LOG` | log verbosity (`tracing` `EnvFilter` syntax; default `info`). E.g. `info`, `debug`, or `evc04_charge=debug,rumqttc=warn`. Logs go to stdout; the 1 Hz poll path is at `trace`, so `info` stays quiet and never prints `MQTT_PASS` (#43) |
+| `HA_DISCOVERY_ENABLED` | publish Home Assistant MQTT discovery configs on connect so HA auto-creates the read-only status sensors (default `false`, opt-in; #46) |
+| `HA_DISCOVERY_PREFIX` | HA discovery prefix (default `homeassistant`) |
+| `HA_DISCOVERY_NODE_ID` | node-id segment + device identifier for discovery (default `evc04`; make unique per install when several share a broker) |
 
 **Origin:** a hand-rolled pymodbus RTU slave first proved the `0x500C × 6` poll
 could be answered cleanly over the Waveshare in transparent mode (no resync
