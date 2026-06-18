@@ -57,7 +57,7 @@ Out-of-range numbers are accepted and clamped, not rejected.
   non-numeric or non-finite (`NaN`/`Inf`). The last valid target stays in effect
   and the rejection is surfaced in status (`last_error`). A controller bug must
   never silently push the charger to an unintended current.
-- **Staleness → failsafe.** If no valid target arrives within `FAILSAFE_AFTER_S`,
+- **Staleness → failsafe.** If no valid target arrives within `TARGET_TIMEOUT_SECONDS`,
   the service falls back to **full charge** (`reported = 0`, the meterless-box
   default — [`SPECS.md`](../SPECS.md) §9, *never worse than no tool*); `failsafe:
   true` in status. A fresh valid target resumes control.
@@ -94,7 +94,7 @@ as the target:
 - **Retained**, **invalid payloads ignored / last good held / surfaced in
   `last_error`** — same discipline as the target.
 - **Staleness → measurement failsafe.** If no valid measurement arrives within
-  `MEAS_STALE_TIMEOUT_S`, serving `offset + stale` is meaningless, so the service
+  `MEASURED_TIMEOUT_SECONDS`, serving `offset + stale` is meaningless, so the service
   abandons the closed loop and falls back to **full charge** (`reported = 0`,
   `measurement_failsafe: true`) — the same static baseline as the target failsafe,
   never a pause ([`SPECS.md`](../SPECS.md) §9, #25).
