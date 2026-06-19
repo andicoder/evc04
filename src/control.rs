@@ -28,9 +28,11 @@ fn safest(a: Option<Ampere>, b: Option<Ampere>) -> Option<Ampere> {
 }
 
 /// The last command and when it was accepted, so any reader can judge staleness.
+/// `target` is `None` until the first command lands — a cold start is not a commanded
+/// value, so it must not be mistaken for "charge full" (#59).
 #[derive(Clone, Copy)]
 struct Sample {
-    target: Ampere,
+    target: Option<Ampere>,
     at: Instant,
 }
 
@@ -47,7 +49,7 @@ impl TargetSink {
     pub fn apply(&self, target: Result<f32, TargetError>) {
         if let Ok(amps) = target {
             let _ = self.tx.send(Sample {
-                target: Ampere(amps),
+                target: Some(Ampere(amps)),
                 at: Instant::now(),
             });
         }
@@ -72,7 +74,15 @@ impl ControlView {
         self.rx
             .borrow()
             .target
-            .clamp(Ampere(0.0), self.max_box_ampere)
+            .map(|t| t.clamp(Ampere(0.0), self.max_box_ampere))
+            .unwrap_or(Ampere(0.0))
+    }
+
+    /// Whether a command has ever been accepted. Before the first one there is no commanded
+    /// target to charge toward, so the [`Controller`] holds the box paused (#59) rather than
+    /// reading the un-commanded state as full charge.
+    pub fn primed(&self) -> bool {
+        self.rx.borrow().target.is_some()
     }
 
     /// True while the last accepted target is older than `failsafe_after`, so the
@@ -270,6 +280,13 @@ impl Controller {
         if let Some(report) = forced {
             return [report.0; 3];
         }
+        // Cold start: no command has landed yet. Never open the box at full charge before the
+        // controller speaks (#59) — pause until it does. This is independent of the min-charge
+        // floor below, so it holds even if `min_charge` is configured to 0. Past the grace
+        // window the failsafe block above governs (e.g. an unmanaged full_charge box opens).
+        if !self.target.primed() {
+            return [pause.0; 3];
+        }
         if self.target.effective_target().0 < self.min_charge.0 {
             return [pause.0; 3];
         }
@@ -340,13 +357,14 @@ impl Controller {
 
 /// Wire the MQTT command stream to the bytes the slave serves (SPECS §6/§9).
 ///
-/// `max_box_ampere` is the box's DIP-set ceiling; until the first command arrives the
-/// view serves it as the target → `reported = 0` → full charge, so the cold-start grace
-/// window matches the meterless box. `failsafe_after` is the staleness window after which
-/// the [`Controller`]'s configured [`FailsafeMode`] takes over (#51/#52).
+/// `max_box_ampere` is the box's DIP-set ceiling. The target starts `None` — un-commanded,
+/// not "charge full" — so the [`Controller`] pauses the box until the first command arrives
+/// (#59), never opening it at full charge during the cold-start window. `failsafe_after` is
+/// the staleness window after which the [`Controller`]'s configured [`FailsafeMode`] takes
+/// over (#51/#52).
 pub fn channel(max_box_ampere: Ampere, failsafe_after: Duration) -> (TargetSink, ControlView) {
     let (tx, rx) = watch::channel(Sample {
-        target: max_box_ampere,
+        target: None,
         at: Instant::now(),
     });
     (

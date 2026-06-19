@@ -74,11 +74,38 @@ const SIXTEEN_AMP_RESPONSE: [u8; 17] = [
 ];
 
 #[test]
-fn cold_start_reports_full_charge() {
-    // Before any command arrives the offset sits at 0 and the box charges like a meterless
-    // box: report 0 A household → maximum charge. "Never worse than no tool" (SPECS §9).
+fn cold_start_pauses_until_the_first_target() {
+    // #59: before any command arrives we must NOT open the box at full charge — a fresh pod
+    // with a car connected would charge full at the worst time. Until the controller speaks,
+    // pause (report above the ceiling, #57). "The safe default is don't-charge."
     let (_sink, _msink, _offset, ctrl) = controller();
-    assert_eq!(ctrl.reported_frame(), [0.0; 3]);
+    assert_eq!(ctrl.reported_frame(), [PAUSE.0; 3]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn cold_start_hold_last_still_pauses_with_no_target_ever() {
+    // #59: hold_last has nothing to hold on a cold start, so even past the grace window an
+    // un-commanded box must keep pausing — never fall through to full charge.
+    let (_sink, msink, _offset, ctrl) =
+        controller_with(FailsafeMode::HoldLast, FailsafeMode::FullCharge);
+    msink.apply(Ok(5.0)); // keep the measurement fresh; only the (absent) target is in play
+
+    tokio::time::advance(STALE_AFTER + Duration::from_millis(1)).await;
+    assert!(ctrl.failsafe_active());
+    assert_eq!(ctrl.reported_frame(), [PAUSE.0; 3]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn cold_start_full_charge_failsafe_opens_after_the_grace_window() {
+    // #59 must not break the unmanaged-box baseline (SPECS §9): with the full_charge failsafe
+    // an un-commanded box pauses during the grace window, then falls back to full charge once
+    // the target staleness window elapses.
+    let (_sink, _msink, _offset, ctrl) = controller(); // both failsafes full_charge
+    assert_eq!(ctrl.reported_frame(), [PAUSE.0; 3]); // grace window → pause
+
+    tokio::time::advance(STALE_AFTER + Duration::from_millis(1)).await;
+    assert!(ctrl.failsafe_active());
+    assert_eq!(ctrl.reported_frame(), [0.0; 3]); // grace elapsed → meterless-box full charge
 }
 
 #[test]

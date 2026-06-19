@@ -40,8 +40,9 @@ async fn main() -> ExitCode {
     };
     tracing::info!("starting evc04-charge: {}", cfg.log_summary());
 
-    // Serve full charge (report 0 A) until the first MQTT target arrives, so startup
-    // and the grace window match the meterless-box default (SPECS.md §9).
+    // Pause the box until the first MQTT target arrives (#59): a cold start is un-commanded,
+    // not a request to charge full, so we hold it paused through the grace window rather than
+    // opening at full charge at the worst time. Past the window the configured failsafe governs.
     let (sink, view) = control::channel(cfg.max_box_ampere, cfg.target_timeout);
 
     // The second inbound channel that closes the loop (#22): the live measured
