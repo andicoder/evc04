@@ -482,6 +482,8 @@ the image). At minimum:
 | `HA_DISCOVERY_ENABLED` | publish Home Assistant MQTT discovery configs on connect so HA auto-creates the read-only status sensors (default `false`, opt-in; #46) |
 | `HA_DISCOVERY_PREFIX` | HA discovery prefix (default `homeassistant`) |
 | `HA_DISCOVERY_NODE_ID` | node-id segment + device identifier for discovery (default `evc04`; make unique per install when several share a broker) |
+| `TARGET_FAILSAFE` | direction when the **target** goes stale: `full_charge` (default, report 0) \| `hold_last` (keep the last command) \| `pause` (report ≥ limit → box stops). evcc-managed boxes want `pause` (#51) |
+| `MEASURED_FAILSAFE` | direction when the **measured** input goes stale: same modes, default `full_charge`; `pause` for evcc (#51) |
 
 **Origin:** a hand-rolled pymodbus RTU slave first proved the `0x500C × 6` poll
 could be answered cleanly over the Waveshare in transparent mode (no resync
@@ -539,11 +541,20 @@ These are **not** answerable from the bus alone; they need an observable
     default" are the *same* served frame.
   - **Design consequence — two failsafe layers, both toward full charge:**
     1. **Control input stale, slave still answering** (broker down, controller
-       offline, cold start): keep answering, but serve **full charge** (`reported
-       = 0`) — the meterless-box baseline. `TARGET_TIMEOUT_SECONDS` bounds the target
-       staleness and `MEASURED_TIMEOUT_SECONDS` the measured one; neither ever pauses.
-       Fuse protection is out of scope (§1), so there is no reason to fail toward
-       no-charge — *never worse than no tool*.
+       offline, cold start): keep answering, with a **configurable** direction per
+       channel (`TARGET_FAILSAFE` / `MEASURED_FAILSAFE`, #51). `TARGET_TIMEOUT_SECONDS`
+       bounds the target staleness and `MEASURED_TIMEOUT_SECONDS` the measured one.
+       - **`full_charge`** (default, `reported = 0` — the meterless-box baseline):
+         correct for a Home-Assistant-automation-only box where fuse protection is out
+         of scope (§1) — *never worse than no tool*.
+       - **`pause`** (report ≥ limit → box stops): the safe direction for an
+         **evcc-managed** box, where a control-path blip (e.g. a nightly router
+         reconnect) must **not** flip an intended pause into charging overnight. evcc's
+         idle target cadence is decision-driven and unbounded, so no finite timeout
+         alone is enough — the direction must change, not just the window.
+       - **`hold_last`**: keep serving evcc's last command (a stale pause stays a
+         pause). Caveat: can hold a stale *charge* across a charge→no-charge boundary.
+       When both failsafes fire with a forced value, the safest (least-charge) wins.
     2. **Process dead, slave silent** (crash): with the Power Optimizer enabled the
        box **hard-faults to red — it does *not* fall back to full charge**. This
        layer is unreachable from inside the app, so the deployment **must

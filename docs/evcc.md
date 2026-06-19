@@ -112,6 +112,26 @@ hunt** (evcc keeps correcting before the box has settled). So:
 - Keep evcc's current steps coarse (it already steps in whole ampere); avoid
   sub-amp chasing it can't observe through the inner loop anyway.
 
+## Failsafe direction — set `pause` (important)
+
+evcc only writes `target` on a control *decision*; it does **not** heartbeat. When
+idle (e.g. PV mode with no surplus) it can stay quiet for minutes, and its idle
+cadence is unbounded. With the default `TARGET_FAILSAFE=full_charge`, a quiet evcc —
+or any control-path blip like a **nightly router reconnect** — ages the target out
+and the box **starts charging at the worst time** (#51).
+
+So for an evcc-managed box, set both failsafes to **`pause`** in the service's env:
+
+```
+TARGET_FAILSAFE=pause
+MEASURED_FAILSAFE=pause
+```
+
+Then any control-path fault **stops** charging instead of starting it: a stale evcc
+pause stays a pause, a stale measurement stops the loop. (`full_charge` remains the
+right default only for a Home-Assistant-automation-only box where charging-on-fault
+is acceptable.) See [`SPECS.md`](../SPECS.md) §9.
+
 ## Sanity check
 
 With the service running and the broker reachable:

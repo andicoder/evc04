@@ -11,11 +11,21 @@
 //! answering — with **full charge** (report 0 A, the meterless-box default) — rather
 //! than going quiet. Staleness is derived on read against the last command's timestamp.
 
+use crate::config::FailsafeMode;
 use crate::mqtt::TargetError;
 use crate::{ramp_step, reported_from_offset, Ampere};
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time::Instant;
+
+/// Combine two forced failsafe reports into the **safest** one (higher report = less
+/// charge), so when both staleness failsafes engage the least-charge directive wins (#51).
+fn safest(a: Option<Ampere>, b: Option<Ampere>) -> Option<Ampere> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(Ampere(x.0.max(y.0))),
+        (only, None) | (None, only) => only,
+    }
+}
 
 /// The last command and when it was accepted, so any reader can judge staleness.
 #[derive(Clone, Copy)]
@@ -54,28 +64,21 @@ pub struct ControlView {
 }
 
 impl ControlView {
-    /// Effective target, post-clamp and failsafe-aware: the last commanded value while
-    /// fresh, else full charge (`MAX_BOX_AMPERE`) once stale. This is what the status
-    /// topic reports as `target_ampere` (docs/mqtt.md).
+    /// The last commanded target, post-clamp — what the status topic reports as
+    /// `target_ampere` (docs/mqtt.md). Staleness is *not* folded in here (#51): the
+    /// [`Controller`] decides what a stale target means via its [`FailsafeMode`], and the
+    /// `failsafe` flag (not a value jump) signals the override.
     pub fn effective_target(&self) -> Ampere {
-        self.target().clamp(Ampere(0.0), self.max_box_ampere)
+        self.rx
+            .borrow()
+            .target
+            .clamp(Ampere(0.0), self.max_box_ampere)
     }
 
     /// True while the last accepted target is older than `failsafe_after`, so the
-    /// slave is serving full charge rather than a live command.
+    /// target-staleness failsafe is engaged.
     pub fn failsafe_active(&self) -> bool {
         self.rx.borrow().at.elapsed() > self.failsafe_after
-    }
-
-    /// The effective (failsafe-aware) target before clamping. A stale or absent
-    /// command falls back to `MAX_BOX_AMPERE` → `reported = 0` → full charge.
-    fn target(&self) -> Ampere {
-        let sample = *self.rx.borrow();
-        if sample.at.elapsed() > self.failsafe_after {
-            self.max_box_ampere
-        } else {
-            sample.target
-        }
     }
 }
 
@@ -218,6 +221,8 @@ pub struct Controller {
     measured: MeasurementView,
     offset: OffsetView,
     min_charge: Ampere,
+    target_failsafe: FailsafeMode,
+    measured_failsafe: FailsafeMode,
 }
 
 impl Controller {
@@ -226,36 +231,45 @@ impl Controller {
         measured: MeasurementView,
         offset: OffsetView,
         min_charge: Ampere,
+        target_failsafe: FailsafeMode,
+        measured_failsafe: FailsafeMode,
     ) -> Controller {
         Controller {
             target,
             measured,
             offset,
             min_charge,
+            target_failsafe,
+            measured_failsafe,
         }
     }
 
     /// Per-phase household current to report, as the raw `f32` triple the Modbus frame
     /// carries (the wire boundary).
     ///
-    /// Either staleness failsafe falls back to the **static** full charge (report 0 A, the
-    /// meterless-box default — SPECS §9), never a pause: a stale *target* (#7) or a stale
-    /// *measurement* (#25) both make the closed loop untrustworthy, and serving
-    /// `offset + measured` then would throttle — the wrong failsafe direction. Below the
+    /// A stale **target** (#7) or **measurement** (#25) engages its configured
+    /// [`FailsafeMode`] (#51): `full_charge` → report 0 A (the meterless-box default,
+    /// SPECS §9), `pause` → the ceiling (zero headroom → the box stops), `hold_last` →
+    /// no override (the held value flows through the loop below). When both engage with a
+    /// forced value, the safest (least-charge, i.e. highest report) wins. Below the
     /// min-charge floor we hard-pause (#23). Otherwise we close the loop on the live
     /// measurement and the **soft-ramped** offset (#24).
     pub fn reported_frame(&self) -> [f32; 3] {
-        if self.target.failsafe_active() || self.measured.failsafe_active() {
-            return [0.0; 3];
+        let max = self.target.max_box_ampere;
+        let mut forced: Option<Ampere> = None;
+        if self.target.failsafe_active() {
+            forced = safest(forced, self.target_failsafe.forced_report(max));
+        }
+        if self.measured.failsafe_active() {
+            forced = safest(forced, self.measured_failsafe.forced_report(max));
+        }
+        if let Some(report) = forced {
+            return [report.0; 3];
         }
         if self.target.effective_target().0 < self.min_charge.0 {
-            return [self.target.max_box_ampere.0; 3];
+            return [max.0; 3];
         }
-        let reported = reported_from_offset(
-            self.target.max_box_ampere,
-            self.offset.offset(),
-            self.measured.measured(),
-        );
+        let reported = reported_from_offset(max, self.offset.offset(), self.measured.measured());
         [reported.0; 3]
     }
 

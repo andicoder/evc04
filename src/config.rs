@@ -47,6 +47,56 @@ pub struct Config {
     /// Home Assistant MQTT discovery (issue #46): publish retained config topics so HA
     /// auto-creates the read-only status sensors.
     pub discovery: DiscoveryConfig,
+    /// What to serve when the **target** input goes stale (issue #51). Default
+    /// `full_charge` (the meterless-box baseline); an evcc-managed box wants `pause` so a
+    /// control-path blip can't flip an intended pause into charging.
+    pub target_failsafe: FailsafeMode,
+    /// What to serve when the **measured** input goes stale (issue #51). Same modes;
+    /// `pause` for evcc, `full_charge` by default.
+    pub measured_failsafe: FailsafeMode,
+}
+
+/// Direction a staleness failsafe takes when an input ages out (issue #51).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailsafeMode {
+    /// Serve `reported = 0` — the meterless-box default, "never worse than no tool"
+    /// (SPECS §9). Correct for a Home-Assistant-automation-only setup.
+    FullCharge,
+    /// Keep serving the last commanded value through the loop (a stale pause stays a
+    /// pause, a stale charge stays a charge).
+    HoldLast,
+    /// Serve the ceiling (zero headroom → the box pauses). The genuinely safe direction
+    /// for an evcc-managed box: any control-path fault stops charging.
+    Pause,
+}
+
+impl FailsafeMode {
+    /// The forced per-phase report when this failsafe engages, or `None` for `hold_last`
+    /// (serve the held value through the normal loop instead).
+    pub fn forced_report(self, max_box: Ampere) -> Option<Ampere> {
+        match self {
+            FailsafeMode::FullCharge => Some(Ampere(0.0)),
+            FailsafeMode::Pause => Some(max_box),
+            FailsafeMode::HoldLast => None,
+        }
+    }
+
+    fn parse(s: &str) -> Option<FailsafeMode> {
+        match s {
+            "full_charge" => Some(FailsafeMode::FullCharge),
+            "hold_last" => Some(FailsafeMode::HoldLast),
+            "pause" => Some(FailsafeMode::Pause),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            FailsafeMode::FullCharge => "full_charge",
+            FailsafeMode::HoldLast => "hold_last",
+            FailsafeMode::Pause => "pause",
+        }
+    }
 }
 
 /// Home Assistant MQTT discovery settings (issue #46). Opt-in so an upgrade never
@@ -86,7 +136,8 @@ impl Config {
     pub fn log_summary(&self) -> String {
         format!(
             "gateway={} max_box={}A mqtt={}:{} auth={} target={:?} measured={:?} status={:?} \
-             min_charge={}A ramp={}A/s target_timeout={}s measured_timeout={}s ha_discovery={}",
+             min_charge={}A ramp={}A/s target_timeout={}s measured_timeout={}s ha_discovery={} \
+             target_failsafe={} measured_failsafe={}",
             self.gateway_addr(),
             self.max_box_ampere.0,
             self.mqtt.host,
@@ -108,6 +159,8 @@ impl Config {
             } else {
                 "off".to_string()
             },
+            self.target_failsafe.as_str(),
+            self.measured_failsafe.as_str(),
         )
     }
 
@@ -179,6 +232,19 @@ impl RawConfig {
             ));
         }
 
+        let parse_failsafe = |var: &str, raw: &str, problems: &mut Vec<String>| {
+            FailsafeMode::parse(raw).unwrap_or_else(|| {
+                problems.push(format!(
+                    "{var} must be one of full_charge|hold_last|pause, got {raw}"
+                ));
+                FailsafeMode::FullCharge
+            })
+        };
+        let target_failsafe =
+            parse_failsafe("TARGET_FAILSAFE", &self.target_failsafe, &mut problems);
+        let measured_failsafe =
+            parse_failsafe("MEASURED_FAILSAFE", &self.measured_failsafe, &mut problems);
+
         if !problems.is_empty() {
             return Err(ConfigError::Invalid(problems));
         }
@@ -210,6 +276,8 @@ impl RawConfig {
                 prefix: self.ha_discovery_prefix,
                 node_id: self.ha_discovery_node_id,
             },
+            target_failsafe,
+            measured_failsafe,
         })
     }
 }
@@ -248,6 +316,14 @@ struct RawConfig {
     ha_discovery_prefix: String,
     #[serde(default = "default_discovery_node_id")]
     ha_discovery_node_id: String,
+    #[serde(default = "default_failsafe")]
+    target_failsafe: String,
+    #[serde(default = "default_failsafe")]
+    measured_failsafe: String,
+}
+
+fn default_failsafe() -> String {
+    "full_charge".to_string()
 }
 
 fn default_discovery_prefix() -> String {

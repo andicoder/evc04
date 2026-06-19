@@ -1,6 +1,6 @@
 //! Boundary-validation tests for the env-var config loader (SPECS.md §7).
 
-use evc04_charge::config::Config;
+use evc04_charge::config::{Config, FailsafeMode};
 use evc04_charge::Ampere;
 
 /// A complete, valid set of env vars — required ones only (optionals omitted so
@@ -95,6 +95,35 @@ fn ha_discovery_reads_its_env_vars() {
     assert!(cfg.discovery.enabled);
     assert_eq!(cfg.discovery.prefix, "ha");
     assert_eq!(cfg.discovery.node_id, "garage");
+}
+
+#[test]
+fn failsafe_modes_default_to_full_charge() {
+    // Backward-compatible default preserves the "never worse than no tool" behaviour (#51).
+    let cfg = Config::from_vars(valid_vars()).unwrap();
+    assert_eq!(cfg.target_failsafe, FailsafeMode::FullCharge);
+    assert_eq!(cfg.measured_failsafe, FailsafeMode::FullCharge);
+}
+
+#[test]
+fn failsafe_modes_parse_pause_and_hold_last() {
+    let vars = with(
+        with(valid_vars(), "TARGET_FAILSAFE", "pause"),
+        "MEASURED_FAILSAFE",
+        "hold_last",
+    );
+    let cfg = Config::from_vars(vars).unwrap();
+    assert_eq!(cfg.target_failsafe, FailsafeMode::Pause);
+    assert_eq!(cfg.measured_failsafe, FailsafeMode::HoldLast);
+}
+
+#[test]
+fn invalid_failsafe_mode_is_rejected() {
+    let err = Config::from_vars(with(valid_vars(), "TARGET_FAILSAFE", "off")).unwrap_err();
+    assert!(
+        format!("{err}").to_uppercase().contains("TARGET_FAILSAFE"),
+        "error should name TARGET_FAILSAFE, got: {err}"
+    );
 }
 
 #[test]

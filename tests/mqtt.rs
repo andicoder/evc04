@@ -2,6 +2,7 @@
 //! target-payload parser and the outbound status schema. The live rumqttc task
 //! is an I/O boundary and is exercised against a broker, not here.
 
+use evc04_charge::config::FailsafeMode;
 use evc04_charge::control::{Controller, MeasurementSink, TargetSink};
 use evc04_charge::mqtt::{assemble_status, parse_target, Status, OFFLINE_PAYLOAD};
 use evc04_charge::slave::LinkHealth;
@@ -31,7 +32,14 @@ fn controller() -> (
         target_sink,
         measured_sink,
         offset_tx,
-        Controller::new(target_view, measured_view, offset_view, MIN),
+        Controller::new(
+            target_view,
+            measured_view,
+            offset_view,
+            MIN,
+            FailsafeMode::FullCharge,
+            FailsafeMode::FullCharge,
+        ),
     )
 }
 
@@ -204,7 +212,9 @@ async fn assembled_status_maps_each_gateway_health() {
 
 #[tokio::test(start_paused = true)]
 async fn assembled_status_reports_poll_age_and_failsafe_when_stale() {
-    // Once the target goes stale the status must show the failsafe and full charge.
+    // Once the target goes stale the status flags the failsafe and (default full_charge)
+    // serves 0 A. `target_ampere` keeps reporting the last commanded value (#51) — the
+    // failsafe flag, not a target jump, signals the override.
     let (sink, _msink, _offset, ctrl) = controller();
     sink.apply(Ok(20.0));
     let last_poll = Instant::now();
@@ -213,8 +223,8 @@ async fn assembled_status_reports_poll_age_and_failsafe_when_stale() {
 
     let status = assemble_status(&ctrl, LinkHealth::Up, last_poll, None);
     assert!(status.failsafe);
-    assert_eq!(status.target_ampere, MAX.0); // full charge
-    assert_eq!(status.reported_ampere, 0.0);
+    assert_eq!(status.target_ampere, 20.0); // last command held, not remapped to MAX
+    assert_eq!(status.reported_ampere, 0.0); // full_charge failsafe
     assert!(
         (status.last_poll_age_s - 7.0).abs() < 0.01,
         "got {}",
