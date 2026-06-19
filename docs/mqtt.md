@@ -47,7 +47,9 @@ publishes (closed loop, [`SPECS.md`](../SPECS.md) §6):
   the delivered current toward `ampere` (requires a live measured feed; stable band
   ~9–15 A with HA-speed measurement).
 - **`ampere < MIN_CHARGE_AMPERE`** (~6 A) → **pause**: below the 3-phase floor the box
-  can't hold a stable current, so the service serves a hard pause.
+  can't hold a stable current, so the service serves a hard pause — `reported =
+  MAX_BOX_AMPERE + PAUSE_MARGIN_AMPERE`, **above** the ceiling so the box actually cuts an
+  active charge (reporting exactly the ceiling holds it, #57).
 
 Out-of-range numbers are accepted and clamped, not rejected.
 
@@ -60,8 +62,9 @@ Out-of-range numbers are accepted and clamped, not rejected.
 - **Staleness → failsafe.** If no valid target arrives within `TARGET_TIMEOUT_SECONDS`,
   the service engages the **configurable** `TARGET_FAILSAFE` direction (#51/#52) and
   sets `failsafe: true`. A fresh valid target resumes control.
-  - `pause` (**default**) → report the ceiling (box stops) — safe for an **evcc/HA-
-    managed** box: a control-path blip can't flip an intended pause into charging (#52).
+  - `pause` (**default**) → report above the ceiling (`+ PAUSE_MARGIN_AMPERE`, box stops,
+    #57) — safe for an **evcc/HA-managed** box: a control-path blip can't flip an intended
+    pause into charging (#52).
   - `full_charge` → `reported = 0`, the meterless-box baseline
     ([`SPECS.md`](../SPECS.md) §9, *never worse than no tool*) — for an
     HA-automation-only / unmanaged box.

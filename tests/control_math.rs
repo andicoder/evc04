@@ -8,13 +8,14 @@ use evc04_charge::{ramp_step, reported_household, Ampere};
 
 const MAX: Ampere = Ampere(32.0);
 const MIN: Ampere = Ampere(6.0);
+const MARGIN: Ampere = Ampere(4.0);
 const STEP: Ampere = Ampere(0.5);
 
 #[test]
 fn offset_zero_reports_just_the_measured_current() {
     // target = max → offset 0 → the box holds the total at the ceiling: reported = measured.
     assert_eq!(
-        reported_household(MAX, MAX, Ampere(10.0), MIN),
+        reported_household(MAX, MAX, Ampere(10.0), MIN, MARGIN),
         Ampere(10.0)
     );
 }
@@ -23,7 +24,7 @@ fn offset_zero_reports_just_the_measured_current() {
 fn reports_offset_plus_measured_for_a_partial_target() {
     // target 20 on a 32 A ceiling → offset 12; measured 5 → reported 17.
     assert_eq!(
-        reported_household(MAX, Ampere(20.0), Ampere(5.0), MIN),
+        reported_household(MAX, Ampere(20.0), Ampere(5.0), MIN, MARGIN),
         Ampere(17.0)
     );
 }
@@ -31,8 +32,8 @@ fn reports_offset_plus_measured_for_a_partial_target() {
 #[test]
 fn measured_current_raises_the_report_so_the_box_modulates() {
     // Same target, more measured draw → higher report → the box backs the car off.
-    let low = reported_household(MAX, Ampere(20.0), Ampere(2.0), MIN);
-    let high = reported_household(MAX, Ampere(20.0), Ampere(8.0), MIN);
+    let low = reported_household(MAX, Ampere(20.0), Ampere(2.0), MIN, MARGIN);
+    let high = reported_household(MAX, Ampere(20.0), Ampere(8.0), MIN, MARGIN);
     assert!(high.0 > low.0, "report must rise with measured current");
 }
 
@@ -40,24 +41,32 @@ fn measured_current_raises_the_report_so_the_box_modulates() {
 fn clamps_the_report_to_the_ceiling() {
     // offset 22 + measured 20 = 42 → clamped to the ceiling (zero headroom).
     assert_eq!(
-        reported_household(MAX, Ampere(10.0), Ampere(20.0), MIN),
+        reported_household(MAX, Ampere(10.0), Ampere(20.0), MIN, MARGIN),
         MAX
     );
 }
 
 #[test]
 fn target_below_min_charge_pauses_regardless_of_measured() {
-    // Below the 3-phase floor the loop collapses, so we hard-pause (report the ceiling)
-    // no matter what the measurement says.
-    assert_eq!(reported_household(MAX, Ampere(4.0), Ampere(0.0), MIN), MAX);
-    assert_eq!(reported_household(MAX, Ampere(4.0), Ampere(30.0), MIN), MAX);
+    // Below the 3-phase floor the loop collapses, so we hard-pause. The pause must report
+    // *above* the ceiling (max + margin, #57) so the box actually cuts, no matter the
+    // measurement.
+    let pause = Ampere(MAX.0 + MARGIN.0);
+    assert_eq!(
+        reported_household(MAX, Ampere(4.0), Ampere(0.0), MIN, MARGIN),
+        pause
+    );
+    assert_eq!(
+        reported_household(MAX, Ampere(4.0), Ampere(30.0), MIN, MARGIN),
+        pause
+    );
 }
 
 #[test]
 fn target_at_min_charge_still_modulates() {
     // The cutoff is strict (< min): a target exactly at the floor charges.
     assert_eq!(
-        reported_household(MAX, MIN, Ampere(0.0), MIN),
+        reported_household(MAX, MIN, Ampere(0.0), MIN, MARGIN),
         MAX - MIN // offset 26, measured 0
     );
 }
@@ -66,7 +75,7 @@ fn target_at_min_charge_still_modulates() {
 fn clamps_target_above_the_ceiling_to_offset_zero() {
     // target over the ceiling → offset 0 → reported = measured.
     assert_eq!(
-        reported_household(MAX, Ampere(100.0), Ampere(7.0), MIN),
+        reported_household(MAX, Ampere(100.0), Ampere(7.0), MIN, MARGIN),
         Ampere(7.0)
     );
 }

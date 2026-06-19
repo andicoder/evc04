@@ -257,6 +257,31 @@ fn zero_min_charge_is_rejected() {
 }
 
 #[test]
+fn pause_margin_defaults_when_unset() {
+    let cfg = Config::from_vars(valid_vars()).unwrap();
+    assert_eq!(cfg.pause_margin, Ampere(4.0));
+}
+
+#[test]
+fn parses_pause_margin_ampere() {
+    let cfg = Config::from_vars(with(valid_vars(), "PAUSE_MARGIN_AMPERE", "2")).unwrap();
+    assert_eq!(cfg.pause_margin, Ampere(2.0));
+}
+
+#[test]
+fn zero_pause_margin_is_rejected() {
+    // A pause must report *above* the ceiling to cut an active charge (#57); a zero margin
+    // reports exactly the ceiling, which the box holds — so it's nonsense.
+    let err = Config::from_vars(with(valid_vars(), "PAUSE_MARGIN_AMPERE", "0")).unwrap_err();
+    assert!(
+        format!("{err}")
+            .to_uppercase()
+            .contains("PAUSE_MARGIN_AMPERE"),
+        "error should name PAUSE_MARGIN_AMPERE, got: {err}"
+    );
+}
+
+#[test]
 fn parses_a_full_valid_config() {
     let vars = with(
         with(

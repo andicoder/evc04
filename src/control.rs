@@ -13,7 +13,7 @@
 
 use crate::config::FailsafeMode;
 use crate::mqtt::TargetError;
-use crate::{ramp_step, reported_from_offset, Ampere};
+use crate::{pause_report, ramp_step, reported_from_offset, Ampere};
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time::Instant;
@@ -221,6 +221,7 @@ pub struct Controller {
     measured: MeasurementView,
     offset: OffsetView,
     min_charge: Ampere,
+    pause_margin: Ampere,
     target_failsafe: FailsafeMode,
     measured_failsafe: FailsafeMode,
 }
@@ -231,6 +232,7 @@ impl Controller {
         measured: MeasurementView,
         offset: OffsetView,
         min_charge: Ampere,
+        pause_margin: Ampere,
         target_failsafe: FailsafeMode,
         measured_failsafe: FailsafeMode,
     ) -> Controller {
@@ -239,6 +241,7 @@ impl Controller {
             measured,
             offset,
             min_charge,
+            pause_margin,
             target_failsafe,
             measured_failsafe,
         }
@@ -249,25 +252,26 @@ impl Controller {
     ///
     /// A stale **target** (#7) or **measurement** (#25) engages its configured
     /// [`FailsafeMode`] (#51): `full_charge` → report 0 A (the meterless-box default,
-    /// SPECS §9), `pause` → the ceiling (zero headroom → the box stops), `hold_last` →
-    /// no override (the held value flows through the loop below). When both engage with a
-    /// forced value, the safest (least-charge, i.e. highest report) wins. Below the
-    /// min-charge floor we hard-pause (#23). Otherwise we close the loop on the live
-    /// measurement and the **soft-ramped** offset (#24).
+    /// SPECS §9), `pause` → the [`pause_report`] (above the ceiling → the box stops, #57),
+    /// `hold_last` → no override (the held value flows through the loop below). When both
+    /// engage with a forced value, the safest (least-charge, i.e. highest report) wins.
+    /// Below the min-charge floor we hard-pause (#23). Otherwise we close the loop on the
+    /// live measurement and the **soft-ramped** offset (#24).
     pub fn reported_frame(&self) -> [f32; 3] {
         let max = self.target.max_box_ampere;
+        let pause = pause_report(max, self.pause_margin);
         let mut forced: Option<Ampere> = None;
         if self.target.failsafe_active() {
-            forced = safest(forced, self.target_failsafe.forced_report(max));
+            forced = safest(forced, self.target_failsafe.forced_report(pause));
         }
         if self.measured.failsafe_active() {
-            forced = safest(forced, self.measured_failsafe.forced_report(max));
+            forced = safest(forced, self.measured_failsafe.forced_report(pause));
         }
         if let Some(report) = forced {
             return [report.0; 3];
         }
         if self.target.effective_target().0 < self.min_charge.0 {
-            return [max.0; 3];
+            return [pause.0; 3];
         }
         let reported = reported_from_offset(max, self.offset.offset(), self.measured.measured());
         [reported.0; 3]

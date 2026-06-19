@@ -68,6 +68,7 @@ async fn main() -> ExitCode {
         measured_view,
         offset_view,
         cfg.min_charge,
+        cfg.pause_margin,
         cfg.target_failsafe,
         cfg.measured_failsafe,
     );
