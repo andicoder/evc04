@@ -376,6 +376,13 @@ below 65 A, so `available` stays ≥ box-max until `reported` is within ~2 A of 
 limit). Re-tested at DIP 16 A: the **same** on/off cliff. So the earlier claim of
 "continuous modulation in between" was **wrong** for the static model.
 
+> **Refinement (#57).** To actually *cut* an active charge the report must **exceed**
+> the limit, not merely reach it: at `reported = MAX_BOX_AMPERE` the box holds the
+> charge; at `reported = MAX_BOX_AMPERE + 2..4 A` it cuts (grid flipped from import to
+> export on hardware). So a hard pause / `pause` failsafe reports
+> `MAX_BOX_AMPERE + PAUSE_MARGIN_AMPERE` (§7), and `charge_state` treats only
+> `reported > MAX_BOX_AMPERE` as paused (reporting *at* the ceiling is live modulation).
+
 ### Closing the loop makes it modulate (proven)
 
 Feed a value that **rises with the actual draw**:
@@ -398,7 +405,9 @@ delivered current tracks `MAX_BOX_AMPERE − offset = target`. Proven on hardwar
   source (publishable over the same topic, no service change).
 - **3-phase floor ≈ 6 A ≈ 4.1 kW.** Below that the box can't hold a stable
   current, so a **minimum-charge cutoff** applies: `target < MIN_CHARGE_AMPERE` (~6 A)
-  → serve a hard pause (`reported ≥ MAX_BOX_AMPERE`), don't try to modulate the floor.
+  → serve a hard pause (`reported = MAX_BOX_AMPERE + PAUSE_MARGIN_AMPERE`, **above** the
+  ceiling so the box actually cuts — reporting exactly the ceiling holds an active charge,
+  #57), don't try to modulate the floor.
 
 ### The measured input is source-agnostic
 
@@ -477,6 +486,7 @@ the image). At minimum:
 | `SLAVE_ADDRESS` | default 1 |
 | `POLL_REGISTER` / `POLL_QUANTITY` | default 0x500C / 6 (override only for debugging) |
 | `MIN_CHARGE_AMPERE` | below this target → hard pause; don't modulate the 3φ floor (default 6) |
+| `PAUSE_MARGIN_AMPERE` | amps **above** `MAX_BOX_AMPERE` a pause reports so the box actually cuts an active charge — reporting exactly the ceiling holds it (hardware-confirmed, #57); default 4 |
 | `RAMP_RATE_AMPERE_PER_SECOND` | soft-ramp slope for the offset, A per second (default 0.5) |
 | `TARGET_TIMEOUT_SECONDS` | seconds the last target stays valid before the **full-charge** failsafe engages (default 60; must exceed the controller's republish interval) |
 | `MEASURED_TIMEOUT_SECONDS` | seconds the last measured value stays valid before the measurement failsafe falls back to **full charge** (default 15; see §9) |
@@ -484,7 +494,7 @@ the image). At minimum:
 | `HA_DISCOVERY_ENABLED` | publish Home Assistant MQTT discovery configs on connect so HA auto-creates the read-only status sensors (default `false`, opt-in; #46) |
 | `HA_DISCOVERY_PREFIX` | HA discovery prefix (default `homeassistant`) |
 | `HA_DISCOVERY_NODE_ID` | node-id segment + device identifier for discovery (default `evc04`; make unique per install when several share a broker) |
-| `TARGET_FAILSAFE` | direction when the **target** goes stale: `pause` (**default**, report ≥ limit → box stops) \| `full_charge` (report 0, the meterless baseline) \| `hold_last` (keep the last command). `full_charge` only for an HA-automation-only box (#51/#52) |
+| `TARGET_FAILSAFE` | direction when the **target** goes stale: `pause` (**default**, report `limit + PAUSE_MARGIN_AMPERE` → box stops, #57) \| `full_charge` (report 0, the meterless baseline) \| `hold_last` (keep the last command). `full_charge` only for an HA-automation-only box (#51/#52) |
 | `MEASURED_FAILSAFE` | direction when the **measured** input goes stale: same modes, **default `pause`** (#51/#52) |
 
 **Origin:** a hand-rolled pymodbus RTU slave first proved the `0x500C × 6` poll
@@ -528,7 +538,12 @@ These are **not** answerable from the bus alone; they need an observable
 (delivered charge current with a car connected):
 
 - [x] **DIP 4-5-6 current limit = 65 A** (DIP on-on-off). Confirmed empirically: the
-      charge cliffs to pause at exactly `reported = 65 A` (see §6).
+      charge cliffs to pause near `reported = 65 A` (see §6).
+- [x] **Pause must exceed the limit, not just reach it (#57).** At `reported =
+      MAX_BOX_AMPERE` the box holds an active charge; only `reported >
+      MAX_BOX_AMPERE` cuts it. Hard pause / `pause` failsafe now report
+      `MAX_BOX_AMPERE + PAUSE_MARGIN_AMPERE` (default +4 A); `charge_state` treats
+      only `reported > MAX_BOX_AMPERE` as paused (see §6/§7).
 - **Failsafe behaviour — partially confirmed on real hardware (no car):**
   - **Meter goes silent** (Power Optimizer enabled): the box raises a
     **meter-communication fault → solid red LED**. It keeps polling at ~1 Hz the
@@ -547,7 +562,8 @@ These are **not** answerable from the bus alone; they need an observable
        **configurable** direction per channel (`TARGET_FAILSAFE` / `MEASURED_FAILSAFE`,
        #51/#52). `TARGET_TIMEOUT_SECONDS` bounds the target staleness and
        `MEASURED_TIMEOUT_SECONDS` the measured one.
-       - **`pause`** (**default**, report ≥ limit → box stops): the safe direction for
+       - **`pause`** (**default**, report `limit + PAUSE_MARGIN_AMPERE` → box stops, #57):
+         the safe direction for
          an **evcc/HA-managed** box, where a control-path blip (e.g. a nightly router
          reconnect) must **not** flip an intended pause into charging overnight. evcc's
          idle target cadence is decision-driven and unbounded, so no finite timeout

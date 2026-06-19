@@ -15,6 +15,9 @@ use tokio::time::Instant;
 
 const MAX: Ampere = Ampere(32.0);
 const MIN: Ampere = Ampere(6.0);
+const MARGIN: Ampere = Ampere(4.0);
+/// What a pause reports: the ceiling plus the margin, so the box actually cuts (#57).
+const PAUSE: Ampere = Ampere(36.0);
 const STALE_AFTER: Duration = Duration::from_secs(5);
 const MEAS_STALE: Duration = Duration::from_secs(10);
 
@@ -49,6 +52,7 @@ fn controller_with(
         measured_view,
         offset_view,
         MIN,
+        MARGIN,
         target_failsafe,
         measured_failsafe,
     );
@@ -79,13 +83,13 @@ fn cold_start_reports_full_charge() {
 
 #[test]
 fn explicit_target_zero_pauses() {
-    // An explicit target = 0 is below the min-charge floor → report the whole ceiling →
-    // no headroom → pause. A command ("don't charge now"), distinct from the failsafe, and
-    // independent of the offset.
+    // An explicit target = 0 is below the min-charge floor → report above the ceiling →
+    // negative headroom → the box actually cuts (#57). A command ("don't charge now"),
+    // distinct from the failsafe, and independent of the offset.
     let (sink, _msink, offset, ctrl) = controller();
     offset.send(Ampere(20.0)).unwrap();
     sink.apply(Ok(0.0));
-    assert_eq!(ctrl.reported_frame(), [MAX.0; 3]);
+    assert_eq!(ctrl.reported_frame(), [PAUSE.0; 3]);
 }
 
 #[test]
@@ -110,6 +114,19 @@ fn report_clamps_to_the_ceiling() {
 }
 
 #[test]
+fn charge_state_is_c_when_modulation_pins_the_report_at_the_ceiling() {
+    // #57 regression: offset + measured can clamp to the ceiling during an active charge.
+    // With current flowing the box is charging, so charge_state must read "C" — reading "B"
+    // there falsely told evcc the car was paused and stalled its surplus regulation.
+    let (sink, msink, offset, ctrl) = controller();
+    sink.apply(Ok(20.0));
+    offset.send(Ampere(30.0)).unwrap();
+    msink.apply(Ok(10.0)); // offset 30 + measured 10 = 40 → clamped to MAX (32)
+    assert_eq!(ctrl.reported_frame(), [MAX.0; 3]);
+    assert_eq!(ctrl.charge_state(), "C");
+}
+
+#[test]
 fn rejected_target_holds_the_last_valid_value() {
     // A malformed command must not disturb the effective target (docs/mqtt.md).
     let (sink, _msink, _offset, ctrl) = controller();
@@ -125,7 +142,7 @@ fn target_below_min_charge_pauses_regardless_of_offset_and_measurement() {
     sink.apply(Ok(4.0));
     offset.send(Ampere(28.0)).unwrap();
     msink.apply(Ok(30.0));
-    assert_eq!(ctrl.reported_frame(), [MAX.0; 3]);
+    assert_eq!(ctrl.reported_frame(), [PAUSE.0; 3]);
 }
 
 #[tokio::test(start_paused = true)]
@@ -262,9 +279,9 @@ async fn served_frame_uses_full_charge_when_target_goes_stale() {
 
 #[tokio::test(start_paused = true)]
 async fn target_stale_pause_reports_the_ceiling() {
-    // With TARGET_FAILSAFE=pause a stale target must STOP charging (report the ceiling) —
-    // the safe direction for an evcc-managed box (a stale evcc pause stays a pause), not the
-    // full-charge default that would start charging at the worst time.
+    // With TARGET_FAILSAFE=pause a stale target must STOP charging (report above the ceiling,
+    // #57) — the safe direction for an evcc-managed box (a stale evcc pause stays a pause), not
+    // the full-charge default that would start charging at the worst time.
     let (sink, msink, offset, ctrl) =
         controller_with(FailsafeMode::Pause, FailsafeMode::FullCharge);
     sink.apply(Ok(20.0));
@@ -275,7 +292,7 @@ async fn target_stale_pause_reports_the_ceiling() {
     tokio::time::advance(STALE_AFTER + Duration::from_millis(1)).await;
     msink.apply(Ok(5.0)); // keep the measurement fresh; only the target is stale
     assert!(ctrl.failsafe_active());
-    assert_eq!(ctrl.reported_frame(), [MAX.0; 3]); // pause
+    assert_eq!(ctrl.reported_frame(), [PAUSE.0; 3]); // pause above the ceiling (#57)
 }
 
 #[tokio::test(start_paused = true)]
@@ -314,7 +331,7 @@ async fn measurement_stale_pause_reports_the_ceiling() {
     tokio::time::advance(MEAS_STALE + Duration::from_millis(1)).await;
     sink.apply(Ok(20.0)); // keep the target fresh; only the measurement is stale
     assert!(ctrl.measurement_failsafe_active());
-    assert_eq!(ctrl.reported_frame(), [MAX.0; 3]); // pause
+    assert_eq!(ctrl.reported_frame(), [PAUSE.0; 3]); // pause above the ceiling (#57)
 }
 
 #[tokio::test(start_paused = true)]
@@ -342,7 +359,7 @@ async fn safest_mode_wins_when_both_failsafes_are_active() {
 
     tokio::time::advance(MEAS_STALE + Duration::from_millis(1)).await;
     assert!(ctrl.failsafe_active() && ctrl.measurement_failsafe_active());
-    assert_eq!(ctrl.reported_frame(), [MAX.0; 3]); // target=pause wins over measured=full_charge
+    assert_eq!(ctrl.reported_frame(), [PAUSE.0; 3]); // target=pause wins over measured=full_charge
 }
 
 // --- Soft-ramp driver (#24): the offset converges to its setpoint over time. ---

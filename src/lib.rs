@@ -29,6 +29,15 @@ impl std::ops::Sub for Ampere {
     }
 }
 
+/// Per-phase value to report to **stop** the box (a hard pause or a `pause` failsafe):
+/// the ceiling *plus a margin*. Reporting exactly `max` does **not** cut an actively
+/// charging car — the closed loop holds the charge right at the limit; only a value that
+/// **exceeds** the limit by a couple of amps forces the cut (confirmed on hardware, #57).
+/// The margin is site-tunable via `PAUSE_MARGIN_AMPERE` (SPECS §6/§9).
+pub fn pause_report(max: Ampere, margin: Ampere) -> Ampere {
+    Ampere(max.0 + margin.0)
+}
+
 /// Household current (per phase) to report so the EVC04's closed loop settles the car at
 /// `target` charge amps, given the `measured` current actually flowing right now.
 ///
@@ -39,16 +48,18 @@ impl std::ops::Sub for Ampere {
 ///   the ceiling, i.e. as much charge as the ceiling allows.
 /// - a partial `target` → report `offset + measured`, which rises as the car draws more,
 ///   so the box backs off and settles around `target`.
-/// - `target < min_charge` → report `max` (zero headroom → pause): below the 3-phase floor
-///   the loop can't hold a stable current, so we don't try to modulate it.
+/// - `target < min_charge` → report [`pause_report`] (`max + margin`, exceeding the ceiling
+///   so the box actually cuts, #57): below the 3-phase floor the loop can't hold a stable
+///   current, so we don't try to modulate it.
 pub fn reported_household(
     max: Ampere,
     target: Ampere,
     measured: Ampere,
     min_charge: Ampere,
+    pause_margin: Ampere,
 ) -> Ampere {
     if target.0 < min_charge.0 {
-        return max;
+        return pause_report(max, pause_margin);
     }
     let offset = max - target.clamp(Ampere(0.0), max);
     reported_from_offset(max, offset, measured)
@@ -84,13 +95,16 @@ const CHARGING_FLOOR: Ampere = Ampere(1.0);
 /// charging), approximated from what the meter emulation can observe.
 ///
 /// We have **no control-pilot line**, so this is best-effort: "C" while charge is
-/// allowed (`reported` below the ceiling — not a hard pause) *and* current is
-/// actually flowing, otherwise "B" (connected, not charging — a paused box, or
-/// enabled-but-not-yet-drawing). **"A" (no vehicle) is never asserted**: a meter
-/// emulation can't tell an unplugged car from a connected-but-idle one, so evcc must
-/// rely on its own vehicle detection for that (docs/evcc.md).
+/// allowed (`reported` no higher than the ceiling — *not* a hard pause, which reports
+/// **above** it, #57) *and* current is actually flowing, otherwise "B" (connected, not
+/// charging — a paused box, or enabled-but-not-yet-drawing). Reporting *at* the ceiling is
+/// normal modulation (the loop can settle there), so it must read "C" while current flows —
+/// pinning it to "B" there falsely told evcc the car was paused and stalled its regulation
+/// (#57). **"A" (no vehicle) is never asserted**: a meter emulation can't tell an unplugged
+/// car from a connected-but-idle one, so evcc must rely on its own vehicle detection
+/// (docs/evcc.md).
 pub fn charge_state(reported: Ampere, max: Ampere, measured: Ampere) -> &'static str {
-    let charge_allowed = reported.0 < max.0;
+    let charge_allowed = reported.0 <= max.0;
     let current_flowing = measured.0 > CHARGING_FLOOR.0;
     if charge_allowed && current_flowing {
         "C"
@@ -111,21 +125,24 @@ mod tests {
     use super::*;
 
     const MIN: Ampere = Ampere(6.0);
+    const MARGIN: Ampere = Ampere(4.0);
 
     #[test]
     fn offset_zero_reports_the_bare_measured_current() {
         // target = max → offset 0 → report whatever is measured (box holds at the ceiling).
         assert_eq!(
-            reported_household(Ampere(16.0), Ampere(16.0), Ampere(9.0), MIN),
+            reported_household(Ampere(16.0), Ampere(16.0), Ampere(9.0), MIN, MARGIN),
             Ampere(9.0)
         );
     }
 
     #[test]
-    fn below_min_charge_reports_the_ceiling_to_pause() {
+    fn below_min_charge_reports_above_the_ceiling_to_pause() {
+        // #57: a hard pause must report the ceiling *plus the margin* (20 A here) so the box
+        // actually cuts; reporting exactly 16 holds the charge.
         assert_eq!(
-            reported_household(Ampere(16.0), Ampere(5.0), Ampere(0.0), MIN),
-            Ampere(16.0)
+            reported_household(Ampere(16.0), Ampere(5.0), Ampere(0.0), MIN, MARGIN),
+            Ampere(20.0)
         );
     }
 
@@ -138,9 +155,19 @@ mod tests {
     }
 
     #[test]
-    fn charging_state_is_b_when_paused_at_the_ceiling() {
-        // A hard pause serves the ceiling; evcc must read "connected, not charging".
-        assert_eq!(charge_state(MAX, MAX, Ampere(0.0)), "B");
+    fn charging_state_is_c_at_the_ceiling_while_current_flows() {
+        // #57: modulation can settle right at the ceiling; with current flowing this is an
+        // active charge, not a pause. Reading it "B" here falsely stalled evcc's regulation.
+        assert_eq!(charge_state(MAX, MAX, Ampere(9.0)), "C");
+    }
+
+    #[test]
+    fn charging_state_is_b_when_paused_above_the_ceiling() {
+        // A hard pause serves above the ceiling (#57); evcc must read "connected, not charging".
+        assert_eq!(
+            charge_state(pause_report(MAX, MARGIN), MAX, Ampere(0.0)),
+            "B"
+        );
     }
 
     #[test]

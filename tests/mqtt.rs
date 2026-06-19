@@ -13,6 +13,7 @@ use tokio::time::Instant;
 
 const MAX: Ampere = Ampere(32.0);
 const MIN: Ampere = Ampere(6.0);
+const MARGIN: Ampere = Ampere(4.0);
 const STALE_AFTER: Duration = Duration::from_secs(5);
 const MEAS_STALE: Duration = Duration::from_secs(10);
 
@@ -37,6 +38,7 @@ fn controller() -> (
             measured_view,
             offset_view,
             MIN,
+            MARGIN,
             FailsafeMode::FullCharge,
             FailsafeMode::FullCharge,
         ),
@@ -178,12 +180,12 @@ async fn assembled_status_reflects_the_live_control_state() {
 
 #[tokio::test]
 async fn assembled_status_reports_charge_state_b_when_paused() {
-    // A target below MIN_CHARGE serves a hard pause (reported = max), which evcc must
-    // read as "connected, not charging" (B) so its enable=false is seen as effective.
+    // A target below MIN_CHARGE serves a hard pause (reported above the ceiling, #57), which
+    // evcc must read as "connected, not charging" (B) so its enable=false is seen as effective.
     let (sink, _msink, _offset, ctrl) = controller();
     sink.apply(Ok(3.0)); // below MIN (6 A) → pause
     let status = assemble_status(&ctrl, LinkHealth::Up, Instant::now(), None);
-    assert_eq!(status.reported_ampere, MAX.0); // hard pause
+    assert_eq!(status.reported_ampere, MAX.0 + MARGIN.0); // hard pause above the ceiling
     assert_eq!(status.charge_state, "B");
 }
 

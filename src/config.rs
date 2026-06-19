@@ -34,6 +34,11 @@ pub struct Config {
     /// (~6 A ≈ 4.1 kW) collapses to pause rather than holding a stable current
     /// (SPECS.md §6, issue #23). A target below this serves a hard pause.
     pub min_charge: Ampere,
+    /// Amps **above** `max_box_ampere` to report when pausing (hard pause or a `pause`
+    /// failsafe). Reporting exactly the ceiling does not cut an active charge — the box
+    /// holds it right at the limit; only exceeding it forces the cut (hardware-confirmed,
+    /// issue #57). Site-tunable per box/DIP (SPECS.md §6/§9).
+    pub pause_margin: Ampere,
     /// How long the last measured current stays valid before the measurement-loss
     /// failsafe engages (SPECS.md §9, issue #25). Serving `offset + stale_measured`
     /// would hold the box at the wrong current, so once stale we revert to full charge
@@ -65,18 +70,20 @@ pub enum FailsafeMode {
     /// Keep serving the last commanded value through the loop (a stale pause stays a
     /// pause, a stale charge stays a charge).
     HoldLast,
-    /// Serve the ceiling (zero headroom → the box pauses). The genuinely safe direction
-    /// for an evcc-managed box: any control-path fault stops charging.
+    /// Serve a value **above** the ceiling (zero/negative headroom → the box pauses). The
+    /// genuinely safe direction for an evcc-managed box: any control-path fault stops
+    /// charging. Reporting exactly the ceiling does not cut an active charge (#57).
     Pause,
 }
 
 impl FailsafeMode {
     /// The forced per-phase report when this failsafe engages, or `None` for `hold_last`
-    /// (serve the held value through the normal loop instead).
-    pub fn forced_report(self, max_box: Ampere) -> Option<Ampere> {
+    /// (serve the held value through the normal loop instead). `pause_report` is the
+    /// stop value (`max + margin`, exceeding the ceiling so the box actually cuts, #57).
+    pub fn forced_report(self, pause_report: Ampere) -> Option<Ampere> {
         match self {
             FailsafeMode::FullCharge => Some(Ampere(0.0)),
-            FailsafeMode::Pause => Some(max_box),
+            FailsafeMode::Pause => Some(pause_report),
             FailsafeMode::HoldLast => None,
         }
     }
@@ -136,8 +143,8 @@ impl Config {
     pub fn log_summary(&self) -> String {
         format!(
             "gateway={} max_box={}A mqtt={}:{} auth={} target={:?} measured={:?} status={:?} \
-             min_charge={}A ramp={}A/s target_timeout={}s measured_timeout={}s ha_discovery={} \
-             target_failsafe={} measured_failsafe={}",
+             min_charge={}A pause_margin={}A ramp={}A/s target_timeout={}s measured_timeout={}s \
+             ha_discovery={} target_failsafe={} measured_failsafe={}",
             self.gateway_addr(),
             self.max_box_ampere.0,
             self.mqtt.host,
@@ -151,6 +158,7 @@ impl Config {
             self.mqtt.topic_measured,
             self.mqtt.topic_status,
             self.min_charge.0,
+            self.pause_margin.0,
             self.ramp_rate,
             self.target_timeout.as_secs(),
             self.measured_timeout.as_secs(),
@@ -231,6 +239,15 @@ impl RawConfig {
                 self.max_box_ampere, self.min_charge_ampere
             ));
         }
+        if !(self.pause_margin_ampere.is_finite()
+            && self.pause_margin_ampere > 0.0
+            && self.pause_margin_ampere <= AMPERE_SANITY_LIMIT)
+        {
+            problems.push(format!(
+                "PAUSE_MARGIN_AMPERE must be in (0, {AMPERE_SANITY_LIMIT}] A, got {}",
+                self.pause_margin_ampere
+            ));
+        }
 
         let parse_failsafe = |var: &str, raw: &str, problems: &mut Vec<String>| {
             FailsafeMode::parse(raw).unwrap_or_else(|| {
@@ -269,6 +286,7 @@ impl RawConfig {
             },
             target_timeout: Duration::from_secs(self.target_timeout_seconds),
             min_charge: Ampere(self.min_charge_ampere),
+            pause_margin: Ampere(self.pause_margin_ampere),
             measured_timeout: Duration::from_secs(self.measured_timeout_seconds),
             ramp_rate: self.ramp_rate_ampere_per_second,
             discovery: DiscoveryConfig {
@@ -306,6 +324,8 @@ struct RawConfig {
     target_timeout_seconds: u64,
     #[serde(default = "default_min_charge_ampere")]
     min_charge_ampere: f32,
+    #[serde(default = "default_pause_margin_ampere")]
+    pause_margin_ampere: f32,
     #[serde(default = "default_measured_timeout_seconds")]
     measured_timeout_seconds: u64,
     #[serde(default = "default_ramp_rate_ampere_per_second")]
@@ -360,6 +380,12 @@ fn default_topic_measured() -> String {
 /// current (SPECS.md §6), so it's the default minimum the closed loop attempts.
 fn default_min_charge_ampere() -> f32 {
     6.0
+}
+
+/// Amps above the ceiling a pause reports so the box actually cuts an active charge (#57).
+/// 4 A clears the ~1–2 A transition zone measured on hardware (SPECS.md §6) with headroom.
+fn default_pause_margin_ampere() -> f32 {
+    4.0
 }
 
 /// Measurement republishes every ~3–6 s (SPECS.md §6), so ~2–3 missed updates before we
