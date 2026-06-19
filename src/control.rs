@@ -301,6 +301,17 @@ impl Controller {
         self.target.failsafe_active()
     }
 
+    /// The configured direction the **target** failsafe takes (#51), so a log line can
+    /// state what it actually does instead of a hardcoded "full charge" (#55).
+    pub fn target_failsafe_mode(&self) -> FailsafeMode {
+        self.target_failsafe
+    }
+
+    /// The configured direction the **measurement** failsafe takes (#51/#55).
+    pub fn measured_failsafe_mode(&self) -> FailsafeMode {
+        self.measured_failsafe
+    }
+
     /// Whether the measurement-loss full-charge failsafe is engaged (status
     /// `measurement_failsafe`, #25).
     pub fn measurement_failsafe_active(&self) -> bool {

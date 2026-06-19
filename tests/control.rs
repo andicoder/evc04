@@ -293,6 +293,16 @@ async fn target_stale_hold_last_keeps_the_last_command() {
     assert_eq!(ctrl.reported_frame(), [17.0; 3]); // held target 20 → offset 12 + measured 5
 }
 
+#[test]
+fn controller_exposes_its_configured_failsafe_modes() {
+    // The failsafe log lines (#55) must state the configured direction, not a hardcoded
+    // "full charge", so the controller surfaces the per-channel mode it was built with.
+    let (_sink, _msink, _offset, ctrl) =
+        controller_with(FailsafeMode::Pause, FailsafeMode::HoldLast);
+    assert_eq!(ctrl.target_failsafe_mode(), FailsafeMode::Pause);
+    assert_eq!(ctrl.measured_failsafe_mode(), FailsafeMode::HoldLast);
+}
+
 #[tokio::test(start_paused = true)]
 async fn measurement_stale_pause_reports_the_ceiling() {
     let (sink, msink, offset, ctrl) =
