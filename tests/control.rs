@@ -4,7 +4,7 @@
 //! (full_charge | hold_last | pause; #51/#52).
 
 use evc04_charge::config::FailsafeMode;
-use evc04_charge::control::{Controller, MeasurementSink, TargetSink};
+use evc04_charge::control::{Controller, EnableSink, MeasurementSink, TargetSink};
 use evc04_charge::mqtt::TargetError;
 use evc04_charge::slave::{serve_connection, PollMatch};
 use evc04_charge::{control, Ampere};
@@ -47,16 +47,41 @@ fn controller_with(
     let (target_sink, target_view) = control::channel(MAX, STALE_AFTER);
     let (measured_sink, measured_view) = control::measurement_channel(Ampere(0.0), MEAS_STALE);
     let (offset_tx, offset_view) = control::offset_channel(Ampere(0.0));
+    // No enable sink returned: the gate stays open (true) for the whole test, so these
+    // helpers exercise the pre-#60 behaviour. Enable-gate tests use [`enable_gated`].
+    let (_enable_sink, enable_view) = control::enable_channel(true);
     let ctrl = Controller::new(
         target_view,
         measured_view,
         offset_view,
+        enable_view,
         MIN,
         MARGIN,
         target_failsafe,
         measured_failsafe,
     );
     (target_sink, measured_sink, offset_tx, ctrl)
+}
+
+/// A `Controller` whose enable gate is drivable: returns the [`EnableSink`] (and the target
+/// sink + offset sender) so #60 tests can toggle the gate. Both failsafes are `full_charge`
+/// so a stale target reverts to charge — the worst case the gate must still override.
+fn enable_gated() -> (TargetSink, EnableSink, watch::Sender<Ampere>, Controller) {
+    let (target_sink, target_view) = control::channel(MAX, STALE_AFTER);
+    let (_measured_sink, measured_view) = control::measurement_channel(Ampere(0.0), MEAS_STALE);
+    let (offset_tx, offset_view) = control::offset_channel(Ampere(0.0));
+    let (enable_sink, enable_view) = control::enable_channel(true);
+    let ctrl = Controller::new(
+        target_view,
+        measured_view,
+        offset_view,
+        enable_view,
+        MIN,
+        MARGIN,
+        FailsafeMode::FullCharge,
+        FailsafeMode::FullCharge,
+    );
+    (target_sink, enable_sink, offset_tx, ctrl)
 }
 
 // SPECS.md §4 verified poll frame.
@@ -387,6 +412,57 @@ async fn safest_mode_wins_when_both_failsafes_are_active() {
     tokio::time::advance(MEAS_STALE + Duration::from_millis(1)).await;
     assert!(ctrl.failsafe_active() && ctrl.measurement_failsafe_active());
     assert_eq!(ctrl.reported_frame(), [PAUSE.0; 3]); // target=pause wins over measured=full_charge
+}
+
+// --- Enable gate (#60): a hard on/off override layered on top of the target. ---
+
+#[test]
+fn enable_false_pauses_an_active_charge() {
+    // The gate hard-pauses regardless of the commanded target, so evcc's enable=false stops
+    // a charge even while maxcurrent still commands a modulating target.
+    let (tsink, esink, offset, ctrl) = enable_gated();
+    tsink.apply(Ok(20.0)); // a modulating target
+    offset.send(Ampere(12.0)).unwrap();
+    assert_eq!(ctrl.reported_frame(), [12.0; 3]); // gate open by default → closed loop
+
+    esink.apply(Ok(false));
+    assert_eq!(ctrl.reported_frame(), [PAUSE.0; 3]); // gated off → pause above the ceiling (#57)
+}
+
+#[test]
+fn enable_true_resumes_the_commanded_target() {
+    let (tsink, esink, offset, ctrl) = enable_gated();
+    tsink.apply(Ok(20.0));
+    offset.send(Ampere(12.0)).unwrap();
+    esink.apply(Ok(false));
+    assert_eq!(ctrl.reported_frame(), [PAUSE.0; 3]);
+
+    esink.apply(Ok(true));
+    assert_eq!(ctrl.reported_frame(), [12.0; 3]); // gate re-opened → back to the target
+}
+
+#[test]
+fn enable_defaults_to_honoring_the_target_when_never_received() {
+    // Backward compatible: with no enable message the gate is open, so a single-topic
+    // deployment behaves exactly as before.
+    let (tsink, _esink, offset, ctrl) = enable_gated();
+    tsink.apply(Ok(20.0));
+    offset.send(Ampere(12.0)).unwrap();
+    assert_eq!(ctrl.reported_frame(), [12.0; 3]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn enable_false_overrides_a_full_charge_target_failsafe() {
+    // An explicit off must win even when a stale target would otherwise fall back to full
+    // charge: the safest directive (pause) wins (#60 layered above the failsafes).
+    let (tsink, esink, offset, ctrl) = enable_gated();
+    tsink.apply(Ok(20.0));
+    offset.send(Ampere(12.0)).unwrap();
+    esink.apply(Ok(false));
+
+    tokio::time::advance(STALE_AFTER + Duration::from_millis(1)).await;
+    assert!(ctrl.failsafe_active());
+    assert_eq!(ctrl.reported_frame(), [PAUSE.0; 3]); // pause beats the full_charge failsafe
 }
 
 // --- Soft-ramp driver (#24): the offset converges to its setpoint over time. ---

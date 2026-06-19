@@ -55,6 +55,18 @@ fn failsafe_is_a_binary_sensor_with_an_on_off_template() {
 }
 
 #[test]
+fn enabled_is_a_binary_sensor_with_an_on_off_template() {
+    // #60: the enable gate is surfaced read-only, like the other binary flags.
+    let msgs = discovery_messages(&cfg(true), "evc04/status");
+    let (topic, v) = payload_for(&msgs, "/enabled/config");
+    assert_eq!(topic, "homeassistant/binary_sensor/evc04/enabled/config");
+    assert_eq!(
+        v["value_template"],
+        "{{ 'ON' if value_json.enabled else 'OFF' }}"
+    );
+}
+
+#[test]
 fn no_command_entity_is_published() {
     // SPECS §6: read-only only — a command entity would be a second commander.
     let msgs = discovery_messages(&cfg(true), "evc04/status");

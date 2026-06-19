@@ -129,6 +129,11 @@ pub struct MqttConfig {
     /// Inbound live measured per-phase current that closes the control loop
     /// (SPECS.md §6, issue #22). Source-agnostic: grid/total today, charger CT later.
     pub topic_measured: String,
+    /// Inbound enable gate that pauses charging independently of the target (issue #60),
+    /// so evcc's on/off (`enable`) and its current setpoint (`maxcurrent`) stop racing on
+    /// the one target topic. Opt-in: when nothing is ever published, the gate defaults to
+    /// `true` (honor the target), so single-topic deployments keep working unchanged.
+    pub topic_enable: String,
 }
 
 impl Config {
@@ -142,9 +147,9 @@ impl Config {
     /// password**: `MQTT_PASS` is reported only as present/absent, never its value.
     pub fn log_summary(&self) -> String {
         format!(
-            "gateway={} max_box={}A mqtt={}:{} auth={} target={:?} measured={:?} status={:?} \
-             min_charge={}A pause_margin={}A ramp={}A/s target_timeout={}s measured_timeout={}s \
-             ha_discovery={} target_failsafe={} measured_failsafe={}",
+            "gateway={} max_box={}A mqtt={}:{} auth={} target={:?} measured={:?} enable={:?} \
+             status={:?} min_charge={}A pause_margin={}A ramp={}A/s target_timeout={}s \
+             measured_timeout={}s ha_discovery={} target_failsafe={} measured_failsafe={}",
             self.gateway_addr(),
             self.max_box_ampere.0,
             self.mqtt.host,
@@ -156,6 +161,7 @@ impl Config {
             },
             self.mqtt.topic_target,
             self.mqtt.topic_measured,
+            self.mqtt.topic_enable,
             self.mqtt.topic_status,
             self.min_charge.0,
             self.pause_margin.0,
@@ -278,6 +284,7 @@ impl RawConfig {
                 topic_target: self.mqtt_topic_target,
                 topic_status: self.mqtt_topic_status,
                 topic_measured: self.mqtt_topic_measured,
+                topic_enable: self.mqtt_topic_enable,
             },
             poll: PollMatch {
                 addr: self.slave_address,
@@ -314,6 +321,8 @@ struct RawConfig {
     mqtt_topic_status: String,
     #[serde(default = "default_topic_measured")]
     mqtt_topic_measured: String,
+    #[serde(default = "default_topic_enable")]
+    mqtt_topic_enable: String,
     #[serde(default = "default_slave_address")]
     slave_address: u8,
     #[serde(default = "default_poll_register")]
@@ -374,6 +383,10 @@ fn default_target_timeout_seconds() -> u64 {
 
 fn default_topic_measured() -> String {
     "evc04/measured".to_string()
+}
+
+fn default_topic_enable() -> String {
+    "evc04/enable".to_string()
 }
 
 /// 3-phase charging floor (~6 A ≈ 4.1 kW); below it the box can't hold a stable

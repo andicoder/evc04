@@ -12,7 +12,7 @@
 //! than going quiet. Staleness is derived on read against the last command's timestamp.
 
 use crate::config::FailsafeMode;
-use crate::mqtt::TargetError;
+use crate::mqtt::{EnableError, TargetError};
 use crate::{pause_report, ramp_step, reported_from_offset, Ampere};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -221,15 +221,58 @@ pub async fn run_ramp(
     }
 }
 
+/// Write half of the enable gate (#60): hand to the MQTT task. A fresh value replaces the
+/// last; a rejected payload holds the last good value (docs/mqtt.md), so a malformed publish
+/// never flips charging on or off. There is no staleness here — the gate is a latch the
+/// retained topic restores on reconnect, an override layered on top of the target.
+pub struct EnableSink {
+    tx: watch::Sender<bool>,
+}
+
+impl EnableSink {
+    /// Adopt a fresh gate value; hold the last good one on a rejected payload, mirroring
+    /// [`TargetSink::apply`].
+    pub fn apply(&self, enable: Result<bool, EnableError>) {
+        if let Ok(on) = enable {
+            let _ = self.tx.send(on);
+        }
+    }
+}
+
+/// Read half (cloneable, lock-free reads) of the enable gate (#60): the [`Controller`]'s
+/// hard on/off override and the status publisher's `enabled` view.
+#[derive(Clone)]
+pub struct EnableView {
+    rx: watch::Receiver<bool>,
+}
+
+impl EnableView {
+    /// Whether charging is currently allowed. `false` hard-pauses the box regardless of the
+    /// commanded target (#60).
+    pub fn enabled(&self) -> bool {
+        *self.rx.borrow()
+    }
+}
+
+/// Wire the MQTT enable stream to the gate the [`Controller`] reads on the poll path (#60).
+/// `initial` is the gate before any message arrives — pass `true` so an un-configured
+/// (single-topic) deployment honors the target exactly as before; the gate is purely additive.
+pub fn enable_channel(initial: bool) -> (EnableSink, EnableView) {
+    let (tx, rx) = watch::channel(initial);
+    (EnableSink { tx }, EnableView { rx })
+}
+
 /// Joins the inbound streams into the single per-poll answer the slave serves: the
 /// failsafe-aware [`ControlView`] target (for the min-charge cutoff), the soft-ramped
-/// [`OffsetView`], and the live [`MeasurementView`] current — `clamp(offset + measured)`
-/// (#23/#24). Cloneable, lock-free reads.
+/// [`OffsetView`], the live [`MeasurementView`] current — `clamp(offset + measured)`
+/// (#23/#24) — and the [`EnableView`] gate that can hard-pause it all (#60). Cloneable,
+/// lock-free reads.
 #[derive(Clone)]
 pub struct Controller {
     target: ControlView,
     measured: MeasurementView,
     offset: OffsetView,
+    enable: EnableView,
     min_charge: Ampere,
     pause_margin: Ampere,
     target_failsafe: FailsafeMode,
@@ -237,10 +280,12 @@ pub struct Controller {
 }
 
 impl Controller {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         target: ControlView,
         measured: MeasurementView,
         offset: OffsetView,
+        enable: EnableView,
         min_charge: Ampere,
         pause_margin: Ampere,
         target_failsafe: FailsafeMode,
@@ -250,6 +295,7 @@ impl Controller {
             target,
             measured,
             offset,
+            enable,
             min_charge,
             pause_margin,
             target_failsafe,
@@ -263,14 +309,21 @@ impl Controller {
     /// A stale **target** (#7) or **measurement** (#25) engages its configured
     /// [`FailsafeMode`] (#51): `full_charge` → report 0 A (the meterless-box default,
     /// SPECS §9), `pause` → the [`pause_report`] (above the ceiling → the box stops, #57),
-    /// `hold_last` → no override (the held value flows through the loop below). When both
-    /// engage with a forced value, the safest (least-charge, i.e. highest report) wins.
-    /// Below the min-charge floor we hard-pause (#23). Otherwise we close the loop on the
-    /// live measurement and the **soft-ramped** offset (#24).
+    /// `hold_last` → no override (the held value flows through the loop below). The enable
+    /// gate (#60), when off, forces a pause too. When several forced values engage, the
+    /// safest (least-charge, i.e. highest report) wins. Below the min-charge floor we
+    /// hard-pause (#23). Otherwise we close the loop on the live measurement and the
+    /// **soft-ramped** offset (#24).
     pub fn reported_frame(&self) -> [f32; 3] {
         let max = self.target.max_box_ampere;
         let pause = pause_report(max, self.pause_margin);
         let mut forced: Option<Ampere> = None;
+        // The enable gate (#60) is a hard off layered above everything: it forces the pause
+        // report, and folding it through `safest` keeps an explicit off winning over a
+        // full_charge failsafe (pause is the highest report).
+        if !self.enable.enabled() {
+            forced = safest(forced, Some(pause));
+        }
         if self.target.failsafe_active() {
             forced = safest(forced, self.target_failsafe.forced_report(pause));
         }
@@ -302,6 +355,12 @@ impl Controller {
     /// Last live measured current consumed, for the status topic's `measured_ampere`.
     pub fn measured(&self) -> Ampere {
         self.measured.measured()
+    }
+
+    /// Whether the enable gate currently allows charging, for the status topic's `enabled`
+    /// (#60). `false` means the box is hard-paused regardless of the commanded target.
+    pub fn enabled(&self) -> bool {
+        self.enable.enabled()
     }
 
     /// Current soft-ramped offset, for the status topic's `offset_ampere`.

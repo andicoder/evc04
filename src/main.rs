@@ -62,12 +62,18 @@ async fn main() -> ExitCode {
         offset_tx,
     ));
 
-    // Join target + measurement + ramped offset into the answer the slave serves (#23/#24).
-    // Each staleness failsafe takes its configured direction (#51).
+    // Optional enable gate (#60): an on/off override layered on top of the target so evcc's
+    // `enable` and `maxcurrent` stop racing on one topic. Defaults to `true` (honor the
+    // target); a retained `enable:false` is restored by the broker on reconnect.
+    let (enable_sink, enable_view) = control::enable_channel(true);
+
+    // Join target + measurement + ramped offset + enable gate into the answer the slave
+    // serves (#23/#24/#60). Each staleness failsafe takes its configured direction (#51).
     let controller = control::Controller::new(
         view,
         measured_view,
         offset_view,
+        enable_view,
         cfg.min_charge,
         cfg.pause_margin,
         cfg.target_failsafe,
@@ -110,16 +116,28 @@ async fn main() -> ExitCode {
         });
         sink.apply(target);
     };
+    let measured_error_tx = error_tx.clone();
     let apply_measured = move |measured| {
         match &measured {
             Ok(amps) => tracing::debug!("measured accepted: {amps} A"),
             Err(e) => tracing::warn!("measured rejected: {e}"),
         }
-        let _ = error_tx.send(match &measured {
+        let _ = measured_error_tx.send(match &measured {
             Ok(_) => None,
             Err(e) => Some(format!("{e}")),
         });
         measured_sink.apply(measured);
+    };
+    let apply_enable = move |enable| {
+        match &enable {
+            Ok(on) => tracing::debug!("enable gate set: {on}"),
+            Err(e) => tracing::warn!("enable rejected: {e}"),
+        }
+        let _ = error_tx.send(match &enable {
+            Ok(_) => None,
+            Err(e) => Some(format!("{e}")),
+        });
+        enable_sink.apply(enable);
     };
 
     // Log the headline control edges (#43): both staleness failsafes entering/leaving
@@ -128,6 +146,8 @@ async fn main() -> ExitCode {
     let prev_failsafe = Cell::new(false);
     let prev_measurement_failsafe = Cell::new(false);
     let prev_charging = Cell::new(false);
+    // Tracks the enable gate (#60); starts open to match the default so the first close logs.
+    let prev_enabled = Cell::new(true);
     let status = move || {
         let s = assemble_status(
             &controller,
@@ -157,6 +177,16 @@ async fn main() -> ExitCode {
                 tracing::info!("measurement fresh again: resuming closed loop");
             }
         }
+        if s.enabled != prev_enabled.replace(s.enabled) {
+            if s.enabled {
+                tracing::info!("enable gate opened: honoring the target");
+            } else {
+                tracing::warn!(
+                    "enable gate closed: pausing the box (reported {} A/phase)",
+                    s.reported_ampere
+                );
+            }
+        }
         let charging = s.charge_state == "C";
         if charging != prev_charging.replace(charging) {
             tracing::info!(
@@ -174,6 +204,14 @@ async fn main() -> ExitCode {
         evc04_charge::discovery::discovery_messages(&cfg.discovery, &cfg.mqtt.topic_status);
 
     // Runs until cancelled; the gateway link task runs alongside it.
-    run_mqtt(cfg.mqtt, discovery, apply, apply_measured, status).await;
+    run_mqtt(
+        cfg.mqtt,
+        discovery,
+        apply,
+        apply_measured,
+        apply_enable,
+        status,
+    )
+    .await;
     ExitCode::SUCCESS
 }
