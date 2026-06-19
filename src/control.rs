@@ -326,9 +326,9 @@ impl Controller {
 /// Wire the MQTT command stream to the bytes the slave serves (SPECS §6/§9).
 ///
 /// `max_box_ampere` is the box's DIP-set ceiling; until the first command arrives the
-/// view serves it as the target → `reported = 0` → full charge, so startup is already
-/// safe. `failsafe_after` is the staleness window before the same full-charge fallback
-/// re-engages.
+/// view serves it as the target → `reported = 0` → full charge, so the cold-start grace
+/// window matches the meterless box. `failsafe_after` is the staleness window after which
+/// the [`Controller`]'s configured [`FailsafeMode`] takes over (#51/#52).
 pub fn channel(max_box_ampere: Ampere, failsafe_after: Duration) -> (TargetSink, ControlView) {
     let (tx, rx) = watch::channel(Sample {
         target: max_box_ampere,

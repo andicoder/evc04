@@ -1,6 +1,7 @@
 //! Integration tests for the control seam (SPECS.md §6/§9): the slave serves
 //! `clamp(soft_ramped_offset + measured)`, with the min-charge cutoff and the
-//! target/measurement staleness failsafes both falling back to full charge.
+//! target/measurement staleness failsafes taking their configured direction
+//! (full_charge | hold_last | pause; #51/#52).
 
 use evc04_charge::config::FailsafeMode;
 use evc04_charge::control::{Controller, MeasurementSink, TargetSink};

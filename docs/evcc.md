@@ -112,25 +112,26 @@ hunt** (evcc keeps correcting before the box has settled). So:
 - Keep evcc's current steps coarse (it already steps in whole ampere); avoid
   sub-amp chasing it can't observe through the inner loop anyway.
 
-## Failsafe direction — set `pause` (important)
+## Failsafe direction — `pause` (default; why it matters)
 
 evcc only writes `target` on a control *decision*; it does **not** heartbeat. When
 idle (e.g. PV mode with no surplus) it can stay quiet for minutes, and its idle
-cadence is unbounded. With the default `TARGET_FAILSAFE=full_charge`, a quiet evcc —
-or any control-path blip like a **nightly router reconnect** — ages the target out
-and the box **starts charging at the worst time** (#51).
+cadence is unbounded — so the target will routinely age out past
+`TARGET_TIMEOUT_SECONDS`. Likewise any control-path blip (e.g. a **nightly router
+reconnect**) can age out `measured`.
 
-So for an evcc-managed box, set both failsafes to **`pause`** in the service's env:
+The service therefore defaults both failsafes to **`pause`** (#52), so any such fault
+**stops** charging instead of starting it at the worst time: a stale evcc pause stays
+a pause, a stale measurement stops the loop. **No env needed** — it's the default.
 
 ```
+# defaults (shown for clarity; you don't need to set these for evcc)
 TARGET_FAILSAFE=pause
 MEASURED_FAILSAFE=pause
 ```
 
-Then any control-path fault **stops** charging instead of starting it: a stale evcc
-pause stays a pause, a stale measurement stops the loop. (`full_charge` remains the
-right default only for a Home-Assistant-automation-only box where charging-on-fault
-is acceptable.) See [`SPECS.md`](../SPECS.md) §9.
+Only switch to `full_charge` for a Home-Assistant-automation-only / unmanaged box
+where charging-on-fault is the desired baseline. See [`SPECS.md`](../SPECS.md) §9.
 
 ## Sanity check
 

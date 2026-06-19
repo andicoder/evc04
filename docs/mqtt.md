@@ -58,13 +58,13 @@ Out-of-range numbers are accepted and clamped, not rejected.
   and the rejection is surfaced in status (`last_error`). A controller bug must
   never silently push the charger to an unintended current.
 - **Staleness → failsafe.** If no valid target arrives within `TARGET_TIMEOUT_SECONDS`,
-  the service engages the **configurable** `TARGET_FAILSAFE` direction (#51) and sets
-  `failsafe: true`. A fresh valid target resumes control.
-  - `full_charge` (default) → `reported = 0`, the meterless-box default
-    ([`SPECS.md`](../SPECS.md) §9, *never worse than no tool*) — for HA-automation-only
-    boxes.
-  - `pause` → report the ceiling (box stops) — the safe choice for an **evcc-managed**
-    box, so a control-path blip can't flip an intended pause into charging.
+  the service engages the **configurable** `TARGET_FAILSAFE` direction (#51/#52) and
+  sets `failsafe: true`. A fresh valid target resumes control.
+  - `pause` (**default**) → report the ceiling (box stops) — safe for an **evcc/HA-
+    managed** box: a control-path blip can't flip an intended pause into charging (#52).
+  - `full_charge` → `reported = 0`, the meterless-box baseline
+    ([`SPECS.md`](../SPECS.md) §9, *never worse than no tool*) — for an
+    HA-automation-only / unmanaged box.
   - `hold_last` → keep serving the last commanded value.
 
 > Why JSON not a bare number: the object leaves room for additive fields without
@@ -101,9 +101,9 @@ as the target:
 - **Staleness → measurement failsafe.** If no valid measurement arrives within
   `MEASURED_TIMEOUT_SECONDS`, serving `offset + stale` is meaningless, so the service
   abandons the closed loop and engages the **configurable** `MEASURED_FAILSAFE`
-  direction (#51), setting `measurement_failsafe: true`. Same modes as
-  `TARGET_FAILSAFE` (`full_charge` default / `pause` / `hold_last`); `pause` for an
-  evcc-managed box ([`SPECS.md`](../SPECS.md) §9, #25).
+  direction (#51/#52), setting `measurement_failsafe: true`. Same modes as
+  `TARGET_FAILSAFE` (`pause` default / `full_charge` / `hold_last`)
+  ([`SPECS.md`](../SPECS.md) §9, #25).
 
 ---
 

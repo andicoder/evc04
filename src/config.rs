@@ -47,12 +47,12 @@ pub struct Config {
     /// Home Assistant MQTT discovery (issue #46): publish retained config topics so HA
     /// auto-creates the read-only status sensors.
     pub discovery: DiscoveryConfig,
-    /// What to serve when the **target** input goes stale (issue #51). Default
-    /// `full_charge` (the meterless-box baseline); an evcc-managed box wants `pause` so a
-    /// control-path blip can't flip an intended pause into charging.
+    /// What to serve when the **target** input goes stale (issue #51). Default `pause`
+    /// (#52): a control-path blip stops charging instead of starting it. Set
+    /// `full_charge` for an HA-automation-only box (the meterless-box baseline).
     pub target_failsafe: FailsafeMode,
     /// What to serve when the **measured** input goes stale (issue #51). Same modes;
-    /// `pause` for evcc, `full_charge` by default.
+    /// default `pause` (#52), `full_charge` for an HA-automation-only box.
     pub measured_failsafe: FailsafeMode,
 }
 
@@ -323,7 +323,9 @@ struct RawConfig {
 }
 
 fn default_failsafe() -> String {
-    "full_charge".to_string()
+    // Safe-by-default for managed (evcc/HA) setups: a stale input STOPS charging rather
+    // than starting it (#52). `full_charge` is opt-in for an HA-automation-only box.
+    "pause".to_string()
 }
 
 fn default_discovery_prefix() -> String {

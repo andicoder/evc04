@@ -92,11 +92,12 @@ Follow the `commit-conventions` and `pr-workflow` skills. Project deltas:
 
 ## Safety reminders (real hardware involved)
 
-- The control loop drives a **3-phase 11 kW charger**. **Failsafe direction: full
-  charge.** The box's baseline without a meter is full 11 kW; this service only
-  throttles *below* it for PV / price / load optimisation. So every control-layer
-  failure (stale MQTT target or measurement, cold start) falls back to **full
-  charge** (`reported = 0`), never a pause — *never worse than no tool*. **Fuse
+- The control loop drives a **3-phase 11 kW charger**. **Failsafe direction is
+  configurable** per channel (`TARGET_FAILSAFE` / `MEASURED_FAILSAFE`, #51/#52),
+  **default `pause`**: for an evcc/HA-managed box any control-layer failure (stale
+  target or measurement, cold start past the grace window) must **stop charging**, not
+  start it at the worst time. `full_charge` (`reported = 0`, the meterless full-11 kW
+  baseline — *never worse than no tool*) is opt-in for an unmanaged box. **Fuse
   protection is out of scope** (the installation + the DIP-set limit handle it).
 - **A process crash is different.** With the Power Optimizer enabled, a *silent*
   meter **hard-faults the box (solid red, no charge)** — it does **not** fall back
