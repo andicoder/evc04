@@ -98,11 +98,12 @@ fn ha_discovery_reads_its_env_vars() {
 }
 
 #[test]
-fn failsafe_modes_default_to_full_charge() {
-    // Backward-compatible default preserves the "never worse than no tool" behaviour (#51).
+fn failsafe_modes_default_to_pause() {
+    // Safe-by-default for managed (evcc/HA) setups: any control-path fault stops charging
+    // rather than starting it (#52). full_charge is opt-in for an HA-automation-only box.
     let cfg = Config::from_vars(valid_vars()).unwrap();
-    assert_eq!(cfg.target_failsafe, FailsafeMode::FullCharge);
-    assert_eq!(cfg.measured_failsafe, FailsafeMode::FullCharge);
+    assert_eq!(cfg.target_failsafe, FailsafeMode::Pause);
+    assert_eq!(cfg.measured_failsafe, FailsafeMode::Pause);
 }
 
 #[test]
