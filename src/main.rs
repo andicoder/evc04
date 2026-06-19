@@ -135,14 +135,22 @@ async fn main() -> ExitCode {
         );
         if s.failsafe != prev_failsafe.replace(s.failsafe) {
             if s.failsafe {
-                tracing::warn!("target stale: failing over to full charge");
+                tracing::warn!(
+                    "target stale: failing over to {} (reported {} A/phase)",
+                    controller.target_failsafe_mode().as_str(),
+                    s.reported_ampere
+                );
             } else {
                 tracing::info!("target fresh again: resuming control");
             }
         }
         if s.measurement_failsafe != prev_measurement_failsafe.replace(s.measurement_failsafe) {
             if s.measurement_failsafe {
-                tracing::warn!("measurement stale: abandoning closed loop, full charge");
+                tracing::warn!(
+                    "measurement stale: abandoning closed loop, {} (reported {} A/phase)",
+                    controller.measured_failsafe_mode().as_str(),
+                    s.reported_ampere
+                );
             } else {
                 tracing::info!("measurement fresh again: resuming closed loop");
             }

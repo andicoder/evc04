@@ -90,7 +90,7 @@ impl FailsafeMode {
         }
     }
 
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             FailsafeMode::FullCharge => "full_charge",
             FailsafeMode::HoldLast => "hold_last",
