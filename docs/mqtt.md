@@ -58,9 +58,14 @@ Out-of-range numbers are accepted and clamped, not rejected.
   and the rejection is surfaced in status (`last_error`). A controller bug must
   never silently push the charger to an unintended current.
 - **Staleness → failsafe.** If no valid target arrives within `TARGET_TIMEOUT_SECONDS`,
-  the service falls back to **full charge** (`reported = 0`, the meterless-box
-  default — [`SPECS.md`](../SPECS.md) §9, *never worse than no tool*); `failsafe:
-  true` in status. A fresh valid target resumes control.
+  the service engages the **configurable** `TARGET_FAILSAFE` direction (#51) and sets
+  `failsafe: true`. A fresh valid target resumes control.
+  - `full_charge` (default) → `reported = 0`, the meterless-box default
+    ([`SPECS.md`](../SPECS.md) §9, *never worse than no tool*) — for HA-automation-only
+    boxes.
+  - `pause` → report the ceiling (box stops) — the safe choice for an **evcc-managed**
+    box, so a control-path blip can't flip an intended pause into charging.
+  - `hold_last` → keep serving the last commanded value.
 
 > Why JSON not a bare number: the object leaves room for additive fields without
 > breaking publishers; new fields are optional and ignored by older versions.
@@ -95,9 +100,10 @@ as the target:
   `last_error`** — same discipline as the target.
 - **Staleness → measurement failsafe.** If no valid measurement arrives within
   `MEASURED_TIMEOUT_SECONDS`, serving `offset + stale` is meaningless, so the service
-  abandons the closed loop and falls back to **full charge** (`reported = 0`,
-  `measurement_failsafe: true`) — the same static baseline as the target failsafe,
-  never a pause ([`SPECS.md`](../SPECS.md) §9, #25).
+  abandons the closed loop and engages the **configurable** `MEASURED_FAILSAFE`
+  direction (#51), setting `measurement_failsafe: true`. Same modes as
+  `TARGET_FAILSAFE` (`full_charge` default / `pause` / `hold_last`); `pause` for an
+  evcc-managed box ([`SPECS.md`](../SPECS.md) §9, #25).
 
 ---
 
@@ -131,7 +137,7 @@ on every state transition). Home Assistant reads it via one MQTT sensor using
 | Field                  | Type           | Meaning |
 | ---------------------- | -------------- | ------- |
 | `online`               | bool           | Service running and the control loop live. Set `false` by the broker via LWT if the service dies. |
-| `target_ampere`        | number         | Effective target (post-clamp), ampere. Reads `MAX_BOX_AMPERE` (full charge) when `failsafe` is true. |
+| `target_ampere`        | number         | Last commanded target (post-clamp), ampere. Stays the commanded value during a failsafe — the `failsafe` flag (not a value jump) signals the override (#51). |
 | `measured_ampere`      | number         | Last live measured current consumed, ampere. |
 | `offset_ampere`        | number         | Current soft-ramped offset `= MAX_BOX_AMPERE − target`, ampere. |
 | `reported_ampere`      | number         | Current the slave is serving per phase: `clamp(offset_ampere + measured_ampere)`, ampere. |

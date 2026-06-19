@@ -2,6 +2,7 @@
 //! `clamp(soft_ramped_offset + measured)`, with the min-charge cutoff and the
 //! target/measurement staleness failsafes both falling back to full charge.
 
+use evc04_charge::config::FailsafeMode;
 use evc04_charge::control::{Controller, MeasurementSink, TargetSink};
 use evc04_charge::mqtt::TargetError;
 use evc04_charge::slave::{serve_connection, PollMatch};
@@ -25,10 +26,31 @@ fn controller() -> (
     watch::Sender<Ampere>,
     Controller,
 ) {
+    // The historical default: both staleness failsafes fall back to full charge.
+    controller_with(FailsafeMode::FullCharge, FailsafeMode::FullCharge)
+}
+
+/// Like [`controller`] but with explicit per-channel failsafe modes (#51).
+fn controller_with(
+    target_failsafe: FailsafeMode,
+    measured_failsafe: FailsafeMode,
+) -> (
+    TargetSink,
+    MeasurementSink,
+    watch::Sender<Ampere>,
+    Controller,
+) {
     let (target_sink, target_view) = control::channel(MAX, STALE_AFTER);
     let (measured_sink, measured_view) = control::measurement_channel(Ampere(0.0), MEAS_STALE);
     let (offset_tx, offset_view) = control::offset_channel(Ampere(0.0));
-    let ctrl = Controller::new(target_view, measured_view, offset_view, MIN);
+    let ctrl = Controller::new(
+        target_view,
+        measured_view,
+        offset_view,
+        MIN,
+        target_failsafe,
+        measured_failsafe,
+    );
     (target_sink, measured_sink, offset_tx, ctrl)
 }
 
@@ -233,6 +255,83 @@ async fn served_frame_uses_full_charge_when_target_goes_stale() {
     assert_eq!(frame, ZERO_AMP_RESPONSE);
 
     serve.abort();
+}
+
+// --- Configurable failsafe direction (#51): full_charge | hold_last | pause ---
+
+#[tokio::test(start_paused = true)]
+async fn target_stale_pause_reports_the_ceiling() {
+    // With TARGET_FAILSAFE=pause a stale target must STOP charging (report the ceiling) —
+    // the safe direction for an evcc-managed box (a stale evcc pause stays a pause), not the
+    // full-charge default that would start charging at the worst time.
+    let (sink, msink, offset, ctrl) =
+        controller_with(FailsafeMode::Pause, FailsafeMode::FullCharge);
+    sink.apply(Ok(20.0));
+    offset.send(Ampere(12.0)).unwrap();
+    msink.apply(Ok(5.0));
+    assert_eq!(ctrl.reported_frame(), [17.0; 3]); // fresh → closed loop
+
+    tokio::time::advance(STALE_AFTER + Duration::from_millis(1)).await;
+    msink.apply(Ok(5.0)); // keep the measurement fresh; only the target is stale
+    assert!(ctrl.failsafe_active());
+    assert_eq!(ctrl.reported_frame(), [MAX.0; 3]); // pause
+}
+
+#[tokio::test(start_paused = true)]
+async fn target_stale_hold_last_keeps_the_last_command() {
+    // hold_last keeps serving the last commanded value through the closed loop.
+    let (sink, msink, offset, ctrl) =
+        controller_with(FailsafeMode::HoldLast, FailsafeMode::FullCharge);
+    sink.apply(Ok(20.0));
+    offset.send(Ampere(12.0)).unwrap();
+    msink.apply(Ok(5.0));
+
+    tokio::time::advance(STALE_AFTER + Duration::from_millis(1)).await;
+    msink.apply(Ok(5.0));
+    assert!(ctrl.failsafe_active());
+    assert_eq!(ctrl.reported_frame(), [17.0; 3]); // held target 20 → offset 12 + measured 5
+}
+
+#[tokio::test(start_paused = true)]
+async fn measurement_stale_pause_reports_the_ceiling() {
+    let (sink, msink, offset, ctrl) =
+        controller_with(FailsafeMode::FullCharge, FailsafeMode::Pause);
+    sink.apply(Ok(20.0));
+    offset.send(Ampere(12.0)).unwrap();
+    msink.apply(Ok(5.0));
+
+    tokio::time::advance(MEAS_STALE + Duration::from_millis(1)).await;
+    sink.apply(Ok(20.0)); // keep the target fresh; only the measurement is stale
+    assert!(ctrl.measurement_failsafe_active());
+    assert_eq!(ctrl.reported_frame(), [MAX.0; 3]); // pause
+}
+
+#[tokio::test(start_paused = true)]
+async fn measurement_stale_hold_last_keeps_the_held_measurement() {
+    let (sink, msink, offset, ctrl) =
+        controller_with(FailsafeMode::FullCharge, FailsafeMode::HoldLast);
+    sink.apply(Ok(20.0));
+    offset.send(Ampere(12.0)).unwrap();
+    msink.apply(Ok(5.0));
+
+    tokio::time::advance(MEAS_STALE + Duration::from_millis(1)).await;
+    sink.apply(Ok(20.0)); // target fresh; measurement stale but held at 5
+    assert!(ctrl.measurement_failsafe_active());
+    assert_eq!(ctrl.reported_frame(), [17.0; 3]); // offset 12 + held measured 5
+}
+
+#[tokio::test(start_paused = true)]
+async fn safest_mode_wins_when_both_failsafes_are_active() {
+    // Mixed modes both engaged → serve the least-charge directive (pause beats full charge).
+    let (sink, msink, offset, ctrl) =
+        controller_with(FailsafeMode::Pause, FailsafeMode::FullCharge);
+    sink.apply(Ok(20.0));
+    offset.send(Ampere(12.0)).unwrap();
+    msink.apply(Ok(5.0));
+
+    tokio::time::advance(MEAS_STALE + Duration::from_millis(1)).await;
+    assert!(ctrl.failsafe_active() && ctrl.measurement_failsafe_active());
+    assert_eq!(ctrl.reported_frame(), [MAX.0; 3]); // target=pause wins over measured=full_charge
 }
 
 // --- Soft-ramp driver (#24): the offset converges to its setpoint over time. ---

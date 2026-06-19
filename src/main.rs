@@ -62,7 +62,15 @@ async fn main() -> ExitCode {
     ));
 
     // Join target + measurement + ramped offset into the answer the slave serves (#23/#24).
-    let controller = control::Controller::new(view, measured_view, offset_view, cfg.min_charge);
+    // Each staleness failsafe takes its configured direction (#51).
+    let controller = control::Controller::new(
+        view,
+        measured_view,
+        offset_view,
+        cfg.min_charge,
+        cfg.target_failsafe,
+        cfg.measured_failsafe,
+    );
 
     // Cross-subsystem signals the status publisher reads.
     let (gateway_tx, gateway_rx) = watch::channel(LinkHealth::Down);
