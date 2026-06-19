@@ -222,6 +222,23 @@ fn parses_measured_topic() {
 }
 
 #[test]
+fn enable_topic_defaults_when_unset() {
+    let cfg = Config::from_vars(valid_vars()).unwrap();
+    assert_eq!(cfg.mqtt.topic_enable, "evc04/enable");
+}
+
+#[test]
+fn parses_enable_topic() {
+    let cfg = Config::from_vars(with(
+        valid_vars(),
+        "MQTT_TOPIC_ENABLE",
+        "site/charge/enable",
+    ))
+    .unwrap();
+    assert_eq!(cfg.mqtt.topic_enable, "site/charge/enable");
+}
+
+#[test]
 fn min_charge_defaults_when_unset() {
     let cfg = Config::from_vars(valid_vars()).unwrap();
     assert_eq!(cfg.min_charge, Ampere(6.0));

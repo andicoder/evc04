@@ -4,7 +4,7 @@
 
 use evc04_charge::config::FailsafeMode;
 use evc04_charge::control::{Controller, MeasurementSink, TargetSink};
-use evc04_charge::mqtt::{assemble_status, parse_target, Status, OFFLINE_PAYLOAD};
+use evc04_charge::mqtt::{assemble_status, parse_enable, parse_target, Status, OFFLINE_PAYLOAD};
 use evc04_charge::slave::LinkHealth;
 use evc04_charge::{control, Ampere};
 use std::time::Duration;
@@ -29,6 +29,7 @@ fn controller() -> (
     let (target_sink, target_view) = control::channel(MAX, STALE_AFTER);
     let (measured_sink, measured_view) = control::measurement_channel(Ampere(0.0), MEAS_STALE);
     let (offset_tx, offset_view) = control::offset_channel(Ampere(0.0));
+    let (_enable_sink, enable_view) = control::enable_channel(true);
     (
         target_sink,
         measured_sink,
@@ -37,6 +38,7 @@ fn controller() -> (
             target_view,
             measured_view,
             offset_view,
+            enable_view,
             MIN,
             MARGIN,
             FailsafeMode::FullCharge,
@@ -95,6 +97,24 @@ fn non_finite_ampere_is_rejected() {
 }
 
 #[test]
+fn parses_enable_true_and_false() {
+    assert!(parse_enable(br#"{"enable": true}"#).unwrap());
+    assert!(!parse_enable(br#"{"enable": false}"#).unwrap());
+}
+
+#[test]
+fn enable_additive_fields_are_ignored() {
+    assert!(parse_enable(br#"{"enable": true, "source": "evcc"}"#).unwrap());
+}
+
+#[test]
+fn malformed_enable_is_rejected() {
+    assert!(parse_enable(b"not json").is_err());
+    assert!(parse_enable(br#"{"on": true}"#).is_err()); // wrong key
+    assert!(parse_enable(br#"{"enable": "yes"}"#).is_err()); // non-boolean
+}
+
+#[test]
 fn status_serialises_to_the_documented_schema() {
     let status = Status {
         online: true,
@@ -110,6 +130,7 @@ fn status_serialises_to_the_documented_schema() {
         measurement_failsafe: false,
         measurement_age_s: 1.2,
         charge_state: "C".to_string(),
+        enabled: true,
         last_error: None,
     };
     let got: serde_json::Value = serde_json::from_str(&status.to_json()).unwrap();
@@ -127,6 +148,7 @@ fn status_serialises_to_the_documented_schema() {
         "measurement_failsafe": false,
         "measurement_age_s": 1.2,
         "charge_state": "C",
+        "enabled": true,
         "last_error": null,
     });
     assert_eq!(got, want);
@@ -148,6 +170,7 @@ fn status_last_error_serialises_as_a_string_when_set() {
         measurement_failsafe: false,
         measurement_age_s: 0.5,
         charge_state: "B".to_string(),
+        enabled: true,
         last_error: Some("malformed target payload".to_string()),
     };
     let got: serde_json::Value = serde_json::from_str(&status.to_json()).unwrap();
@@ -253,6 +276,30 @@ async fn assembled_status_reports_the_measurement_failsafe_and_age() {
         "got {}",
         status.measurement_age_s
     );
+}
+
+#[tokio::test]
+async fn assembled_status_reports_the_enable_gate() {
+    // #60: the status must surface whether charging is gated off, so HA/evcc can see the
+    // override independently of the target. Default gate is open (enabled).
+    let (esink, enable_view) = control::enable_channel(true);
+    let (_tsink, target_view) = control::channel(MAX, STALE_AFTER);
+    let (_msink, measured_view) = control::measurement_channel(Ampere(0.0), MEAS_STALE);
+    let (_otx, offset_view) = control::offset_channel(Ampere(0.0));
+    let ctrl = Controller::new(
+        target_view,
+        measured_view,
+        offset_view,
+        enable_view,
+        MIN,
+        MARGIN,
+        FailsafeMode::FullCharge,
+        FailsafeMode::FullCharge,
+    );
+
+    assert!(assemble_status(&ctrl, LinkHealth::Up, Instant::now(), None).enabled);
+    esink.apply(Ok(false));
+    assert!(!assemble_status(&ctrl, LinkHealth::Up, Instant::now(), None).enabled);
 }
 
 #[tokio::test]

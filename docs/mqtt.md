@@ -14,6 +14,7 @@ Topics, all configured via env vars ([`SPECS.md`](../SPECS.md) §7):
 | ------------------ | --------------------- | ---------------- |
 | Inbound — target   | `MQTT_TOPIC_TARGET`   | `evc04/target`   |
 | Inbound — measured | `MQTT_TOPIC_MEASURED` | `evc04/measured` |
+| Inbound — enable   | `MQTT_TOPIC_ENABLE`   | `evc04/enable`   |
 | Outbound — status  | `MQTT_TOPIC_STATUS`   | `evc04/status`   |
 
 All payloads are UTF-8 JSON. Connection uses `MQTT_USER` / `MQTT_PASS`; QoS (1) and
@@ -110,6 +111,46 @@ as the target:
 
 ---
 
+## Inbound — enable gate (optional, #60)
+
+**Topic:** `MQTT_TOPIC_ENABLE` · **QoS 1** · **publish retained**
+
+A dedicated on/off override, **independent of the target current**. The target topic
+still selects the mode (above); this gate sits on top of it:
+
+```json
+{ "enable": false }
+```
+
+| Field    | Type | Required | Meaning                                              |
+| -------- | ---- | -------- | ---------------------------------------------------- |
+| `enable` | bool | yes      | `false` hard-pauses the box; `true` honors the target. |
+
+### Semantics — an override layered on the target
+
+- **`enable: false`** → hard pause (`reported = MAX_BOX_AMPERE + PAUSE_MARGIN_AMPERE`,
+  above the ceiling so an active charge actually cuts, #57), **regardless of the
+  commanded target**. It also wins over a `full_charge` target failsafe — an explicit
+  off is the safest directive.
+- **`enable: true`** → honor the commanded `target` (modulate / full charge as usual).
+- **Default when never received: `true`** (honor the target). So existing single-topic
+  deployments — the HA `number` entity, or evcc on the old contract — keep working
+  unchanged; the gate is purely additive.
+- **Retained**, **invalid payloads ignored / last good held / surfaced in `last_error`**
+  — same discipline as target/measured. A malformed publish never flips charging.
+- **No staleness failsafe.** The gate is a latch the retained topic restores on
+  reconnect; it does not age out (a cold start with no enable message defaults to `true`,
+  but a no-target cold start still pauses, #59).
+
+### Why a separate topic
+
+Overloading the single `target` topic to mean *both* "how much" and "on/off" makes an
+evcc charger map its `enable` and `maxcurrent` set-plugins onto the same topic, where
+they race: whenever `enable(true)` (≈ a tiny current = pause) lands as the last write,
+the box never starts. A dedicated enable topic removes the collision (#60).
+
+---
+
 ## Outbound — status
 
 **Topic:** `MQTT_TOPIC_STATUS` · **QoS 1** · **publish retained**
@@ -133,6 +174,7 @@ on every state transition). Home Assistant reads it via one MQTT sensor using
   "failsafe": false,
   "measurement_failsafe": false,
   "charge_state": "C",
+  "enabled": true,
   "last_error": null
 }
 ```
@@ -152,6 +194,7 @@ on every state transition). Home Assistant reads it via one MQTT sensor using
 | `failsafe`             | bool           | `true` while serving **full charge** because the **target** went stale (the meterless-box default). |
 | `measurement_failsafe` | bool           | `true` while serving full charge because the **measured** input went stale. |
 | `charge_state`         | string         | Approximated evcc charge status (#28): `C` while charge is allowed and current flows, else `B` (connected, not charging). `A` (no vehicle) is never asserted — a meter emulation has no control-pilot line. evcc's custom-charger `status` reads this. |
+| `enabled`              | bool           | The enable gate (#60): `false` while charging is hard-paused regardless of the target. `true` by default and for single-topic deployments. evcc's `enabled` read maps here. |
 | `last_error`           | string or null | Reason for the most recent rejected input or link fault; `null` when healthy. |
 
 ### Last Will and Testament
@@ -169,9 +212,11 @@ ungraceful disconnect flips status to offline without any client polling:
 
 The charging brain is **evcc** (#28); this service is its **custom charger**:
 
-- evcc `maxcurrent` → the **target** topic (ampere); `enable=false` → a target below
-  `MIN_CHARGE_AMPERE` (pause), `enable=true` → resume the commanded target.
-- evcc reads the **status** topic: `charge_state` (`B`/`C`) and `target_ampere`.
+- evcc `maxcurrent` → the **target** topic (ampere); evcc `enable` → the **enable**
+  topic (`{"enable": true|false}`). Separate topics so on/off and the current setpoint
+  never race on one write path (#60).
+- evcc reads the **status** topic: `charge_state` (`B`/`C`), `target_ampere`, and
+  `enabled`.
 - The **measured** topic is independent — HA/evcc publishes the live grid (or
   later car) current there.
 - **Timing:** evcc's control interval must exceed the inner loop's settle time
@@ -237,7 +282,7 @@ What you get (all read-only, grouped under one device, availability via the
   and diagnostics: `gateway`/`mqtt` link, `last_poll_age_s`, `measurement_age_s`,
   `last_error`.
 - **binary_sensors** (diagnostic) — `failsafe`, `measurement_failsafe` (device class
-  `problem`), `ramping`.
+  `problem`), `ramping`, `enabled` (the on/off gate, #60).
 
 **No command entity is published.** Setting the target from HA would make HA a
 *commander*, and there must be exactly one ([`SPECS.md`](../SPECS.md) §6). To control

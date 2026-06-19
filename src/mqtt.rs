@@ -51,6 +51,32 @@ struct TargetPayload {
     ampere: f64,
 }
 
+/// Why an inbound enable payload was rejected (#60). Like [`TargetError`], the message
+/// feeds `status.last_error` so a bad publisher is visible rather than silently flipping
+/// the charge gate.
+#[derive(Debug, thiserror::Error)]
+pub enum EnableError {
+    /// Body was not valid JSON, or `enable` was missing or not a boolean.
+    #[error("malformed enable payload (expected {{\"enable\": bool}})")]
+    Malformed,
+}
+
+/// Inbound enable-gate shape (#60). Additive fields are ignored, same as the target.
+#[derive(Deserialize)]
+struct EnablePayload {
+    enable: bool,
+}
+
+/// Parse the inbound enable gate from an `{"enable": true|false}` payload (#60).
+///
+/// Only structurally invalid payloads are rejected; on rejection the last valid gate
+/// stays in effect (docs/mqtt.md), so a malformed publish never flips charging on or off.
+pub fn parse_enable(payload: &[u8]) -> Result<bool, EnableError> {
+    let parsed: EnablePayload =
+        serde_json::from_slice(payload).map_err(|_| EnableError::Malformed)?;
+    Ok(parsed.enable)
+}
+
 /// Parse the inbound target charge current (ampere) from a `{"ampere": N}` payload.
 ///
 /// The value is returned as-is: range clamping is the control math's job
@@ -96,6 +122,9 @@ pub struct Status {
     /// and current flows, else `B`. `A` is never asserted (no control-pilot line — see
     /// [`crate::charge_state`]). evcc's custom-charger `status` reads this field.
     pub charge_state: String,
+    /// The enable gate (#60): `false` while charging is hard-paused regardless of the
+    /// commanded target. `true` by default and for single-topic deployments.
+    pub enabled: bool,
     pub last_error: Option<String>,
 }
 
@@ -139,6 +168,7 @@ pub fn assemble_status(
         measurement_failsafe: controller.measurement_failsafe_active(),
         measurement_age_s: controller.measurement_age().as_secs_f32(),
         charge_state: controller.charge_state().to_string(),
+        enabled: controller.enabled(),
         last_error,
     }
 }
@@ -152,7 +182,8 @@ pub fn assemble_status(
 /// command — `Ok(ampere)` to adopt, `Err` to surface in `status.last_error` while
 /// holding the last good value. `apply_measured` is the same seam for the live
 /// measured current that closes the loop (#22); both inbound topics carry the
-/// identical `{"ampere": N}` shape, so they share [`parse_target`]. `status`
+/// identical `{"ampere": N}` shape, so they share [`parse_target`]. `apply_enable` is
+/// the same seam for the on/off gate (#60), carrying `{"enable": bool}`. `status`
 /// snapshots the live state to publish.
 ///
 /// `discovery` is the retained HA discovery configs (#46), republished on every
@@ -162,6 +193,7 @@ pub async fn run_mqtt(
     discovery: Vec<(String, String)>,
     apply_target: impl Fn(Result<f32, TargetError>),
     apply_measured: impl Fn(Result<f32, TargetError>),
+    apply_enable: impl Fn(Result<bool, EnableError>),
     status: impl Fn() -> Status,
 ) {
     let mut opts = MqttOptions::new(CLIENT_ID, &cfg.host, cfg.port);
@@ -192,6 +224,7 @@ pub async fn run_mqtt(
                         client.clone(),
                         cfg.topic_target.clone(),
                         cfg.topic_measured.clone(),
+                        cfg.topic_enable.clone(),
                         Arc::clone(&discovery),
                     );
                     publish_status(&client, &cfg.topic_status, &status).await;
@@ -202,6 +235,10 @@ pub async fn run_mqtt(
                 }
                 Ok(Event::Incoming(Packet::Publish(p))) if p.topic == cfg.topic_measured => {
                     apply_measured(parse_target(&p.payload));
+                    publish_status(&client, &cfg.topic_status, &status).await;
+                }
+                Ok(Event::Incoming(Packet::Publish(p))) if p.topic == cfg.topic_enable => {
+                    apply_enable(parse_enable(&p.payload));
                     publish_status(&client, &cfg.topic_status, &status).await;
                 }
                 Ok(_) => {}
@@ -228,12 +265,14 @@ fn spawn_session_setup(
     client: AsyncClient,
     topic_target: String,
     topic_measured: String,
+    topic_enable: String,
     discovery: Arc<Vec<(String, String)>>,
 ) {
     tokio::spawn(async move {
         let _ = client.subscribe(&topic_target, QOS).await;
         let _ = client.subscribe(&topic_measured, QOS).await;
-        tracing::debug!(target = %topic_target, measured = %topic_measured, "subscribed");
+        let _ = client.subscribe(&topic_enable, QOS).await;
+        tracing::debug!(target = %topic_target, measured = %topic_measured, enable = %topic_enable, "subscribed");
         for (topic, payload) in discovery.iter() {
             let _ = client.publish(topic, QOS, true, payload.as_bytes()).await;
         }

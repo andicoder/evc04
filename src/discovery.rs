@@ -181,6 +181,12 @@ const ENTITIES: &[Entity] = &[
         "{{ 'ON' if value_json.ramping else 'OFF' }}",
         None,
     ),
+    binary(
+        "enabled",
+        "Enabled",
+        "{{ 'ON' if value_json.enabled else 'OFF' }}",
+        None,
+    ),
 ];
 
 /// Build the retained `(config_topic, payload)` pairs to publish for HA discovery.

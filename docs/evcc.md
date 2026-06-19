@@ -16,16 +16,15 @@ Home Assistant automation, never both. The `measured` topic is independent feedb
 | evcc charger field | our topic | mapping |
 | ------------------ | --------- | ------- |
 | `maxcurrent` (write) | `target` | `{"ampere": <A>}` — the throttle. evcc never sends below its own `mincurrent`. |
-| `enable` (write) | `target` | `false` → `{"ampere": 0}` (below `MIN_CHARGE_AMPERE` → **pause**); `true` is followed by a `maxcurrent` write that lands the charging value. |
-| `enabled` (read) | `status` | `target_ampere >= MIN_CHARGE_AMPERE` → charging is commanded. |
+| `enable` (write) | `enable` | `{"enable": <bool>}` — the on/off gate, **independent** of the throttle (#60). `false` hard-pauses; `true` honors the current `maxcurrent`. |
+| `enabled` (read) | `status` | our `enabled` field — reflects the gate directly. |
 | `status` (read) | `status` | our `charge_state` field: `B` (connected, not charging) / `C` (charging). |
 
-> **`enable=true` is transient.** With evcc's `${enable:%d}` substitution, `enable`
-> can only publish `0`/`1`, so `true` momentarily commands `{"ampere": 1}` (a pause).
-> evcc always issues `maxcurrent` (≥ its `mincurrent`) immediately after
-> `Enable(true)`, so the charging value lands a fraction of a second later; the
-> offset soft-ramp ([`SPECS.md`](../SPECS.md) §6) absorbs the blip. `enable` exists
-> only to force the **pause** on `false`.
+> **On/off and the current setpoint use separate topics.** Earlier the single `target`
+> topic carried both, so `enable` and `maxcurrent` raced: an `enable(true)` (≈ a tiny
+> current → pause) landing last would park the box paused and never start. The dedicated
+> `enable` topic removes the collision (#60) — `enable` only opens/closes the gate,
+> `maxcurrent` only sets the current.
 
 > **No `A` (no vehicle) state.** A meter emulation has no control-pilot line, so we
 > can't tell an unplugged car from a connected-but-idle one — `charge_state` is only
@@ -34,8 +33,8 @@ Home Assistant automation, never both. The `measured` topic is independent feedb
 
 ## Charger template
 
-Drop this into your `evcc.yaml`. Replace the topic prefix (`evc04/…`) and the `6`
-in `enabled` with your `MIN_CHARGE_AMPERE` if you changed it.
+Drop this into your `evcc.yaml`. Replace the topic prefix (`evc04/…`) to match your
+install. `${enable}` renders the boolean as `true`/`false`, so the payload is valid JSON.
 
 ```yaml
 chargers:
@@ -47,17 +46,17 @@ chargers:
       topic: evc04/status
       jq: .charge_state
       timeout: 90s        # > the service's 2 s status republish; flags a dead service
-    # Charging enabled? Derived from the commanded target.
+    # Charging enabled? Read the dedicated gate the enable plugin writes (#60).
     enabled:
       source: mqtt
       topic: evc04/status
-      jq: .target_ampere >= 6   # = MIN_CHARGE_AMPERE
+      jq: .enabled
       timeout: 90s
-    # Pause on disable: {"ampere": 0} is below MIN_CHARGE_AMPERE → hard pause.
+    # On/off gate — its own topic, independent of the throttle (#60).
     enable:
       source: mqtt
-      topic: evc04/target
-      payload: '{"ampere": ${enable:%d}}'
+      topic: evc04/enable
+      payload: '{"enable": ${enable}}'
     # The actual throttle.
     maxcurrent:
       source: mqtt
@@ -138,8 +137,8 @@ where charging-on-fault is the desired baseline. See [`SPECS.md`](../SPECS.md) �
 With the service running and the broker reachable:
 
 - evcc UI shows the loadpoint as **connected**; toggling the loadpoint on/off
-  flips our `target` between a charging current and `{"ampere": 0}` (watch
-  `evc04/target` and `evc04/status`).
+  flips `evc04/enable` between `{"enable": true}` and `{"enable": false}` (and
+  `evc04/status` `enabled` follows), while `evc04/target` carries the throttle.
 - `evc04/status` `charge_state` reads `C` once current flows, `B` when paused.
 - Commanding a PV-surplus current in the 9–15 A band modulates; near 6 A it
   reverts to on/off.
