@@ -6,7 +6,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  IMAGE: ghcr.io/${{ github.repository }}
+  # Pinned to the original name: the repo was renamed evc04-charge -> evc04, but the
+  # published image stays ghcr.io/andicoder/evc04-charge so rc.1-7, the k8s deploy
+  # pin, and the README badge keep resolving. Do not switch to github.repository.
+  IMAGE: ghcr.io/andicoder/evc04-charge
 
 jobs:
   # Cross-compile a static musl binary per arch on the amd64 runner — no QEMU,
