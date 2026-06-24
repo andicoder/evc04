@@ -6,15 +6,11 @@
 //! command topic into those bytes and republishes whatever comes back, so the
 //! shell surface can be probed live without reflashing.
 //!
-//! Build via the pinned esp toolchain Docker image (reproducible on any machine):
-//!   cargo install cargo-make                  # once (or run ./bootstrap.sh)
+//! Build/flash (locally only — never CI; needs Espressif's Xtensa toolchain):
+//!   ./bootstrap.sh                            # once: sysdeps + espup + cargo tools
 //!   export WIFI_SSID=... WIFI_PASSWORD=... MQTT_URL=mqtt://user:pass@host:1883
-//!   cd firmware && cargo make build-image     # compiles in Docker → host ELF
+//!   cd firmware && cargo make build           # native esp build → host ELF
 //!   cargo make flash                          # flash + monitor on host (USB)
-//!
-//! Native (no Docker) alternative — needs Espressif's Xtensa toolchain on the host:
-//!   ./bootstrap.sh && . $HOME/export-esp.sh   # once / per build shell
-//!   cargo run                                 # builds, flashes, monitors
 //!
 //! Secrets come from these build-time env vars (baked by `env!`), never from a
 //! committed file.

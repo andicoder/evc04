@@ -48,7 +48,6 @@ fi
 # ── Cargo tools (no sudo) ───────────────────────────────────────────────────
 # espup: installs the esp toolchain. ldproxy: the linker the build invokes.
 # espflash: flashes + monitors. cargo-make: the `cargo make` task runner.
-# (For the Docker build path you only need cargo-make + espflash + docker.)
 for tool in espup ldproxy espflash cargo-make; do
   if have "$tool"; then
     note "$tool already installed"
@@ -65,15 +64,38 @@ espup install
 
 [ -f "$EXPORT_FILE" ] || die "espup finished but $EXPORT_FILE is missing."
 
+# ── libxml2/ICU compat shim for esp-clang ───────────────────────────────────
+# The bundled esp-clang links libxml2.so.2 (+ ICU 75), but rolling distros have
+# moved to a newer soname. Stage matching libs into a private dir that build.sh
+# adds to LD_LIBRARY_PATH; needed on Arch/Manjaro, a no-op where the libs match.
+install_compat_libs() {
+  local clang compat="$HOME/.espressif/compat-libs"
+  clang=$(find "$HOME/.rustup/toolchains/esp" -path '*esp-clang*/bin/clang' 2>/dev/null | head -1)
+  [ -n "$clang" ] || return 0
+  ldd "$clang" 2>/dev/null | grep -q 'not found' || return 0  # already satisfied
+  if ! have pacman; then
+    warn "esp-clang is missing shared libs but this isn't Arch — install libxml2.so.2 + ICU 75 manually."
+    return 0
+  fi
+  note "Staging libxml2/ICU compat libs for esp-clang into $compat"
+  mkdir -p "$compat"
+  local tmp; tmp=$(mktemp -d)
+  ( cd "$tmp"
+    curl -sSL -O "https://archive.archlinux.org/packages/l/libxml2/libxml2-2.12.7-1-x86_64.pkg.tar.zst"
+    curl -sSL -O "https://archive.archlinux.org/packages/i/icu/icu-75.1-2-x86_64.pkg.tar.zst"
+    for p in ./*.pkg.tar.zst; do tar --zstd -xf "$p"; done
+    cp -av usr/lib/libxml2.so.2* usr/lib/libicu*.so.75* "$compat/" )
+  rm -rf "$tmp"
+}
+install_compat_libs
+
 cat <<EOF
 
 $(note "Bootstrap complete.")
-Next steps (the export must be sourced in every shell that builds firmware):
+Build (creds are baked in at build time via env!; never committed):
 
-  . "$EXPORT_FILE"
+  cd "$(dirname "$0")"
   export WIFI_SSID=... WIFI_PASSWORD=... MQTT_URL=mqtt://user:pass@host:1883
-  cd "$(dirname "$0")" && cargo build      # or: cargo run  (flash + monitor)
-
-WIFI_SSID/WIFI_PASSWORD/MQTT_URL are baked in at build time (env!), so they must
-be exported before the build. They are never committed.
+  cargo make build      # native esp build (build.sh sources the env + shim)
+  cargo make flash      # flash + monitor on the host (USB)
 EOF
