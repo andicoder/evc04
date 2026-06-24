@@ -1,0 +1,20 @@
+# Directory-scoped: only applies to cargo invocations from within /firmware, so
+# the root daemon and /core keep building with the stable host toolchain.
+# Toolchain config only — NO secrets here (WiFi/MQTT creds come from build-time
+# env: WIFI_SSID / WIFI_PASSWORD / MQTT_URL).
+
+[build]
+target = "xtensa-esp32-espidf"
+
+[target.xtensa-esp32-espidf]
+linker = "ldproxy"
+runner = "espflash flash --monitor"
+rustflags = ["--cfg", "espidf_time64"]
+
+[unstable]
+build-std = ["std", "panic_abort"]
+
+[env]
+MCU = "esp32"
+# Pin the ESP-IDF the firmware builds against; bump deliberately.
+ESP_IDF_VERSION = "v5.2.2"
