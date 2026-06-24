@@ -33,6 +33,7 @@ use esp_idf_svc::mqtt::client::{
     EspMqttClient, EspMqttConnection, EventPayload, LwtConfiguration, MqttClientConfiguration, QoS,
 };
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
+use esp_idf_svc::sys::{esp_err_t, ESP_ERR_TIMEOUT};
 use esp_idf_svc::wifi::{AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi};
 use evc04_cn28_core::{command, dump};
 use log::{info, warn};
@@ -139,14 +140,20 @@ fn prober_loop(client: &mut EspMqttClient<'_>, uart: &UartDriver<'_>, rx: mpsc::
 fn probe(client: &mut EspMqttClient<'_>, uart: &UartDriver<'_>, bytes: &[u8]) -> Result<()> {
     uart.write(bytes).context("uart write")?;
 
+    // esp-idf-hal reports an elapsed read timeout as Err(ESP_ERR_TIMEOUT), not
+    // Ok(0). A quiet line — the gap after a frame, or no response at all — is
+    // exactly that timeout, so it means "drained", not "failed". Propagating it
+    // would kill the prober loop on the first silent probe.
+    let gap = TickType::new_millis(READ_GAP.as_millis() as u64).ticks();
     let mut resp = Vec::new();
     let mut chunk = [0u8; READ_BUF];
     loop {
-        let n = uart.read(&mut chunk, TickType::new_millis(READ_GAP.as_millis() as u64).ticks())?;
-        if n == 0 {
-            break; // inter-byte gap elapsed → frame complete
+        match uart.read(&mut chunk, gap) {
+            Ok(0) => break,
+            Ok(n) => resp.extend_from_slice(&chunk[..n]),
+            Err(e) if e.code() == ESP_ERR_TIMEOUT as esp_err_t => break,
+            Err(e) => return Err(e).context("uart read"),
         }
-        resp.extend_from_slice(&chunk[..n]);
     }
 
     client.publish(TOPIC_RAW, QoS::AtLeastOnce, false, &resp)?;
