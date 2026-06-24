@@ -22,28 +22,45 @@ have rustup || die "rustup not found. Install Rust via https://rustup.rs first."
 # ── System build dependencies (need sudo) ───────────────────────────────────
 SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
 install_system_deps() {
+  # pkgconf + libudev are needed to *compile* espflash (the serialport crate).
   if have pacman; then
     note "Installing system deps via pacman"
-    $SUDO pacman -S --needed --noconfirm cmake ninja dfu-util ccache libusb python git
+    $SUDO pacman -S --needed --noconfirm cmake ninja dfu-util ccache libusb python git pkgconf
   elif have apt-get; then
     note "Installing system deps via apt"
     $SUDO apt-get update
-    $SUDO apt-get install -y cmake ninja-build dfu-util ccache libusb-1.0-0 python3 python3-venv git
+    $SUDO apt-get install -y cmake ninja-build dfu-util ccache libusb-1.0-0 python3 python3-venv git pkg-config libudev-dev
   elif have dnf; then
     note "Installing system deps via dnf"
-    $SUDO dnf install -y cmake ninja-build dfu-util ccache libusbx python3 git
+    $SUDO dnf install -y cmake ninja-build dfu-util ccache libusbx python3 git pkgconf-pkg-config systemd-devel
   else
-    warn "Unknown package manager — install manually: cmake ninja dfu-util ccache libusb python git"
+    warn "Unknown package manager — install manually: cmake ninja dfu-util ccache libusb python git pkg-config libudev"
   fi
 }
 
 missing_sysdeps=0
-for t in cmake ninja; do have "$t" || missing_sysdeps=1; done
+for t in cmake ninja pkg-config; do have "$t" || missing_sysdeps=1; done
 if [ "$missing_sysdeps" -eq 1 ]; then
   install_system_deps
 else
-  note "System build deps already present (cmake, ninja)"
+  note "System build deps already present (cmake, ninja, pkg-config)"
 fi
+
+# ── Serial port access (flash without sudo) ─────────────────────────────────
+# espflash drives /dev/ttyUSB*; on most distros that needs membership in the
+# serial group — uucp on Arch, dialout on Debian/Fedora. Takes effect on relogin.
+add_serial_group() {
+  local grp; if have pacman; then grp="uucp"; else grp="dialout"; fi
+  getent group "$grp" >/dev/null || { warn "group '$grp' missing; skipping serial setup"; return 0; }
+  if id -nG "$USER" | tr ' ' '\n' | grep -qx "$grp"; then
+    note "already in '$grp' (serial access ok)"
+  else
+    note "adding $USER to '$grp' for serial access"
+    $SUDO usermod -aG "$grp" "$USER"
+    warn "log out/in (or run 'newgrp $grp') before flashing — group change needs a new session"
+  fi
+}
+add_serial_group
 
 # ── Cargo tools (no sudo) ───────────────────────────────────────────────────
 # espup: installs the esp toolchain. ldproxy: the linker the build invokes.
@@ -92,10 +109,14 @@ install_compat_libs
 cat <<EOF
 
 $(note "Bootstrap complete.")
-Build (creds are baked in at build time via env!; never committed):
+Creds are baked in at build time via env! — put them in ./.env (gitignored),
+which flash.sh sources for you; never commit them:
 
   cd "$(dirname "$0")"
-  export WIFI_SSID=... WIFI_PASSWORD=... MQTT_URL=mqtt://user:pass@host:1883
-  cargo make build      # native esp build (build.sh sources the env + shim)
-  cargo make flash      # flash + monitor on the host (USB)
+  cat > .env <<'ENV'
+  export WIFI_SSID=...
+  export WIFI_PASSWORD=...
+  export MQTT_URL=mqtt://user:pass@host:1883
+  ENV
+  ./flash.sh            # release build, flash + monitor on the host (USB)
 EOF
