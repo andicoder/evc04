@@ -4,6 +4,7 @@
 #   cargo make build              # native esp build (debug)
 #   cargo make build -- --release # release build (args after -- go to cargo)
 #   cargo make flash              # flash + monitor on the host (USB)
+#   cargo make monitor            # serial monitor only, no rebuild
 #   cargo make clean              # drop build artifacts (target + ESP-IDF cache)
 #
 # WiFi/MQTT creds are compiled in (env!); export WIFI_SSID/WIFI_PASSWORD/MQTT_URL
@@ -20,9 +21,14 @@ command = "./build.sh"
 args = ["${@}"]
 
 [tasks.flash]
-description = "Flash + monitor the built firmware on the host (needs espflash + USB)."
-command = "espflash"
-args = ["flash", "--monitor", "target/xtensa-esp32-espidf/debug/evc04-cn28-prober"]
+description = "Source .env, build, then flash + monitor on the host (needs espflash + USB)."
+command = "./flash.sh"
+args = ["${@}"]
+
+[tasks.monitor]
+description = "Open the serial monitor without rebuilding (CTRL+R reset, CTRL+C exit)."
+command = "./monitor.sh"
+args = ["${@}"]
 
 [tasks.clean]
 description = "Remove build artifacts (target + ESP-IDF cache)."
