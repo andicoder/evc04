@@ -708,13 +708,13 @@ evc04/cn28/status     (out) LWT online/offline (retained)
 Wiring (AZ-Delivery **ESP32 DevKit C V4**, 38-pin WROOM-32; onboard USB-UART +
 3.3 V regulator + auto-program, so the first flash needs no buttons and it boots
 straight into the app on power-up — the prerequisite for OTA-only updates, #76).
-UART1 → CN28. The CN28 "LOG" header is 4-pin **3.3 V TTL** (verified), pinout
-bottom→top `GND · TX · RX · 3.3V` — same level as the ESP, so wire it **directly,
-no level shifter**. All three signal wires are on the ESP's right-hand header:
+UART1 → CN28. The CN28 "LOG" header is 4-pin **3.3 V TTL**, pinout bottom→top
+`GND · RX · TX · 3.3V` — same level as the ESP, so wire it **directly, no level
+shifter**. All three signal wires are on the ESP's right-hand header:
 
 ```
-ESP TX2 / GPIO17  ──►  CN28 RX   (pin 3)
-ESP RX2 / GPIO16  ◄──  CN28 TX   (pin 2)
+ESP TX2 / GPIO17  ──►  CN28 RX   (pin 2)
+ESP RX2 / GPIO16  ◄──  CN28 TX   (pin 3)
 ESP GND           ───  CN28 GND  (pin 1, common ground)
 ```
 
@@ -722,7 +722,15 @@ Anchor on the `TX2`/`RX2` silkscreen (= GPIO17/GPIO16). Leave the CN28 3.3 V pin
 (pin 4) unconnected — the DevKitC is self-powered (USB/VIN) and feeding it would
 fight the onboard rail. Do **not** wire `GPIO0`/BOOT (strapping pin, owned by the
 onboard button) or `TX0`/`RX0` (the USB console — the first-flash + monitor path
-OTA later replaces). See #72 for the resolved bring-up.
+OTA later replaces).
+
+Bring-up status (#72): link **confirmed** — over MQTT the box answers every
+CRLF-terminated command (`help\r\n`, `\r\n`) and ignores un-terminated input, the
+signature of a live line-based shell. Two open items: (1) the response decodes as
+a run of `0x00`, a UART-parameter mismatch (not a wiring fault) — the **115200
+8N1** figure for the LOG port is unconfirmed (the box's RS485 meter side runs
+9600), so the baud must be swept; (2) the board flaps `online`/`offline` under
+load (LWT), pointing at a brownout / marginal 5 V supply or GND.
 
 Build: run `firmware/bootstrap.sh` once (system deps + `espup` + cargo tools + the
 libxml2/ICU compat shim esp-clang needs on rolling distros), then `cargo make
