@@ -708,19 +708,21 @@ evc04/cn28/status     (out) LWT online/offline (retained)
 Wiring (AZ-Delivery **ESP32 DevKit C V4**, 38-pin WROOM-32; onboard USB-UART +
 3.3 V regulator + auto-program, so the first flash needs no buttons and it boots
 straight into the app on power-up — the prerequisite for OTA-only updates, #76).
-UART1 → CN28, all three wires on the right-hand header:
+UART1 → CN28. The CN28 "LOG" header is 4-pin **3.3 V TTL** (verified), pinout
+bottom→top `GND · TX · RX · 3.3V` — same level as the ESP, so wire it **directly,
+no level shifter**. All three signal wires are on the ESP's right-hand header:
 
 ```
-ESP TX2 / GPIO17  ──►  CN28 RX
-ESP RX2 / GPIO16  ◄──  CN28 TX
-ESP GND           ───  CN28 GND   (common ground)
+ESP TX2 / GPIO17  ──►  CN28 RX   (pin 3)
+ESP RX2 / GPIO16  ◄──  CN28 TX   (pin 2)
+ESP GND           ───  CN28 GND  (pin 1, common ground)
 ```
 
-Anchor on the `TX2`/`RX2` silkscreen (= GPIO17/GPIO16). Do **not** wire `GPIO0`/
-BOOT (strapping pin, owned by the onboard button) or `TX0`/`RX0` (the USB console
-— the first-flash + monitor path OTA later replaces). ⚠️ The CN28 "LOG" header's
-logic level + pad order are **unverified**; GPIO16 has no series protection here,
-so confirm 3.3 V (add a level shifter if it is 5 V) before powering up — see #72.
+Anchor on the `TX2`/`RX2` silkscreen (= GPIO17/GPIO16). Leave the CN28 3.3 V pin
+(pin 4) unconnected — the DevKitC is self-powered (USB/VIN) and feeding it would
+fight the onboard rail. Do **not** wire `GPIO0`/BOOT (strapping pin, owned by the
+onboard button) or `TX0`/`RX0` (the USB console — the first-flash + monitor path
+OTA later replaces). See #72 for the resolved bring-up.
 
 Build: run `firmware/bootstrap.sh` once (system deps + `espup` + cargo tools + the
 libxml2/ICU compat shim esp-clang needs on rolling distros), then `cargo make
