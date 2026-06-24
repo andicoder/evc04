@@ -705,6 +705,23 @@ evc04/cn28/raw/ascii  (out) printable ASCII, non-printables → '.'
 evc04/cn28/status     (out) LWT online/offline (retained)
 ```
 
+Wiring (AZ-Delivery **ESP32 DevKit C V4**, 38-pin WROOM-32; onboard USB-UART +
+3.3 V regulator + auto-program, so the first flash needs no buttons and it boots
+straight into the app on power-up — the prerequisite for OTA-only updates, #76).
+UART1 → CN28, all three wires on the right-hand header:
+
+```
+ESP TX2 / GPIO17  ──►  CN28 RX
+ESP RX2 / GPIO16  ◄──  CN28 TX
+ESP GND           ───  CN28 GND   (common ground)
+```
+
+Anchor on the `TX2`/`RX2` silkscreen (= GPIO17/GPIO16). Do **not** wire `GPIO0`/
+BOOT (strapping pin, owned by the onboard button) or `TX0`/`RX0` (the USB console
+— the first-flash + monitor path OTA later replaces). ⚠️ The CN28 "LOG" header's
+logic level + pad order are **unverified**; GPIO16 has no series protection here,
+so confirm 3.3 V (add a level shifter if it is 5 V) before powering up — see #72.
+
 Build: run `firmware/bootstrap.sh` once (system deps + `espup` + cargo tools + the
 libxml2/ICU compat shim esp-clang needs on rolling distros), then `cargo make
 build` and `cargo make flash` on the host. `WIFI_SSID`/`WIFI_PASSWORD`/`MQTT_URL`
