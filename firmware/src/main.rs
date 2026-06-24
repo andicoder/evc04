@@ -93,7 +93,8 @@ fn main() -> Result<()> {
         lwt: Some(lwt),
         ..Default::default()
     };
-    let (mut client, connection) = EspMqttClient::new(MQTT_URL, &mqtt_config).context("mqtt connect")?;
+    let (mut client, connection) =
+        EspMqttClient::new(MQTT_URL, &mqtt_config).context("mqtt connect")?;
 
     // The connection must be pumped continuously or the client stalls. Decode
     // command payloads here, hand raw probe jobs to the prober loop.
@@ -103,7 +104,11 @@ fn main() -> Result<()> {
     prober_loop(&mut client, &uart, rx)
 }
 
-fn prober_loop(client: &mut EspMqttClient<'_>, uart: &UartDriver<'_>, rx: mpsc::Receiver<Job>) -> Result<()> {
+fn prober_loop(
+    client: &mut EspMqttClient<'_>,
+    uart: &UartDriver<'_>,
+    rx: mpsc::Receiver<Job>,
+) -> Result<()> {
     let wake = if AUTO_WAKE_SECS > 0 {
         Some(Duration::from_secs(AUTO_WAKE_SECS))
     } else {
@@ -157,8 +162,18 @@ fn probe(client: &mut EspMqttClient<'_>, uart: &UartDriver<'_>, bytes: &[u8]) ->
     }
 
     client.publish(TOPIC_RAW, QoS::AtLeastOnce, false, &resp)?;
-    client.publish(TOPIC_RAW_HEX, QoS::AtLeastOnce, false, dump::to_hex(&resp).as_bytes())?;
-    client.publish(TOPIC_RAW_ASCII, QoS::AtLeastOnce, false, dump::to_printable(&resp).as_bytes())?;
+    client.publish(
+        TOPIC_RAW_HEX,
+        QoS::AtLeastOnce,
+        false,
+        dump::to_hex(&resp).as_bytes(),
+    )?;
+    client.publish(
+        TOPIC_RAW_ASCII,
+        QoS::AtLeastOnce,
+        false,
+        dump::to_printable(&resp).as_bytes(),
+    )?;
     info!("probe {} B → {} B response", bytes.len(), resp.len());
     Ok(())
 }
@@ -195,8 +210,12 @@ fn connect_wifi(
 ) -> Result<BlockingWifi<EspWifi<'static>>> {
     let mut wifi = BlockingWifi::wrap(EspWifi::new(modem, sysloop.clone(), Some(nvs))?, sysloop)?;
     wifi.set_configuration(&Configuration::Client(ClientConfiguration {
-        ssid: WIFI_SSID.try_into().map_err(|_| anyhow::anyhow!("ssid too long"))?,
-        password: WIFI_PASSWORD.try_into().map_err(|_| anyhow::anyhow!("password too long"))?,
+        ssid: WIFI_SSID
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("ssid too long"))?,
+        password: WIFI_PASSWORD
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("password too long"))?,
         auth_method: AuthMethod::WPA2Personal,
         ..Default::default()
     }))?;
