@@ -705,12 +705,11 @@ evc04/cn28/raw/ascii  (out) printable ASCII, non-printables → '.'
 evc04/cn28/status     (out) LWT online/offline (retained)
 ```
 
-Build (reproducible on any machine) via the pinned esp toolchain Docker image:
-`cargo make build-image` (a thin wrapper over `firmware/docker-build.sh` +
-`espressif/idf-rust`), then `cargo make flash` on the host. With
-`WIFI_SSID`/`WIFI_PASSWORD`/`MQTT_URL` exported (secrets via build-time env, never
-committed). Native host builds (no Docker) are the fallback: `firmware/bootstrap.sh`
-then `. $HOME/export-esp.sh` and `cargo run`.
+Build: run `firmware/bootstrap.sh` once (system deps + `espup` + cargo tools + the
+libxml2/ICU compat shim esp-clang needs on rolling distros), then `cargo make
+build` and `cargo make flash` on the host. `WIFI_SSID`/`WIFI_PASSWORD`/`MQTT_URL`
+are baked in at build time (env!, never committed); export real values before
+flashing.
 
 The **structured CN28 parser is deliberately deferred** — it is the next step once
 captures from this prober confirm the frame format (the `wc` fragment, the shell

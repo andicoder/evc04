@@ -1,23 +1,22 @@
 # cargo-make tasks for the CN28 prober firmware (evc04#66).
 # Install once: `cargo install cargo-make` (bootstrap.sh does this too).
 #
-#   cargo make build-image              # build in the pinned esp Docker image
-#   cargo make build-image -- --release # release build (args after -- go to cargo)
-#   cargo make flash                    # flash + monitor on the host (USB)
-#   cargo make clean-image              # drop container-built artifacts
+#   cargo make build              # native esp build (debug)
+#   cargo make build -- --release # release build (args after -- go to cargo)
+#   cargo make flash              # flash + monitor on the host (USB)
+#   cargo make clean              # drop build artifacts (target + ESP-IDF cache)
 #
 # WiFi/MQTT creds are compiled in (env!); export WIFI_SSID/WIFI_PASSWORD/MQTT_URL
-# before `build-image` for a flashable binary (placeholders otherwise).
+# before `build` for a flashable binary (placeholders otherwise). build.sh sources
+# the espup env and the libxml2/ICU compat shim for you.
 
 [config]
-# This is a single crate, not a workspace, and the real build runs in Docker —
-# keep cargo-make from injecting its default host cargo tasks.
 skip_core_tasks = true
 default_to_workspace = false
 
-[tasks.build-image]
-description = "Build the firmware inside the pinned esp toolchain Docker image."
-command = "./docker-build.sh"
+[tasks.build]
+description = "Build the firmware with the native esp toolchain."
+command = "./build.sh"
 args = ["${@}"]
 
 [tasks.flash]
@@ -25,7 +24,7 @@ description = "Flash + monitor the built firmware on the host (needs espflash + 
 command = "espflash"
 args = ["flash", "--monitor", "target/xtensa-esp32-espidf/debug/evc04-cn28-prober"]
 
-[tasks.clean-image]
-description = "Remove container-built artifacts (target + ESP-IDF + cargo cache)."
+[tasks.clean]
+description = "Remove build artifacts (target + ESP-IDF cache)."
 command = "rm"
-args = ["-rf", "target", ".embuild", ".docker-cache"]
+args = ["-rf", "target", ".embuild"]
