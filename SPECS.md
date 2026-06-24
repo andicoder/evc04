@@ -663,3 +663,55 @@ Control:    CLOSED-LOOP: box loops on total measured current (incl. own draw).
 Poll frame: 01 03 50 0c 00 06 14 cb
 Examples:   0A→01 03 0c 00000000×3 93 70  |  16A→…41800000×3 97 ae  |  63A→…427c0000×3 13 97
 ```
+
+---
+
+## 12. Combined ESP32 device (read + control) — exploratory track
+
+Decision #65 proposes collapsing both EVC04 sub-systems — CN28 LOG **read**
+(telemetry) and the PRO380 meter-emulation **control** path — onto a single
+classic ESP32 (Xtensa) inside the box, by porting the Rust control core onto the
+MCU rather than running stock ESPHome. This drops the TCP↔RS485 gateway and the
+k8s dependency for control. **It is additive:** the production daemon at the repo
+root (§1–§11) stays the control path until the port is proven on real hardware.
+
+### Vorprojekt: CN28 remote prober (#66)
+
+The lowest-risk first step establishes the native ESP32 Rust footing (the `core` +
+`firmware` split) while doing real work — resolving the open CN28 LOG protocol
+mysteries. It is a **protocol-discovery tool, read/explore only**: no RS485, no
+control, no safety criticality.
+
+CN28 is strictly request/response (15 s of silence yields 0 bytes; any byte on
+Box-RX triggers exactly one ASCII response frame), so discovery means *actively
+sending bytes* — ideally remotely over MQTT, without reflashing.
+
+Two independent crates (no root workspace — the daemon is untouched):
+
+- **`/core`** (`evc04-cn28-core`, `no_std` + `alloc`, host-tested on stable) —
+  `command::decode_command` turns an MQTT payload into raw CN28 bytes (escapes
+  `\\ \r \n \t \0 \xHH`); `dump::to_hex` / `dump::to_printable` render responses.
+- **`/firmware`** (`evc04-cn28-prober`, `esp-idf-svc`, target
+  `xtensa-esp32-espidf`, built/flashed **locally, not in CI**) — WiFi + MQTT + one
+  hardware UART (UART1, 115200 8N1; UART0 stays free for the log monitor).
+
+MQTT contract:
+
+```
+evc04/cn28/cmd        (in)  command payload → decode_command → bytes written to CN28
+evc04/cn28/raw        (out) raw response bytes
+evc04/cn28/raw/hex    (out) lowercase space-separated hex
+evc04/cn28/raw/ascii  (out) printable ASCII, non-printables → '.'
+evc04/cn28/status     (out) LWT online/offline (retained)
+```
+
+Build (reproducible on any machine) via the pinned esp toolchain Docker image:
+`cargo make build-image` (a thin wrapper over `firmware/docker-build.sh` +
+`espressif/idf-rust`), then `cargo make flash` on the host. With
+`WIFI_SSID`/`WIFI_PASSWORD`/`MQTT_URL` exported (secrets via build-time env, never
+committed). Native host builds (no Docker) are the fallback: `firmware/bootstrap.sh`
+then `. $HOME/export-esp.sh` and `cargo run`.
+
+The **structured CN28 parser is deliberately deferred** — it is the next step once
+captures from this prober confirm the frame format (the `wc` fragment, the shell
+command surface, the `S:` pilot-state and `ERROR:` codes are still open).
