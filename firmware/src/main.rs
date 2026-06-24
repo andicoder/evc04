@@ -35,11 +35,12 @@ use esp_idf_svc::mqtt::client::{
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys::{esp_err_t, ESP_ERR_TIMEOUT};
 use esp_idf_svc::wifi::{AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi};
-use evc04_cn28_core::{command, dump};
+use evc04_cn28_core::{baud, command, dump};
 use log::{info, warn};
 
 // ── Config (compile-time constants; secrets stay in env) ────────────────────
 const TOPIC_CMD: &str = "evc04/cn28/cmd";
+const TOPIC_BAUD: &str = "evc04/cn28/baud";
 const TOPIC_RAW: &str = "evc04/cn28/raw";
 const TOPIC_RAW_HEX: &str = "evc04/cn28/raw/hex";
 const TOPIC_RAW_ASCII: &str = "evc04/cn28/raw/ascii";
@@ -50,6 +51,11 @@ const UART_BAUD: u32 = 115_200; // CN28 LOG: 115200 8N1, no flow control.
 const AUTO_WAKE_SECS: u64 = 0;
 /// Per-byte read gap before a response is considered complete.
 const READ_GAP: Duration = Duration::from_millis(200);
+/// How long to wait for the *first* response byte before treating the line as
+/// silent. Much longer than READ_GAP: a slow shell — or a slower baud mid-sweep
+/// (#79) — can take far longer than the inter-byte gap to begin replying, and a
+/// 200 ms first-byte window would drop those frames as "no response".
+const FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(2);
 const READ_BUF: usize = 512;
 
 const WIFI_SSID: &str = env!("WIFI_SSID");
@@ -60,6 +66,7 @@ const MQTT_URL: &str = env!("MQTT_URL");
 enum Job {
     Connected,
     Probe(Vec<u8>),
+    SetBaud(u32),
 }
 
 fn main() -> Result<()> {
@@ -91,6 +98,13 @@ fn main() -> Result<()> {
     };
     let mqtt_config = MqttClientConfiguration {
         lwt: Some(lwt),
+        // Detect a dropped link within the keepalive window and let esp-mqtt
+        // auto-reconnect; each reconnect re-fires CONNECTED, which re-subscribes
+        // and republishes `online` (see prober_loop), so the device self-heals
+        // after a network blip. A brownout-induced *reset* is a hardware issue
+        // this cannot fix — see #79.
+        keep_alive_interval: Some(Duration::from_secs(30)),
+        reconnect_timeout: Some(Duration::from_secs(5)),
         ..Default::default()
     };
     let (mut client, connection) =
@@ -131,10 +145,12 @@ fn prober_loop(
         match job {
             Some(Job::Connected) => {
                 client.subscribe(TOPIC_CMD, QoS::AtLeastOnce)?;
+                client.subscribe(TOPIC_BAUD, QoS::AtLeastOnce)?;
                 client.publish(TOPIC_STATUS, QoS::AtLeastOnce, true, b"online")?;
-                info!("connected; subscribed to {TOPIC_CMD}");
+                info!("connected; subscribed to {TOPIC_CMD}, {TOPIC_BAUD}");
             }
             Some(Job::Probe(bytes)) => probe(client, uart, &bytes)?,
+            Some(Job::SetBaud(rate)) => set_baud(client, uart, rate)?,
             None => probe(client, uart, b"\r\n")?, // auto-wake tick
         }
     }
@@ -149,11 +165,16 @@ fn probe(client: &mut EspMqttClient<'_>, uart: &UartDriver<'_>, bytes: &[u8]) ->
     // Ok(0). A quiet line — the gap after a frame, or no response at all — is
     // exactly that timeout, so it means "drained", not "failed". Propagating it
     // would kill the prober loop on the first silent probe.
+    let first = TickType::new_millis(FIRST_BYTE_TIMEOUT.as_millis() as u64).ticks();
     let gap = TickType::new_millis(READ_GAP.as_millis() as u64).ticks();
     let mut resp = Vec::new();
     let mut chunk = [0u8; READ_BUF];
     loop {
-        match uart.read(&mut chunk, gap) {
+        // Wait FIRST_BYTE_TIMEOUT for the opening byte, then only READ_GAP
+        // between bytes — so a slow/late reply still lands, but a finished frame
+        // still returns promptly once the line goes quiet.
+        let timeout = if resp.is_empty() { first } else { gap };
+        match uart.read(&mut chunk, timeout) {
             Ok(0) => break,
             Ok(n) => resp.extend_from_slice(&chunk[..n]),
             Err(e) if e.code() == ESP_ERR_TIMEOUT as esp_err_t => break,
@@ -178,6 +199,33 @@ fn probe(client: &mut EspMqttClient<'_>, uart: &UartDriver<'_>, bytes: &[u8]) ->
     Ok(())
 }
 
+/// Re-tune the UART rate live for the baud sweep (#79). The result is echoed on
+/// the status topic *non-retained*, so it never clobbers the retained
+/// online/offline liveness (or the LWT).
+fn set_baud(client: &mut EspMqttClient<'_>, uart: &UartDriver<'_>, rate: u32) -> Result<()> {
+    match uart.change_baudrate(Hertz(rate)) {
+        Ok(_) => {
+            info!("uart baud set to {rate}");
+            client.publish(
+                TOPIC_STATUS,
+                QoS::AtLeastOnce,
+                false,
+                format!("baud {rate}").as_bytes(),
+            )?;
+        }
+        Err(e) => {
+            warn!("uart baud {rate} rejected: {e}");
+            client.publish(
+                TOPIC_STATUS,
+                QoS::AtLeastOnce,
+                false,
+                format!("baud {rate} failed").as_bytes(),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn spawn_connection_pump(mut connection: EspMqttConnection, tx: mpsc::Sender<Job>) {
     std::thread::Builder::new()
         .stack_size(6144)
@@ -187,13 +235,23 @@ fn spawn_connection_pump(mut connection: EspMqttConnection, tx: mpsc::Sender<Job
                     EventPayload::Connected(_) => {
                         let _ = tx.send(Job::Connected);
                     }
-                    EventPayload::Received { data, .. } => {
+                    EventPayload::Received { topic, data, .. } => {
                         let payload = core::str::from_utf8(data).unwrap_or_default();
-                        match command::decode_command(payload) {
-                            Ok(bytes) => {
-                                let _ = tx.send(Job::Probe(bytes));
-                            }
-                            Err(e) => warn!("bad command {payload:?}: {e:?}"),
+                        // Route by topic: the baud channel re-tunes the UART, any
+                        // other (the command channel) is decoded to probe bytes.
+                        match topic {
+                            Some(t) if t == TOPIC_BAUD => match baud::parse_baud(payload) {
+                                Ok(rate) => {
+                                    let _ = tx.send(Job::SetBaud(rate));
+                                }
+                                Err(e) => warn!("bad baud {payload:?}: {e:?}"),
+                            },
+                            _ => match command::decode_command(payload) {
+                                Ok(bytes) => {
+                                    let _ = tx.send(Job::Probe(bytes));
+                                }
+                                Err(e) => warn!("bad command {payload:?}: {e:?}"),
+                            },
                         }
                     }
                     _ => {}
