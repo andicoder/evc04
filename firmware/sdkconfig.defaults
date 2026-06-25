@@ -1,0 +1,20 @@
+# ESP-IDF build defaults for the CN28 prober (evc04#76).
+# Read by esp-idf-sys/embuild at build time; bump deliberately.
+
+# Dual-slot OTA: use our custom partition table (see partitions.csv).
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# 4 MB flash (DevKitC WROOM-32); the default 2 MB cannot hold two app slots.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+
+# App rollback: a freshly OTA'd image boots in pending-verify; if it never calls
+# esp_ota_mark_app_valid_cancel_rollback (we only do so after WiFi+MQTT are up,
+# see main.rs) the bootloader reverts to the previous slot on the next reset.
+# This is what keeps a board we never physically touch from bricking on a bad OTA.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# Image signing is deliberately deferred (evc04#76, "rollback now, sign later").
+# Adding it later is a build-config change, not an eFuse burn, so it can ship in a
+# future OTA without re-opening the box. Until then OTA trusts the local LAN.
