@@ -19,6 +19,9 @@
 //! asserted until the last stop bit is out — so confirm that with a scope/logic
 //! analyzer on the bench (#88).
 
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
 use esp_idf_svc::hal::delay::TickType;
 use esp_idf_svc::hal::gpio::{Output, PinDriver};
 use esp_idf_svc::hal::uart::UartDriver;
@@ -26,14 +29,11 @@ use esp_idf_svc::sys::{esp_err_t, ESP_ERR_TIMEOUT};
 use evc04_cn28_core::frame::{build_response, encode_currents, parse_request};
 use log::{info, warn};
 
+use crate::control::ControlState;
+
 /// RS485 meter bus baud (CN20): the box polls the emulated PRO380 at 9600 8E1
 /// (SPECS §3). `main` configures UART2 with it.
 pub const BAUD: u32 = 9_600;
-
-/// Per-phase current the slave reports (#85 bench value). 0 A = full charge; set
-/// 16.0 to check the verified 16 A frame (SPECS §5). #86 replaces this static
-/// const with the MQTT-driven closed-loop value.
-const BENCH_REPORT_AMPERE: f32 = 0.0;
 
 /// The meter poll we emulate (SPECS §4). Fixed: the box only ever issues this one.
 const SLAVE_ADDR: u8 = 1;
@@ -58,7 +58,11 @@ const READ_BUF: usize = 32;
 /// poll, and when it is *our* poll, answer with [`BENCH_REPORT_AMPERE`]. `main`
 /// owns construction of `uart`/`de` and moves them onto this thread (#86 will feed
 /// the reported value from MQTT instead of the bench const).
-pub fn run(uart: UartDriver<'static>, mut de: PinDriver<'static, Output>) {
+pub fn run(
+    uart: UartDriver<'static>,
+    mut de: PinDriver<'static, Output>,
+    control: Arc<Mutex<ControlState>>,
+) {
     // Receive is the default line state; only flip DE high around our own transmit.
     let _ = de.set_low();
     info!("rs485: meter slave up (addr {SLAVE_ADDR}, 0x{POLL_REGISTER:04x}×{POLL_QUANTITY}, 9600 8E1)");
@@ -99,8 +103,14 @@ pub fn run(uart: UartDriver<'static>, mut de: PinDriver<'static, Output>) {
             continue;
         }
 
-        let amps = [BENCH_REPORT_AMPERE; 3];
-        let payload = encode_currents(amps[0], amps[1], amps[2]);
+        // Our poll: stamp it (liveness) and serve the latest control-loop value
+        // (#86) on all three phases. The lock is held only for these two reads.
+        let amps = {
+            let mut state = control.lock().unwrap();
+            state.note_poll(Instant::now());
+            state.reported()
+        };
+        let payload = encode_currents(amps, amps, amps);
         let response = build_response(SLAVE_ADDR, &payload);
 
         // Half-duplex turnaround: assert DE, transmit, and hold DE until the last

@@ -11,7 +11,7 @@
 //! ⚠️ The esp-idf-svc API (MQTT event/connection split, OTA, HTTP) is
 //! version-sensitive — built against the pinned esp-idf-svc 0.52.
 
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -26,8 +26,11 @@ use esp_idf_svc::mqtt::client::{
 };
 use esp_idf_svc::ota::{EspOta, SlotState};
 use esp_idf_svc::sys::{esp_err_t, ESP_ERR_TIMEOUT};
+use evc04_cn28_core::intake::{parse_ampere, parse_enable, IntakeError};
 use evc04_cn28_core::{baud, command, dump, ota};
 use log::{info, warn};
+
+use crate::control::ControlState;
 
 /// CN28 LOG UART rate: 115200 8N1, no flow control. `main` configures UART1 with it.
 pub const CN28_BAUD: u32 = 115_200;
@@ -44,6 +47,15 @@ const TOPIC_RAW_HEX: &str = "evc04/cn28/raw/hex";
 const TOPIC_RAW_ASCII: &str = "evc04/cn28/raw/ascii";
 const TOPIC_STATUS: &str = "evc04/cn28/status";
 
+// Meter-emulation control plane (#86). Device-scoped `evc04/charge/*` so it does
+// not collide with the k3s daemon's `evc04/*` topics while both run in parallel
+// (the daemon stays production until this port is proven, milestone #65/§12);
+// evcc/HA repoint here when the daemon is retired. Mirrors charge/docs/mqtt.md.
+const TOPIC_CTRL_TARGET: &str = "evc04/charge/target";
+const TOPIC_CTRL_MEASURED: &str = "evc04/charge/measured";
+const TOPIC_CTRL_ENABLE: &str = "evc04/charge/enable";
+const TOPIC_CTRL_STATUS: &str = "evc04/charge/status";
+
 /// Send `\r\n` every N seconds so frames are captured with no command. 0 = off.
 const AUTO_WAKE_SECS: u64 = 0;
 /// Re-publish the retained `online` liveness this often. After a reboot the *new*
@@ -52,6 +64,9 @@ const AUTO_WAKE_SECS: u64 = 0;
 /// stuck `offline` while the device is up — seen right after an OTA. The heartbeat
 /// re-asserts `online`, so any such stale `offline` self-corrects within one tick.
 const STATUS_HEARTBEAT: Duration = Duration::from_secs(30);
+/// Control-loop tick: ramp the offset and republish the retained charge status. ~1 Hz
+/// matches the box's poll cadence and the daemon's control interval (#86).
+const CONTROL_TICK: Duration = Duration::from_secs(1);
 /// Per-byte read gap before a response is considered complete.
 const READ_GAP: Duration = Duration::from_millis(200);
 /// How long to wait for the *first* response byte before treating the line as
@@ -71,14 +86,23 @@ enum Job {
     Probe(Vec<u8>),
     SetBaud(u32),
     Ota(String),
+    /// A control-plane input (#86): the parse result so the loop can apply a good
+    /// value or surface a rejection in status — the decode lives in the pump.
+    Target(Result<f32, IntakeError>),
+    Measured(Result<f32, IntakeError>),
+    Enable(Result<bool, IntakeError>),
 }
 
 /// Thread routine: connect to the broker, pump the connection, and serve probes /
 /// baud changes / OTA forever. `uart` is the CN28 UART (`main` owns construction).
-pub fn run(uart: UartDriver<'static>) -> Result<()> {
+pub fn run(uart: UartDriver<'static>, control: Arc<Mutex<ControlState>>) -> Result<()> {
+    // The single allowed LWT goes to the safety-relevant charge status: an
+    // ungraceful drop must tell an evcc/HA-managed controller the box went offline
+    // (#86). cn28/status keeps its retained `online` via the heartbeat instead (it
+    // is a debug-prober liveness topic, not control-critical).
     let lwt = LwtConfiguration {
-        topic: TOPIC_STATUS,
-        payload: b"offline",
+        topic: TOPIC_CTRL_STATUS,
+        payload: br#"{"online":false}"#,
         qos: QoS::AtLeastOnce,
         retain: true,
     };
@@ -101,22 +125,25 @@ pub fn run(uart: UartDriver<'static>) -> Result<()> {
     let (tx, rx) = mpsc::channel::<Job>();
     spawn_connection_pump(connection, tx);
 
-    prober_loop(&mut client, &uart, rx)
+    prober_loop(&mut client, &uart, rx, control)
 }
 
 fn prober_loop(
     client: &mut EspMqttClient<'_>,
     uart: &UartDriver<'_>,
     rx: mpsc::Receiver<Job>,
+    control: Arc<Mutex<ControlState>>,
 ) -> Result<()> {
     let auto_wake = (AUTO_WAKE_SECS > 0).then(|| Duration::from_secs(AUTO_WAKE_SECS));
     let mut next_heartbeat = Instant::now() + STATUS_HEARTBEAT;
+    let mut next_control = Instant::now() + CONTROL_TICK;
     let mut next_wake = auto_wake.map(|d| Instant::now() + d);
 
     loop {
         // Block for a job, but never longer than the soonest pending timer so the
-        // heartbeat (and optional auto-wake) still fire on an idle connection.
-        let mut deadline = next_heartbeat;
+        // control tick, the heartbeat (and optional auto-wake) still fire on an idle
+        // connection.
+        let mut deadline = next_heartbeat.min(next_control);
         if let Some(w) = next_wake {
             deadline = deadline.min(w);
         }
@@ -127,9 +154,16 @@ fn prober_loop(
                 client.subscribe(TOPIC_CMD, QoS::AtLeastOnce)?;
                 client.subscribe(TOPIC_BAUD, QoS::AtLeastOnce)?;
                 client.subscribe(TOPIC_OTA, QoS::AtLeastOnce)?;
+                client.subscribe(TOPIC_CTRL_TARGET, QoS::AtLeastOnce)?;
+                client.subscribe(TOPIC_CTRL_MEASURED, QoS::AtLeastOnce)?;
+                client.subscribe(TOPIC_CTRL_ENABLE, QoS::AtLeastOnce)?;
                 client.publish(TOPIC_STATUS, QoS::AtLeastOnce, true, b"online")?;
                 next_heartbeat = Instant::now() + STATUS_HEARTBEAT;
-                info!("connected; subscribed to {TOPIC_CMD}, {TOPIC_BAUD}, {TOPIC_OTA}");
+                // Republish charge status at once so it overwrites a stale LWT
+                // `offline` from a previous session as soon as we are back up.
+                publish_charge_status(client, &control)?;
+                next_control = Instant::now() + CONTROL_TICK;
+                info!("connected; subscribed to cn28 + charge control topics");
                 // Reaching the broker is the proof a freshly-OTA'd image needs to
                 // cancel its pending rollback (#76). A confirm failure must not
                 // kill the loop, so it is logged, not propagated.
@@ -140,9 +174,19 @@ fn prober_loop(
             Ok(Job::Probe(bytes)) => probe(client, uart, &bytes)?,
             Ok(Job::SetBaud(rate)) => set_baud(client, uart, rate)?,
             Ok(Job::Ota(payload)) => run_ota(client, &payload)?,
+            Ok(Job::Target(parsed)) => control.lock().unwrap().apply_target(parsed, Instant::now()),
+            Ok(Job::Measured(parsed)) => control
+                .lock()
+                .unwrap()
+                .apply_measured(parsed, Instant::now()),
+            Ok(Job::Enable(parsed)) => control.lock().unwrap().apply_enable(parsed),
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let now = Instant::now();
+                if now >= next_control {
+                    publish_charge_status(client, &control)?;
+                    next_control = now + CONTROL_TICK;
+                }
                 if now >= next_heartbeat {
                     client.publish(TOPIC_STATUS, QoS::AtLeastOnce, true, b"online")?;
                     next_heartbeat = now + STATUS_HEARTBEAT;
@@ -156,6 +200,16 @@ fn prober_loop(
             }
         }
     }
+    Ok(())
+}
+
+/// Advance the control loop one tick and publish the retained charge status (#86).
+fn publish_charge_status(
+    client: &mut EspMqttClient<'_>,
+    control: &Arc<Mutex<ControlState>>,
+) -> Result<()> {
+    let json = control.lock().unwrap().tick(Instant::now());
+    client.publish(TOPIC_CTRL_STATUS, QoS::AtLeastOnce, true, json.as_bytes())?;
     Ok(())
 }
 
@@ -360,6 +414,17 @@ fn spawn_connection_pump(mut connection: EspMqttConnection, tx: mpsc::Sender<Job
                                 if !data.is_empty() {
                                     let _ = tx.send(Job::Ota(payload.to_string()));
                                 }
+                            }
+                            // Control plane (#86): forward the parse result; the loop
+                            // applies a good value or surfaces a rejection in status.
+                            Some(t) if t == TOPIC_CTRL_TARGET => {
+                                let _ = tx.send(Job::Target(parse_ampere(payload)));
+                            }
+                            Some(t) if t == TOPIC_CTRL_MEASURED => {
+                                let _ = tx.send(Job::Measured(parse_ampere(payload)));
+                            }
+                            Some(t) if t == TOPIC_CTRL_ENABLE => {
+                                let _ = tx.send(Job::Enable(parse_enable(payload)));
                             }
                             _ => match command::decode_command(payload) {
                                 Ok(bytes) => {

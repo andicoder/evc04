@@ -14,6 +14,7 @@
 //!   cd firmware && cargo make build           # native esp build → host ELF
 //!   cargo make flash                          # flash + monitor on host (USB)
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -27,6 +28,7 @@ use esp_idf_svc::hal::units::Hertz;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use log::error;
 
+mod control;
 mod prober;
 mod rs485;
 mod wifi;
@@ -75,18 +77,26 @@ fn main() -> Result<()> {
     // Two independent routines, each on its own thread (same spawn pattern). The
     // RS485 slave must keep answering even if the prober exits, so neither blocks
     // the other and main outlives both.
+    // Shared control state (#86): the prober thread runs the MQTT intake + ~1 Hz
+    // control tick and writes the reported current; the RS485 slave reads it to
+    // answer the box. Mutex, not a channel, so the slave always has a value to serve.
+    let control = Arc::new(Mutex::new(control::ControlState::new()));
+
     std::thread::Builder::new()
         .stack_size(8192) // OTA (HTTP download + flash) runs on this thread (#76)
-        .spawn(move || {
-            if let Err(e) = prober::run(cn28) {
-                error!("prober exited: {e:#}");
+        .spawn({
+            let control = Arc::clone(&control);
+            move || {
+                if let Err(e) = prober::run(cn28, control) {
+                    error!("prober exited: {e:#}");
+                }
             }
         })
         .expect("spawn cn28 prober");
 
     std::thread::Builder::new()
         .stack_size(6144)
-        .spawn(move || rs485::run(meter_uart, de))
+        .spawn(move || rs485::run(meter_uart, de, control))
         .expect("spawn rs485 meter slave");
 
     // Keep the process — and the WiFi guard — alive; the workers run on their own
