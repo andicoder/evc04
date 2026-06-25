@@ -25,4 +25,16 @@ COMPAT="$HOME/.espressif/compat-libs"
 export WIFI_SSID WIFI_PASSWORD MQTT_URL
 
 cd "$(dirname "$0")"
+
+# The OTA partition table (#76) must be referenced by ABSOLUTE path: esp-idf-sys
+# resolves CONFIG_PARTITION_TABLE_CUSTOM_FILENAME against ESP-IDF's PROJECT_DIR,
+# which is the build out-dir, not this crate — a relative "partitions.csv" is not
+# found there. Inject it as an extra sdkconfig.defaults layered on top of the
+# committed one (esp-idf-sys splits on ';', last value wins).
+FW_DIR="$(pwd)"
+PART_DEFAULTS="$FW_DIR/target/sdkconfig.partition.defaults"
+mkdir -p "$FW_DIR/target"
+printf 'CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="%s"\n' "$FW_DIR/partitions.csv" > "$PART_DEFAULTS"
+export ESP_IDF_SDKCONFIG_DEFAULTS="sdkconfig.defaults;$PART_DEFAULTS"
+
 exec cargo build "$@"

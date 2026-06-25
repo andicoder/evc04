@@ -2,8 +2,11 @@
 # Read by esp-idf-sys/embuild at build time; bump deliberately.
 
 # Dual-slot OTA: use our custom partition table (see partitions.csv).
+# The CSV FILENAME is injected by build.sh as an ABSOLUTE path: esp-idf-sys
+# resolves CONFIG_PARTITION_TABLE_CUSTOM_FILENAME against ESP-IDF's PROJECT_DIR
+# (the build out-dir, not this crate), so a relative "partitions.csv" is not
+# found there.
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 # 4 MB flash (DevKitC WROOM-32); the default 2 MB cannot hold two app slots.
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
