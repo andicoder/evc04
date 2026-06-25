@@ -12,7 +12,7 @@
 //! version-sensitive — built against the pinned esp-idf-svc 0.52.
 
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use esp_idf_svc::hal::delay::TickType;
@@ -46,6 +46,12 @@ const TOPIC_STATUS: &str = "evc04/cn28/status";
 
 /// Send `\r\n` every N seconds so frames are captured with no command. 0 = off.
 const AUTO_WAKE_SECS: u64 = 0;
+/// Re-publish the retained `online` liveness this often. After a reboot the *new*
+/// session can publish `online` before the broker fires the *old* session's
+/// retained LWT `offline` (its will latency is ~keepalive×1.5), leaving the status
+/// stuck `offline` while the device is up — seen right after an OTA. The heartbeat
+/// re-asserts `online`, so any such stale `offline` self-corrects within one tick.
+const STATUS_HEARTBEAT: Duration = Duration::from_secs(30);
 /// Per-byte read gap before a response is considered complete.
 const READ_GAP: Duration = Duration::from_millis(200);
 /// How long to wait for the *first* response byte before treating the line as
@@ -103,31 +109,26 @@ fn prober_loop(
     uart: &UartDriver<'_>,
     rx: mpsc::Receiver<Job>,
 ) -> Result<()> {
-    let wake = if AUTO_WAKE_SECS > 0 {
-        Some(Duration::from_secs(AUTO_WAKE_SECS))
-    } else {
-        None
-    };
+    let auto_wake = (AUTO_WAKE_SECS > 0).then(|| Duration::from_secs(AUTO_WAKE_SECS));
+    let mut next_heartbeat = Instant::now() + STATUS_HEARTBEAT;
+    let mut next_wake = auto_wake.map(|d| Instant::now() + d);
 
     loop {
-        let job = match wake {
-            Some(d) => match rx.recv_timeout(d) {
-                Ok(job) => Some(job),
-                Err(mpsc::RecvTimeoutError::Timeout) => None, // → auto-wake
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            },
-            None => match rx.recv() {
-                Ok(job) => Some(job),
-                Err(_) => break,
-            },
-        };
+        // Block for a job, but never longer than the soonest pending timer so the
+        // heartbeat (and optional auto-wake) still fire on an idle connection.
+        let mut deadline = next_heartbeat;
+        if let Some(w) = next_wake {
+            deadline = deadline.min(w);
+        }
+        let timeout = deadline.saturating_duration_since(Instant::now());
 
-        match job {
-            Some(Job::Connected) => {
+        match rx.recv_timeout(timeout) {
+            Ok(Job::Connected) => {
                 client.subscribe(TOPIC_CMD, QoS::AtLeastOnce)?;
                 client.subscribe(TOPIC_BAUD, QoS::AtLeastOnce)?;
                 client.subscribe(TOPIC_OTA, QoS::AtLeastOnce)?;
                 client.publish(TOPIC_STATUS, QoS::AtLeastOnce, true, b"online")?;
+                next_heartbeat = Instant::now() + STATUS_HEARTBEAT;
                 info!("connected; subscribed to {TOPIC_CMD}, {TOPIC_BAUD}, {TOPIC_OTA}");
                 // Reaching the broker is the proof a freshly-OTA'd image needs to
                 // cancel its pending rollback (#76). A confirm failure must not
@@ -136,10 +137,23 @@ fn prober_loop(
                     warn!("ota: confirm skipped: {e:#}");
                 }
             }
-            Some(Job::Probe(bytes)) => probe(client, uart, &bytes)?,
-            Some(Job::SetBaud(rate)) => set_baud(client, uart, rate)?,
-            Some(Job::Ota(url)) => run_ota(client, &url)?,
-            None => probe(client, uart, b"\r\n")?, // auto-wake tick
+            Ok(Job::Probe(bytes)) => probe(client, uart, &bytes)?,
+            Ok(Job::SetBaud(rate)) => set_baud(client, uart, rate)?,
+            Ok(Job::Ota(payload)) => run_ota(client, &payload)?,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let now = Instant::now();
+                if now >= next_heartbeat {
+                    client.publish(TOPIC_STATUS, QoS::AtLeastOnce, true, b"online")?;
+                    next_heartbeat = now + STATUS_HEARTBEAT;
+                }
+                if let (Some(w), Some(d)) = (next_wake, auto_wake) {
+                    if now >= w {
+                        probe(client, uart, b"\r\n")?; // auto-wake tick
+                        next_wake = Some(now + d);
+                    }
+                }
+            }
         }
     }
     Ok(())
@@ -223,7 +237,28 @@ fn set_baud(client: &mut EspMqttClient<'_>, uart: &UartDriver<'_>, rate: u32) ->
 /// A failure must never propagate: the running (good) image is untouched, so we
 /// publish `failed …` on the OTA status topic and carry on rather than killing
 /// the loop.
-fn run_ota(client: &mut EspMqttClient<'_>, url: &str) -> Result<()> {
+fn run_ota(client: &mut EspMqttClient<'_>, payload: &str) -> Result<()> {
+    // Security (#76): a *retained* trigger would re-fire an OTA from this URL on
+    // every reconnect — e.g. against a since-dead image server — a flash loop. So
+    // the moment we act on any trigger, delete it (a zero-length retained publish
+    // removes the retained message), guaranteeing no OTA URL can persist on the
+    // broker regardless of who set it. The pump ignores the empty echo.
+    client.publish(TOPIC_OTA, QoS::AtLeastOnce, true, b"")?;
+
+    let url = match ota::validate_ota_url(payload) {
+        Ok(url) => url,
+        Err(e) => {
+            warn!("bad ota url {payload:?}: {e:?}");
+            client.publish(
+                TOPIC_OTA_STATUS,
+                QoS::AtLeastOnce,
+                false,
+                format!("failed {e:?}").as_bytes(),
+            )?;
+            return Ok(());
+        }
+    };
+
     client.publish(TOPIC_OTA_STATUS, QoS::AtLeastOnce, false, b"downloading")?;
     match download_and_flash(url) {
         Ok(total) => {
@@ -317,12 +352,15 @@ fn spawn_connection_pump(mut connection: EspMqttConnection, tx: mpsc::Sender<Job
                                 }
                                 Err(e) => warn!("bad baud {payload:?}: {e:?}"),
                             },
-                            Some(t) if t == TOPIC_OTA => match ota::validate_ota_url(payload) {
-                                Ok(url) => {
-                                    let _ = tx.send(Job::Ota(url.to_string()));
+                            Some(t) if t == TOPIC_OTA => {
+                                // Ignore our own retained-clear (empty payload);
+                                // forward every real trigger raw so run_ota both
+                                // validates it and deletes the retained message,
+                                // so no OTA URL can ever persist (#76).
+                                if !data.is_empty() {
+                                    let _ = tx.send(Job::Ota(payload.to_string()));
                                 }
-                                Err(e) => warn!("bad ota url {payload:?}: {e:?}"),
-                            },
+                            }
                             _ => match command::decode_command(payload) {
                                 Ok(bytes) => {
                                     let _ = tx.send(Job::Probe(bytes));
