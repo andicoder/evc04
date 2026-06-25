@@ -13,4 +13,5 @@ pub mod command;
 pub mod control;
 pub mod dump;
 pub mod frame;
+pub mod intake;
 pub mod ota;
