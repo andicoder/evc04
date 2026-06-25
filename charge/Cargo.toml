@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.82"
 description = "Emulates an Inepro PRO380 meter so an external controller can modulate a Vestel EVC04 wallbox over RS485."
 license = "MIT"
-repository = "https://github.com/andicoder/evc04-charge"
+repository = "https://github.com/andicoder/evc04"
 
 [[bin]]
 name = "evc04-charge"
