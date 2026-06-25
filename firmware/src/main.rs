@@ -28,7 +28,9 @@ use esp_idf_svc::hal::delay::TickType;
 use esp_idf_svc::hal::gpio;
 use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::hal::reset::restart;
-use esp_idf_svc::hal::uart::{config::Config as UartConfig, UartDriver};
+use esp_idf_svc::hal::uart::{
+    config::Config as UartConfig, config::DataBits, config::StopBits, UartDriver,
+};
 use esp_idf_svc::hal::units::Hertz;
 use esp_idf_svc::http::client::{Configuration as HttpConfig, EspHttpConnection};
 use esp_idf_svc::http::Method;
@@ -41,6 +43,8 @@ use esp_idf_svc::sys::{esp_err_t, ESP_ERR_TIMEOUT};
 use esp_idf_svc::wifi::{AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi};
 use evc04_cn28_core::{baud, command, dump, ota};
 use log::{info, warn};
+
+mod rs485;
 
 // ── Config (compile-time constants; secrets stay in env) ────────────────────
 const TOPIC_CMD: &str = "evc04/cn28/cmd";
@@ -56,6 +60,12 @@ const TOPIC_RAW_ASCII: &str = "evc04/cn28/raw/ascii";
 const TOPIC_STATUS: &str = "evc04/cn28/status";
 
 const UART_BAUD: u32 = 115_200; // CN28 LOG: 115200 8N1, no flow control.
+/// RS485 meter bus (CN20): the box polls the emulated PRO380 at 9600 8E1 (SPECS §3).
+const RS485_BAUD: u32 = 9_600;
+/// Per-phase current the RS485 meter slave reports (#85 bench value; #86 replaces
+/// this static source with the MQTT-driven control value). 0 A = full charge;
+/// set to 16.0 to check the verified 16 A frame against SPECS §5.
+const RS485_REPORT_AMPERE: f32 = 0.0;
 /// Send `\r\n` every N seconds so frames are captured with no command. 0 = off.
 const AUTO_WAKE_SECS: u64 = 0;
 /// Per-byte read gap before a response is considered complete.
@@ -101,6 +111,31 @@ fn main() -> Result<()> {
         &UartConfig::new().baudrate(Hertz(UART_BAUD)),
     )
     .context("uart init")?;
+
+    // UART2 → MAX3485 transceiver on the RS485 meter bus (#85). 9600 8E1 — note the
+    // EVEN parity and the different baud from CN28's UART1 (independent controllers).
+    // DE direction is driven manually on GPIO27 (see rs485.rs); RTS is left unused.
+    let uart2 = UartDriver::new(
+        peripherals.uart2,
+        peripherals.pins.gpio25,        // TX → MAX3485 DI
+        peripherals.pins.gpio26,        // RX ← MAX3485 RO
+        Option::<gpio::AnyIOPin>::None, // CTS unused
+        Option::<gpio::AnyIOPin>::None, // RTS unused (manual DE on GPIO27)
+        &UartConfig::new()
+            .baudrate(Hertz(RS485_BAUD))
+            .data_bits(DataBits::DataBits8)
+            .parity_even()
+            .stop_bits(StopBits::STOP1),
+    )
+    .context("uart2 (rs485) init")?;
+    let de = gpio::PinDriver::output(peripherals.pins.gpio27).context("rs485 DE pin")?;
+
+    // Run the meter slave on its own thread so the box's ~1 Hz poll is answered
+    // independently of the CN28 prober on the main thread (#85; #87 hardens this).
+    std::thread::Builder::new()
+        .stack_size(6144)
+        .spawn(move || rs485::run_meter_slave(uart2, de, || [RS485_REPORT_AMPERE; 3]))
+        .expect("spawn rs485 meter slave");
 
     let lwt = LwtConfiguration {
         topic: TOPIC_STATUS,
