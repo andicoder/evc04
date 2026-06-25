@@ -31,7 +31,9 @@ The CN28 path is **read-only** and on a **separate port** from control.
 [`../firmware/`](../firmware/) (ESP32) taps CN28 over UART and bridges raw frames to
 MQTT for remote probing; [`../core/`](../core/) holds the pure, host-tested decode
 and command logic the firmware reuses. This is discovery tooling today — a
-structured CN28 parser is the next step.
+structured CN28 parser is the next step. The ESP32 pin assignment (CN28 read +
+the RS485 meter-emulation port that would replace the gateway) is in
+[`esp32-pinout.md`](esp32-pinout.md).
 
 ## Why one repo
 
