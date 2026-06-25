@@ -1,9 +1,13 @@
 name: CI
 
+# Scoped to the charge daemon. core/ host tests and firmware/ builds are out of
+# scope here (firmware can't build in CI); a core/ job is a separate follow-up.
 on:
   push:
     branches: [main]
+    paths: ['charge/**', '.github/workflows/ci.yml']
   pull_request:
+    paths: ['charge/**', '.github/workflows/ci.yml']
 
 env:
   CARGO_TERM_COLOR: always
@@ -11,6 +15,9 @@ env:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: charge
     steps:
       - uses: actions/checkout@v7
 
@@ -19,6 +26,8 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: charge
 
       - name: Format
         run: cargo fmt --all --check
@@ -33,6 +42,9 @@ jobs:
   # break surfaces here, not only on a v* tag in release.yml. Build-only: no image.
   build:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: charge
     strategy:
       matrix:
         target:

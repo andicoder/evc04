@@ -17,7 +17,7 @@ venv/
 htmlcov/
 
 # Rust
-/target/
+target/
 **/*.rs.bk
 
 # Editor / OS

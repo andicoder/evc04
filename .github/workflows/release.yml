@@ -33,12 +33,13 @@ jobs:
       - uses: taiki-e/install-action@cross
 
       - name: Build
+        working-directory: charge
         run: cross build --release --locked --target ${{ matrix.target }}
 
       - name: Stage binary
         run: |
           mkdir -p dist/${{ matrix.os }}/${{ matrix.arch }}
-          cp target/${{ matrix.target }}/release/evc04-charge \
+          cp charge/target/${{ matrix.target }}/release/evc04-charge \
              dist/${{ matrix.os }}/${{ matrix.arch }}/evc04-charge
 
       - uses: actions/upload-artifact@v7
@@ -84,6 +85,7 @@ jobs:
       - uses: docker/build-push-action@v7
         with:
           context: .
+          file: charge/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
