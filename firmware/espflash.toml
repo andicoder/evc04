@@ -1,0 +1,8 @@
+# espflash project config (auto-loaded from this dir by `espflash flash`).
+#
+# Without this, espflash flashes its built-in single-`factory` partition table,
+# so the device has no ota_0/ota_1/otadata slots and `esp_ota_begin` fails with
+# "ota begin" — OTA (#76) cannot work. Point espflash at the committed dual-slot
+# table so the USB flash lays down the same layout the OTA path ping-pongs across.
+[idf]
+partition_table = "partitions.csv"
