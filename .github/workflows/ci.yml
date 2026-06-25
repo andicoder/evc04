@@ -1,7 +1,7 @@
 name: CI
 
-# Scoped to the charge daemon. core/ host tests and firmware/ builds are out of
-# scope here (firmware can't build in CI); a core/ job is a separate follow-up.
+# Scoped to the charge daemon. core/ host tests live in core.yml; firmware/ builds
+# are out of scope (the esp toolchain + device dependency keep them local-only).
 on:
   push:
     branches: [main]
