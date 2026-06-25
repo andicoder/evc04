@@ -699,10 +699,20 @@ MQTT contract:
 
 ```
 evc04/cn28/cmd        (in)  command payload → decode_command → bytes written to CN28
+evc04/cn28/baud       (in)  integer UART rate → live change_baudrate (baud sweep, #79)
 evc04/cn28/raw        (out) raw response bytes
 evc04/cn28/raw/hex    (out) lowercase space-separated hex
 evc04/cn28/raw/ascii  (out) printable ASCII, non-printables → '.'
-evc04/cn28/status     (out) LWT online/offline (retained)
+evc04/cn28/status     (out) LWT online/offline (retained); also non-retained `baud <n>` echoes
+```
+
+The `cn28/*` topics above are scoped to the Vorprojekt prober. **OTA lives in its
+own durable `device/*` namespace** (#76) because it outlives the prober — it stays
+in use whatever firmware role this ESP takes later:
+
+```
+evc04/device/ota          (in)  http:// firmware URL → pull + flash inactive slot
+evc04/device/ota/status   (out) non-retained progress: downloading | ok | failed <e>
 ```
 
 Wiring (AZ-Delivery **ESP32 DevKit C V4**, 38-pin WROOM-32; onboard USB-UART +
@@ -737,6 +747,23 @@ libxml2/ICU compat shim esp-clang needs on rolling distros), then `cargo make
 build` and `cargo make flash` on the host. `WIFI_SSID`/`WIFI_PASSWORD`/`MQTT_URL`
 are baked in at build time (env!, never committed); export real values before
 flashing.
+
+OTA (#76): once sealed in the enclosure the board is never wired to USB again, so
+new firmware rolls out over WiFi. `firmware/partitions.csv` gives the ESP32 two
+app slots (`ota_0`/`ota_1`, no `factory`; otadata picks the bootable one) and
+`sdkconfig.defaults` enables `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`. Publishing a
+`http://` URL to `evc04/device/ota` streams the `.bin` into the inactive slot and
+reboots into it; the new image boots *pending-verify* and only cancels its
+rollback once it has re-reached WiFi **and** the broker (`confirm_running_slot` on
+the first CONNECTED), so an image that can't get online auto-reverts on the next
+reset. Transport is **plain HTTP on the trusted LAN** — `firmware/ota_push.sh`
+builds the release image, serves it from a *temporary* local HTTP server, triggers
+the pull, waits for `ok`/`failed` on `evc04/device/ota/status`, then shuts the
+server down (no permanent hosting on the broker box). **Image signing is
+deferred** ("rollback now, sign later"): rollback guards a *broken* image today;
+signing (a build-config change, not an eFuse burn, so it can ship in a later OTA
+without re-opening the box) is what will later guard a *malicious* one served by
+another LAN host.
 
 The **structured CN28 parser is deliberately deferred** — it is the next step once
 captures from this prober confirm the frame format (the `wc` fragment, the shell

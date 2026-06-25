@@ -1,0 +1,17 @@
+# Dual-slot OTA layout for the CN28 prober (evc04#76), ESP32 WROOM-32 / 4 MB.
+#
+# No `factory` partition on purpose: with two app slots the bootloader picks the
+# bootable one from `otadata`, and a fresh chip (empty otadata) boots ota_0 — so
+# the very first USB flash lands in ota_0 and every OTA thereafter ping-pongs
+# ota_0 <-> ota_1, which is what makes app-rollback work.
+#
+# Each slot is 0x1D0000 (1.875 MB) — generous headroom for the Rust image; keep
+# an eye on it (two slots roughly halve usable app flash). Offsets are 64 KB
+# aligned as the bootloader requires for app partitions.
+#
+# Name,     Type, SubType, Offset,   Size
+nvs,        data, nvs,     0x9000,   0x6000,
+otadata,    data, ota,     0xf000,   0x2000,
+phy_init,   data, phy,     0x11000,  0x1000,
+ota_0,      app,  ota_0,   0x20000,  0x1D0000,
+ota_1,      app,  ota_1,   0x1F0000, 0x1D0000,

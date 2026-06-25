@@ -11,3 +11,4 @@ extern crate alloc;
 pub mod baud;
 pub mod command;
 pub mod dump;
+pub mod ota;

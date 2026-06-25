@@ -27,20 +27,29 @@ use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::delay::TickType;
 use esp_idf_svc::hal::gpio;
 use esp_idf_svc::hal::peripherals::Peripherals;
+use esp_idf_svc::hal::reset::restart;
 use esp_idf_svc::hal::uart::{config::Config as UartConfig, UartDriver};
 use esp_idf_svc::hal::units::Hertz;
+use esp_idf_svc::http::client::{Configuration as HttpConfig, EspHttpConnection};
+use esp_idf_svc::http::Method;
 use esp_idf_svc::mqtt::client::{
     EspMqttClient, EspMqttConnection, EventPayload, LwtConfiguration, MqttClientConfiguration, QoS,
 };
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
+use esp_idf_svc::ota::{EspOta, SlotState};
 use esp_idf_svc::sys::{esp_err_t, ESP_ERR_TIMEOUT};
 use esp_idf_svc::wifi::{AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi};
-use evc04_cn28_core::{baud, command, dump};
+use evc04_cn28_core::{baud, command, dump, ota};
 use log::{info, warn};
 
 // ── Config (compile-time constants; secrets stay in env) ────────────────────
 const TOPIC_CMD: &str = "evc04/cn28/cmd";
 const TOPIC_BAUD: &str = "evc04/cn28/baud";
+// OTA is a device-management concern that outlives the cn28 prober (it stays in
+// use whatever firmware role this ESP takes later, #76), so it sits under its own
+// durable `evc04/device/*` namespace rather than the prober's `cn28/*` topics.
+const TOPIC_OTA: &str = "evc04/device/ota";
+const TOPIC_OTA_STATUS: &str = "evc04/device/ota/status";
 const TOPIC_RAW: &str = "evc04/cn28/raw";
 const TOPIC_RAW_HEX: &str = "evc04/cn28/raw/hex";
 const TOPIC_RAW_ASCII: &str = "evc04/cn28/raw/ascii";
@@ -57,6 +66,8 @@ const READ_GAP: Duration = Duration::from_millis(200);
 /// 200 ms first-byte window would drop those frames as "no response".
 const FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(2);
 const READ_BUF: usize = 512;
+/// Chunk size for streaming the OTA image from HTTP into the inactive slot.
+const OTA_BUF: usize = 1024;
 
 const WIFI_SSID: &str = env!("WIFI_SSID");
 const WIFI_PASSWORD: &str = env!("WIFI_PASSWORD");
@@ -67,6 +78,7 @@ enum Job {
     Connected,
     Probe(Vec<u8>),
     SetBaud(u32),
+    Ota(String),
 }
 
 fn main() -> Result<()> {
@@ -146,11 +158,19 @@ fn prober_loop(
             Some(Job::Connected) => {
                 client.subscribe(TOPIC_CMD, QoS::AtLeastOnce)?;
                 client.subscribe(TOPIC_BAUD, QoS::AtLeastOnce)?;
+                client.subscribe(TOPIC_OTA, QoS::AtLeastOnce)?;
                 client.publish(TOPIC_STATUS, QoS::AtLeastOnce, true, b"online")?;
-                info!("connected; subscribed to {TOPIC_CMD}, {TOPIC_BAUD}");
+                info!("connected; subscribed to {TOPIC_CMD}, {TOPIC_BAUD}, {TOPIC_OTA}");
+                // Reaching the broker is the proof a freshly-OTA'd image needs to
+                // cancel its pending rollback (#76). A confirm failure must not
+                // kill the loop, so it is logged, not propagated.
+                if let Err(e) = confirm_running_slot() {
+                    warn!("ota: confirm skipped: {e:#}");
+                }
             }
             Some(Job::Probe(bytes)) => probe(client, uart, &bytes)?,
             Some(Job::SetBaud(rate)) => set_baud(client, uart, rate)?,
+            Some(Job::Ota(url)) => run_ota(client, &url)?,
             None => probe(client, uart, b"\r\n")?, // auto-wake tick
         }
     }
@@ -226,6 +246,88 @@ fn set_baud(client: &mut EspMqttClient<'_>, uart: &UartDriver<'_>, rate: u32) ->
     Ok(())
 }
 
+/// Pull a firmware image over plain HTTP and flash it to the inactive slot, then
+/// reboot into it (#76). Runs on the prober thread: esp-mqtt services its own
+/// keepalive on an internal task, so blocking here for the length of a download
+/// does not drop the connection — and probe responsiveness is irrelevant during
+/// a flash. Progress is reported on the status topic so a rollout is observable.
+///
+/// A failure must never propagate: the running (good) image is untouched, so we
+/// publish `failed …` on the OTA status topic and carry on rather than killing
+/// the loop.
+fn run_ota(client: &mut EspMqttClient<'_>, url: &str) -> Result<()> {
+    client.publish(TOPIC_OTA_STATUS, QoS::AtLeastOnce, false, b"downloading")?;
+    match download_and_flash(url) {
+        Ok(total) => {
+            info!("ota wrote {total} B; rebooting into the new slot");
+            client.publish(TOPIC_OTA_STATUS, QoS::AtLeastOnce, false, b"ok")?;
+            // Let the broker flush the status before the link drops on reboot.
+            std::thread::sleep(Duration::from_millis(500));
+            restart();
+        }
+        Err(e) => {
+            warn!("ota failed: {e:#}");
+            client.publish(
+                TOPIC_OTA_STATUS,
+                QoS::AtLeastOnce,
+                false,
+                format!("failed {e}").as_bytes(),
+            )?;
+            Ok(())
+        }
+    }
+}
+
+/// Stream `url` into the inactive OTA slot, returning the byte count written.
+/// On any error the half-written `EspOtaUpdate` is dropped, which aborts it, so
+/// the bootable slot is never corrupted.
+fn download_and_flash(url: &str) -> Result<usize> {
+    let mut http = EspHttpConnection::new(&HttpConfig {
+        buffer_size: Some(OTA_BUF),
+        ..Default::default()
+    })
+    .context("http client init")?;
+    http.initiate_request(Method::Get, url, &[])
+        .context("http GET")?;
+    http.initiate_response().context("http response")?;
+    let status = http.status();
+    if status != 200 {
+        anyhow::bail!("http status {status}");
+    }
+
+    let mut ota = EspOta::new().context("ota init")?;
+    let mut update = ota.initiate_update().context("ota begin")?;
+    let mut buf = [0u8; OTA_BUF];
+    let mut total = 0usize;
+    loop {
+        let n = http.read(&mut buf).context("http read")?;
+        if n == 0 {
+            break;
+        }
+        update.write(&buf[..n]).context("ota write")?;
+        total += n;
+    }
+    if total == 0 {
+        anyhow::bail!("empty image");
+    }
+    update.complete().context("ota complete")?;
+    Ok(total)
+}
+
+/// Confirm-after-proof: a just-OTA'd image boots *unverified* (pending-verify).
+/// Cancel the rollback only once — guarded by the slot state — so a re-fired
+/// CONNECTED on a later reconnect is a no-op. An image that never reaches here
+/// (no WiFi/MQTT) stays unverified and the bootloader reverts on the next reset.
+fn confirm_running_slot() -> Result<()> {
+    let mut ota = EspOta::new().context("ota init")?;
+    let slot = ota.get_running_slot().context("running slot")?;
+    if slot.state == SlotState::Unverified {
+        ota.mark_running_slot_valid().context("mark slot valid")?;
+        info!("ota: confirmed running slot {}", slot.label);
+    }
+    Ok(())
+}
+
 fn spawn_connection_pump(mut connection: EspMqttConnection, tx: mpsc::Sender<Job>) {
     std::thread::Builder::new()
         .stack_size(6144)
@@ -237,14 +339,21 @@ fn spawn_connection_pump(mut connection: EspMqttConnection, tx: mpsc::Sender<Job
                     }
                     EventPayload::Received { topic, data, .. } => {
                         let payload = core::str::from_utf8(data).unwrap_or_default();
-                        // Route by topic: the baud channel re-tunes the UART, any
-                        // other (the command channel) is decoded to probe bytes.
+                        // Route by topic: baud re-tunes the UART, ota triggers a
+                        // firmware pull, any other (the command channel) is decoded
+                        // to probe bytes.
                         match topic {
                             Some(t) if t == TOPIC_BAUD => match baud::parse_baud(payload) {
                                 Ok(rate) => {
                                     let _ = tx.send(Job::SetBaud(rate));
                                 }
                                 Err(e) => warn!("bad baud {payload:?}: {e:?}"),
+                            },
+                            Some(t) if t == TOPIC_OTA => match ota::validate_ota_url(payload) {
+                                Ok(url) => {
+                                    let _ = tx.send(Job::Ota(url.to_string()));
+                                }
+                                Err(e) => warn!("bad ota url {payload:?}: {e:?}"),
                             },
                             _ => match command::decode_command(payload) {
                                 Ok(bytes) => {
