@@ -10,9 +10,9 @@
 //! Wiring (UART2 + MAX3485, see `docs/esp32-pinout.md`):
 //!   GPIO25 (TX) → DI · GPIO26 (RX) ← RO · GPIO27 → DE/RE · A/B → CN20 · 9600 8E1
 //!
-//! Scope (#85): answer the poll with a value the caller supplies (a static bench
-//! value for now). MQTT-driven values are #86; coexistence with the CN28 read loop
-//! and a continuity watchdog are #87.
+//! Scope (#85): answer the poll with a static bench value ([`BENCH_REPORT_AMPERE`]).
+//! MQTT-driven values are #86; coexistence with the CN28 read loop and a continuity
+//! watchdog are #87.
 //!
 //! Compiles against the pinned esp-idf-hal 0.46.2 / esp-idf-svc 0.52.1. What the
 //! build can't prove is the DE *timing* on the wire — that `wait_tx_done` holds DE
@@ -25,6 +25,15 @@ use esp_idf_svc::hal::uart::UartDriver;
 use esp_idf_svc::sys::{esp_err_t, ESP_ERR_TIMEOUT};
 use evc04_cn28_core::frame::{build_response, encode_currents, parse_request};
 use log::{info, warn};
+
+/// RS485 meter bus baud (CN20): the box polls the emulated PRO380 at 9600 8E1
+/// (SPECS §3). `main` configures UART2 with it.
+pub const BAUD: u32 = 9_600;
+
+/// Per-phase current the slave reports (#85 bench value). 0 A = full charge; set
+/// 16.0 to check the verified 16 A frame (SPECS §5). #86 replaces this static
+/// const with the MQTT-driven closed-loop value.
+const BENCH_REPORT_AMPERE: f32 = 0.0;
 
 /// The meter poll we emulate (SPECS §4). Fixed: the box only ever issues this one.
 const SLAVE_ADDR: u8 = 1;
@@ -45,17 +54,11 @@ const TX_DRAIN_MS: u64 = 100;
 /// An RTU read request is 8 bytes; a little headroom absorbs line noise.
 const READ_BUF: usize = 32;
 
-/// Serve the meter-emulation slave forever: assemble each inbound poll, and when it
-/// is *our* poll, answer with the per-phase currents `report()` returns.
-///
-/// `report` is the seam the rest of the firmware drives: #85 passes a static bench
-/// value, #86 will pass an MQTT-fed closure — this loop is unaffected either way.
-/// It must be `Send` because the slave runs on its own thread (the CN28 prober keeps
-/// the main thread).
-pub fn run_meter_slave<R>(uart: UartDriver<'static>, mut de: PinDriver<'static, Output>, report: R)
-where
-    R: Fn() -> [f32; 3],
-{
+/// Thread routine: serve the meter-emulation slave forever — assemble each inbound
+/// poll, and when it is *our* poll, answer with [`BENCH_REPORT_AMPERE`]. `main`
+/// owns construction of `uart`/`de` and moves them onto this thread (#86 will feed
+/// the reported value from MQTT instead of the bench const).
+pub fn run(uart: UartDriver<'static>, mut de: PinDriver<'static, Output>) {
     // Receive is the default line state; only flip DE high around our own transmit.
     let _ = de.set_low();
     info!("rs485: meter slave up (addr {SLAVE_ADDR}, 0x{POLL_REGISTER:04x}×{POLL_QUANTITY}, 9600 8E1)");
@@ -96,7 +99,7 @@ where
             continue;
         }
 
-        let amps = report();
+        let amps = [BENCH_REPORT_AMPERE; 3];
         let payload = encode_currents(amps[0], amps[1], amps[2]);
         let response = build_response(SLAVE_ADDR, &payload);
 
