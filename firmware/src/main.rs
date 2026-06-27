@@ -45,11 +45,11 @@ fn main() -> Result<()> {
     // for the life of the process.
     let _wifi = wifi::connect(peripherals.modem, sysloop, nvs)?;
 
-    // UART1 → CN28 LOG (115200 8N1). UART0 stays free for the USB log monitor.
+    // UART1 → CN28 LOG (9600 8N1). UART0 stays free for the USB log monitor.
     let cn28 = UartDriver::new(
         peripherals.uart1,
-        peripherals.pins.gpio17, // TX → CN28 RX
-        peripherals.pins.gpio16, // RX ← CN28 TX
+        peripherals.pins.gpio16, // TX → CN28 RX (RX/TX swapped in SW for the zero-byte LOG bring-up)
+        peripherals.pins.gpio17, // RX ← CN28 TX (was GPIO16)
         Option::<gpio::AnyIOPin>::None,
         Option::<gpio::AnyIOPin>::None,
         &UartConfig::new().baudrate(Hertz(prober::CN28_BAUD)),

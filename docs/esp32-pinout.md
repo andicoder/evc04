@@ -19,7 +19,7 @@ can be routed to almost any pin (the silkscreen `TX2`/`RX2` labels are only the
 | UART  | Role                          | Pins (this design)                 |
 |-------|-------------------------------|------------------------------------|
 | UART0 | USB log console / first flash | GPIO1 / GPIO3 — **leave free**     |
-| UART1 | CN28 LOG read (115200 8N1)    | GPIO17 TX → Box-RX, GPIO16 RX ← Box-TX |
+| UART1 | CN28 LOG read (9600 8N1)      | GPIO16 TX → Box-RX, GPIO17 RX ← Box-TX |
 | UART2 | RS485 meter emulation (9600 8E1) | GPIO25 TX, GPIO26 RX, GPIO27 DE |
 
 UART0 stays reserved for the USB monitor and the very first flash; once sealed,
@@ -100,8 +100,9 @@ RS485:  9600 baud, 8 data bits, EVEN parity, 1 stop bit (9600 8E1)
 Slave:  address 1, FC 0x03, start 0x500C, qty 6, polled ~1.006 s
 ```
 
-Note the parity differs from the CN28 side (115200 **8N1**) — the two UARTs run
-different framing, which is fine since they are independent controllers.
+Note the parity differs from the CN28 side (9600 **8N1**): both UARTs run at 9600
+but with different parity (8N1 vs 8E1), which is fine since they are independent
+controllers.
 
 ## Pins to avoid
 
@@ -119,8 +120,8 @@ different framing, which is fine since they are independent controllers.
                 ┌──────────────── ESP32 DevKitC V4 ────────────────┐
    USB / log ───┤ GPIO1/3  (UART0)                                  │
                 │                                                   │
-   CN28 LOG  ───┤ GPIO17 → Box-RX   GPIO16 ← Box-TX   GND  (UART1)  │
-   (3.3V TTL,   │   115200 8N1, wire direct — no level shifter      │
+   CN28 LOG  ───┤ GPIO16 → Box-RX   GPIO17 ← Box-TX   GND  (UART1)  │
+   (3.3V TTL,   │   9600 8N1, wire direct — no level shifter        │
     read)       │                                                   │
                 │ GPIO25 → DI                                       │
    CN20 RS485 ──┤ GPIO26 ← RO   ──►  MAX3485  ──►  A / B / GND      │

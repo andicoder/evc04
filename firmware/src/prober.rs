@@ -32,8 +32,10 @@ use log::{info, warn};
 
 use crate::control::ControlState;
 
-/// CN28 LOG UART rate: 115200 8N1, no flow control. `main` configures UART1 with it.
-pub const CN28_BAUD: u32 = 115_200;
+/// CN28 LOG UART rate: 9600 8N1, no flow control (bench bring-up #72 — the box's
+/// LOG console runs at 9600, not the 115200 first assumed). `main` configures UART1
+/// with it; `evc04/cn28/baud` can still re-tune it live for a future sweep.
+pub const CN28_BAUD: u32 = 9_600;
 
 const TOPIC_CMD: &str = "evc04/cn28/cmd";
 const TOPIC_BAUD: &str = "evc04/cn28/baud";

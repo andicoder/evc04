@@ -693,7 +693,7 @@ Two independent crates (no root workspace — the daemon is untouched):
   `\\ \r \n \t \0 \xHH`); `dump::to_hex` / `dump::to_printable` render responses.
 - **`/firmware`** (`evc04-cn28-prober`, `esp-idf-svc`, target
   `xtensa-esp32-espidf`, built/flashed **locally, not in CI**) — WiFi + MQTT + one
-  hardware UART (UART1, 115200 8N1; UART0 stays free for the log monitor).
+  hardware UART (UART1, 9600 8N1; UART0 stays free for the log monitor).
 
 MQTT contract:
 
@@ -723,24 +723,37 @@ UART1 → CN28. The CN28 "LOG" header is 4-pin **3.3 V TTL**, pinout bottom→to
 shifter**. All three signal wires are on the ESP's right-hand header:
 
 ```
-ESP TX2 / GPIO17  ──►  CN28 RX   (pin 2)
-ESP RX2 / GPIO16  ◄──  CN28 TX   (pin 3)
-ESP GND           ───  CN28 GND  (pin 1, common ground)
+ESP GPIO16 (UART1 TX)  ──►  CN28 RX   (pin 2)
+ESP GPIO17 (UART1 RX)  ◄──  CN28 TX   (pin 3)
+ESP GND                ───  CN28 GND  (pin 1, common ground)
 ```
 
-Anchor on the `TX2`/`RX2` silkscreen (= GPIO17/GPIO16). Leave the CN28 3.3 V pin
+Bench bring-up (#72) proved the TX/RX roles **opposite** to the first guess: the
+working assignment is **GPIO16 = TX, GPIO17 = RX** (firmware drives UART1 this way),
+not the `TX2`/`RX2` silkscreen default — anchor on these GPIO numbers, not the
+silk. Leave the CN28 3.3 V pin
 (pin 4) unconnected — the DevKitC is self-powered (USB/VIN) and feeding it would
 fight the onboard rail. Do **not** wire `GPIO0`/BOOT (strapping pin, owned by the
 onboard button) or `TX0`/`RX0` (the USB console — the first-flash + monitor path
 OTA later replaces).
 
-Bring-up status (#72): link **confirmed** — over MQTT the box answers every
-CRLF-terminated command (`help\r\n`, `\r\n`) and ignores un-terminated input, the
-signature of a live line-based shell. Two open items: (1) the response decodes as
-a run of `0x00`, a UART-parameter mismatch (not a wiring fault) — the **115200
-8N1** figure for the LOG port is unconfirmed (the box's RS485 meter side runs
-9600), so the baud must be swept; (2) the board flaps `online`/`offline` under
-load (LWT), pointing at a brownout / marginal 5 V supply or GND.
+Bring-up status (#72): LOG read **fully working** (2026-06-27). The two earlier
+open items on the link itself are resolved:
+
+1. **RX/TX were swapped.** With the first GPIO17=TX/GPIO16=RX assignment the link
+   read **zero bytes**; flipping the firmware to **GPIO16=TX / GPIO17=RX** restored
+   it. The box's `TX2`/`RX2` silk maps opposite to the first guess.
+2. **Baud is 9600, not 115200.** At 115200 the response was a run of `0x00`; a
+   sweep over `evc04/cn28/baud` found **9600 8N1** gives clean ASCII (the box's LOG
+   console runs at the same rate as its RS485 meter side). `CN28_BAUD` is now 9600.
+
+With both fixed the LOG streams readable lines, e.g. `A: 18  W: 0  Wh: 0`,
+`KLEFR NOT DETECTED!`, `Any metering device NOT detected!`, `No data received from
+P1!` — the last lines are a live confirmation that the box is **not** reading its
+meter yet, the same symptom as the climbing `last_poll_age_s` on the RS485 side.
+
+Still open: the board flaps `online`/`offline` under load (LWT), pointing at a
+brownout / marginal 5 V supply or GND.
 
 Build: run `firmware/bootstrap.sh` once (system deps + `espup` + cargo tools + the
 libxml2/ICU compat shim esp-clang needs on rolling distros), then `cargo make
