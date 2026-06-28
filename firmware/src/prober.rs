@@ -26,6 +26,7 @@ use esp_idf_svc::mqtt::client::{
 };
 use esp_idf_svc::ota::{EspOta, SlotState};
 use esp_idf_svc::sys::{esp_err_t, ESP_ERR_TIMEOUT};
+use evc04_cn28_core::cn28::Cn28Snapshot;
 use evc04_cn28_core::intake::{parse_ampere, parse_enable, IntakeError};
 use evc04_cn28_core::{baud, command, dump, ota};
 use log::{info, warn};
@@ -47,6 +48,9 @@ const TOPIC_OTA_STATUS: &str = "evc04/device/ota/status";
 const TOPIC_RAW: &str = "evc04/cn28/raw";
 const TOPIC_RAW_HEX: &str = "evc04/cn28/raw/hex";
 const TOPIC_RAW_ASCII: &str = "evc04/cn28/raw/ascii";
+/// Decoded telemetry snapshot (#66): the structured view over the raw frames,
+/// retained so a late subscriber (Home Assistant) gets the latest values at once.
+const TOPIC_TELEMETRY: &str = "evc04/cn28/telemetry";
 const TOPIC_STATUS: &str = "evc04/cn28/status";
 
 // Meter-emulation control plane (#86). Device-scoped `evc04/charge/*` so it does
@@ -140,6 +144,9 @@ fn prober_loop(
     let mut next_heartbeat = Instant::now() + STATUS_HEARTBEAT;
     let mut next_control = Instant::now() + CONTROL_TICK;
     let mut next_wake = auto_wake.map(|d| Instant::now() + d);
+    // Accumulates the latest decoded LOG fields across probe windows so a
+    // truncated window's gaps stay filled from earlier ones (#66).
+    let mut telemetry = Cn28Snapshot::new();
 
     loop {
         // Block for a job, but never longer than the soonest pending timer so the
@@ -173,7 +180,7 @@ fn prober_loop(
                     warn!("ota: confirm skipped: {e:#}");
                 }
             }
-            Ok(Job::Probe(bytes)) => probe(client, uart, &bytes)?,
+            Ok(Job::Probe(bytes)) => probe(client, uart, &bytes, &mut telemetry)?,
             Ok(Job::SetBaud(rate)) => set_baud(client, uart, rate)?,
             Ok(Job::Ota(payload)) => run_ota(client, &payload)?,
             Ok(Job::Target(parsed)) => control.lock().unwrap().apply_target(parsed, Instant::now()),
@@ -195,7 +202,7 @@ fn prober_loop(
                 }
                 if let (Some(w), Some(d)) = (next_wake, auto_wake) {
                     if now >= w {
-                        probe(client, uart, b"\r\n")?; // auto-wake tick
+                        probe(client, uart, b"\r\n", &mut telemetry)?; // auto-wake tick
                         next_wake = Some(now + d);
                     }
                 }
@@ -215,8 +222,14 @@ fn publish_charge_status(
     Ok(())
 }
 
-/// Write probe bytes to CN28, drain the response, republish the three views.
-fn probe(client: &mut EspMqttClient<'_>, uart: &UartDriver<'_>, bytes: &[u8]) -> Result<()> {
+/// Write probe bytes to CN28, drain the response, republish the three raw views,
+/// and fold the decoded lines into the retained telemetry snapshot.
+fn probe(
+    client: &mut EspMqttClient<'_>,
+    uart: &UartDriver<'_>,
+    bytes: &[u8],
+    telemetry: &mut Cn28Snapshot,
+) -> Result<()> {
     uart.write(bytes).context("uart write")?;
 
     // esp-idf-hal reports an elapsed read timeout as Err(ESP_ERR_TIMEOUT), not
@@ -253,6 +266,24 @@ fn probe(client: &mut EspMqttClient<'_>, uart: &UartDriver<'_>, bytes: &[u8]) ->
         false,
         dump::to_printable(&resp).as_bytes(),
     )?;
+
+    // Fold each complete line into the running snapshot and republish it
+    // (retained) only when something decoded. A truncated leading/trailing line
+    // fails to parse and is skipped, so a partial window never corrupts the
+    // object — it just contributes whatever whole lines it carried.
+    let mut updated = false;
+    for line in String::from_utf8_lossy(&resp).lines() {
+        updated |= telemetry.apply_line(line);
+    }
+    if updated {
+        client.publish(
+            TOPIC_TELEMETRY,
+            QoS::AtLeastOnce,
+            true,
+            telemetry.to_json().as_bytes(),
+        )?;
+    }
+
     info!("probe {} B → {} B response", bytes.len(), resp.len());
     Ok(())
 }
