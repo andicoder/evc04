@@ -10,6 +10,19 @@
 
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
+
+/// A meter-type / channel identifier the box names while probing for a meter
+/// (`P1 detect start`, `KLEFR NOT DETECTED!`, …). Only the tokens seen so far are
+/// modelled; an unknown token makes the line unrecognised (`None`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Probe {
+    P1,
+    P2,
+    P3,
+    Po,
+    Klefr,
+}
 
 /// One decoded CN28 LOG line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +46,18 @@ pub enum LogRecord {
     LbCurrent(u16),
     /// A `No data received from P{n}!` fault line, carrying the phase number.
     NoData(u8),
+    /// `Any metering device NOT detected!` — the box found no meter at all.
+    MeterNotDetected,
+    /// `<PROBE> NOT DETECTED!` — a specific meter type was not found.
+    ProbeNotDetected(Probe),
+    /// `<probe> detect start` — the box began probing for that meter type.
+    DetectStart(Probe),
+    /// `<probe>_init` — the box is initialising that meter type.
+    ProbeInit(Probe),
+    /// `<PROBE>: {n}` — a value the box prints for a probe during detection.
+    ProbeValue(Probe, u32),
+    /// `ERROR: {n}` — an error code from the box.
+    Error(u16),
 }
 
 /// Classify and decode a single complete LOG line. Returns `None` for a blank,
@@ -41,9 +66,60 @@ pub fn parse_line(line: &str) -> Option<LogRecord> {
     parse_phase(line)
         .or_else(|| parse_temp(line))
         .or_else(|| parse_no_data(line))
+        .or_else(|| parse_meter_detection(line))
+        .or_else(|| parse_error(line))
         .or_else(|| prefixed_u16(line, "ev current:").map(LogRecord::EvCurrent))
         .or_else(|| prefixed_u16(line, "max_offered_current:").map(LogRecord::MaxOffered))
         .or_else(|| prefixed_u16(line, "lb current:").map(LogRecord::LbCurrent))
+        .or_else(|| parse_probe_value(line))
+}
+
+/// Map a probe/meter-type token to a [`Probe`]; unknown tokens yield `None` so
+/// their line stays unrecognised rather than mis-classified.
+fn parse_probe(token: &str) -> Option<Probe> {
+    Some(match token {
+        "P1" => Probe::P1,
+        "P2" => Probe::P2,
+        "P3" => Probe::P3,
+        "PO" => Probe::Po,
+        "KLEFR" => Probe::Klefr,
+        _ => return None,
+    })
+}
+
+/// Decode the meter-detection lines: the global `Any metering device NOT
+/// detected!`, plus the per-probe `… NOT DETECTED!` / `… detect start` / `…_init`.
+/// Case differs between the global (`detected`) and per-probe (`DETECTED`) forms,
+/// matching the box's output exactly.
+fn parse_meter_detection(line: &str) -> Option<LogRecord> {
+    if line == "Any metering device NOT detected!" {
+        return Some(LogRecord::MeterNotDetected);
+    }
+    if let Some(probe) = line.strip_suffix(" NOT DETECTED!") {
+        return Some(LogRecord::ProbeNotDetected(parse_probe(probe)?));
+    }
+    if let Some(probe) = line.strip_suffix(" detect start") {
+        return Some(LogRecord::DetectStart(parse_probe(probe)?));
+    }
+    if let Some(probe) = line.strip_suffix("_init") {
+        return Some(LogRecord::ProbeInit(parse_probe(probe)?));
+    }
+    None
+}
+
+/// Decode `<PROBE>: {n}` (e.g. `KLEFR: 0`, `PO: 1`). Phase lines are tab-delimited
+/// and decoded earlier, so they never reach here.
+fn parse_probe_value(line: &str) -> Option<LogRecord> {
+    let (probe, value) = line.split_once(':')?;
+    let probe = parse_probe(probe)?;
+    let value: u32 = value.trim_start().parse().ok()?;
+    Some(LogRecord::ProbeValue(probe, value))
+}
+
+/// Decode `ERROR: {n}`.
+fn parse_error(line: &str) -> Option<LogRecord> {
+    let code: u16 = line.strip_prefix("ERROR:")?.trim_start().parse().ok()?;
+    Some(LogRecord::Error(code))
 }
 
 /// Decode `Temp: {n} C` — the value is the first whitespace token after the
@@ -125,6 +201,12 @@ pub struct Cn28Snapshot {
     pub ev_current_a: Option<u16>,
     pub max_offered_a: Option<u16>,
     pub lb_current_a: Option<u16>,
+    /// The box's last explicit global meter verdict: `Some(false)` once it prints
+    /// `Any metering device NOT detected!`. Only the negative is currently
+    /// recognised (no known positive token), so it never flips back to `true`.
+    pub meter_detected: Option<bool>,
+    /// The most recent `ERROR: {n}` code, or `None` if none has been seen.
+    pub last_error: Option<u16>,
 }
 
 impl Cn28Snapshot {
@@ -156,6 +238,13 @@ impl Cn28Snapshot {
                     *slot = None;
                 }
             }
+            LogRecord::MeterNotDetected => self.meter_detected = Some(false),
+            LogRecord::Error(code) => self.last_error = Some(code),
+            // Recognised detection-process events that carry no snapshot state.
+            LogRecord::ProbeNotDetected(_)
+            | LogRecord::DetectStart(_)
+            | LogRecord::ProbeInit(_)
+            | LogRecord::ProbeValue(_, _) => {}
         }
     }
 
@@ -176,7 +265,8 @@ impl Cn28Snapshot {
     pub fn to_json(&self) -> String {
         format!(
             "{{\"p1\":{},\"p2\":{},\"p3\":{},\"temp_c\":{},\
-             \"ev_current_a\":{},\"max_offered_a\":{},\"lb_current_a\":{}}}",
+             \"ev_current_a\":{},\"max_offered_a\":{},\"lb_current_a\":{},\
+             \"meter_detected\":{},\"last_error\":{}}}",
             phase_json(&self.phases[0]),
             phase_json(&self.phases[1]),
             phase_json(&self.phases[2]),
@@ -184,6 +274,8 @@ impl Cn28Snapshot {
             opt_json(self.ev_current_a),
             opt_json(self.max_offered_a),
             opt_json(self.lb_current_a),
+            opt_json(self.meter_detected),
+            opt_json(self.last_error),
         )
     }
 
@@ -209,6 +301,57 @@ fn opt_json<T: core::fmt::Display>(value: Option<T>) -> String {
     match value {
         Some(v) => format!("{v}"),
         None => String::from("null"),
+    }
+}
+
+/// Reassemble complete LOG lines from a byte stream that arrives in arbitrary
+/// chunks (each probe window is one chunk, and a window can split a line — even a
+/// token — across its boundary). [`push`](LineReassembler::push) returns the lines
+/// that completed in this chunk and buffers the trailing partial line for the next.
+/// An unterminated line longer than [`MAX_LINE`] is dropped, so a never-ending
+/// stream of garbage cannot grow the buffer without bound on the ESP.
+#[derive(Debug, Clone, Default)]
+pub struct LineReassembler {
+    buf: Vec<u8>,
+    /// True after an over-length overflow: skip bytes until the next newline
+    /// resyncs, so the discarded head is not emitted as a spurious line.
+    discarding: bool,
+}
+
+/// Hard cap on a single buffered line; a longer unterminated run is discarded.
+const MAX_LINE: usize = 512;
+
+impl LineReassembler {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed a chunk; return every line that terminated within it (CR/LF stripped),
+    /// in order. The trailing partial line, if any, is kept for the next call.
+    pub fn push(&mut self, bytes: &[u8]) -> Vec<String> {
+        let mut lines = Vec::new();
+        for &byte in bytes {
+            if byte == b'\n' {
+                if self.discarding {
+                    // The newline ends an over-length discard; resync cleanly.
+                    self.discarding = false;
+                } else {
+                    let mut line = &self.buf[..];
+                    if line.last() == Some(&b'\r') {
+                        line = &line[..line.len() - 1];
+                    }
+                    lines.push(String::from_utf8_lossy(line).into_owned());
+                }
+                self.buf.clear();
+            } else if !self.discarding {
+                self.buf.push(byte);
+                if self.buf.len() > MAX_LINE {
+                    self.buf.clear();
+                    self.discarding = true;
+                }
+            }
+        }
+        lines
     }
 }
 
@@ -287,7 +430,7 @@ mod tests {
     fn empty_snapshot_serializes_every_field_as_null() {
         assert_eq!(
             Cn28Snapshot::new().to_json(),
-            r#"{"p1":null,"p2":null,"p3":null,"temp_c":null,"ev_current_a":null,"max_offered_a":null,"lb_current_a":null}"#
+            r#"{"p1":null,"p2":null,"p3":null,"temp_c":null,"ev_current_a":null,"max_offered_a":null,"lb_current_a":null,"meter_detected":null,"last_error":null}"#
         );
     }
 
@@ -346,7 +489,150 @@ mod tests {
         snap.apply_line("lb current:16");
         assert_eq!(
             snap.to_json(),
-            r#"{"p1":{"v_mv":234841,"a_ma":16150,"w":3761,"wh":2661},"p2":null,"p3":null,"temp_c":52,"ev_current_a":16,"max_offered_a":16,"lb_current_a":16}"#
+            r#"{"p1":{"v_mv":234841,"a_ma":16150,"w":3761,"wh":2661},"p2":null,"p3":null,"temp_c":52,"ev_current_a":16,"max_offered_a":16,"lb_current_a":16,"meter_detected":null,"last_error":null}"#
         );
+    }
+
+    #[test]
+    fn parses_the_global_meter_not_detected_line() {
+        assert_eq!(
+            parse_line("Any metering device NOT detected!"),
+            Some(LogRecord::MeterNotDetected)
+        );
+    }
+
+    #[test]
+    fn parses_a_probe_not_detected_line() {
+        assert_eq!(
+            parse_line("KLEFR NOT DETECTED!"),
+            Some(LogRecord::ProbeNotDetected(Probe::Klefr))
+        );
+    }
+
+    #[test]
+    fn parses_a_reassembled_split_not_detected_line() {
+        assert_eq!(
+            parse_line("P1 NOT DETECTED!"),
+            Some(LogRecord::ProbeNotDetected(Probe::P1))
+        );
+    }
+
+    #[test]
+    fn parses_a_detect_start_line() {
+        assert_eq!(
+            parse_line("PO detect start"),
+            Some(LogRecord::DetectStart(Probe::Po))
+        );
+    }
+
+    #[test]
+    fn parses_a_probe_init_line() {
+        assert_eq!(parse_line("P1_init"), Some(LogRecord::ProbeInit(Probe::P1)));
+    }
+
+    #[test]
+    fn parses_a_probe_value_line() {
+        assert_eq!(
+            parse_line("KLEFR: 0"),
+            Some(LogRecord::ProbeValue(Probe::Klefr, 0))
+        );
+        assert_eq!(
+            parse_line("PO: 1"),
+            Some(LogRecord::ProbeValue(Probe::Po, 1))
+        );
+    }
+
+    #[test]
+    fn parses_an_error_code_line() {
+        assert_eq!(parse_line("ERROR: 22"), Some(LogRecord::Error(22)));
+    }
+
+    #[test]
+    fn a_phase_line_still_wins_over_probe_value() {
+        assert_eq!(
+            parse_line("P1:\tV: 1\tA: 2\tW: 3\tWh: 4"),
+            Some(LogRecord::Phase {
+                phase: 1,
+                v_mv: 1,
+                a_ma: 2,
+                w: 3,
+                wh: 4,
+            })
+        );
+    }
+
+    #[test]
+    fn an_unknown_probe_token_is_not_recognised() {
+        assert_eq!(parse_line("XYZ detect start"), None);
+    }
+
+    #[test]
+    fn a_global_meter_not_detected_sets_the_snapshot_flag_false() {
+        let mut snap = Cn28Snapshot::new();
+        assert!(snap.apply_line("Any metering device NOT detected!"));
+        assert_eq!(snap.meter_detected, Some(false));
+    }
+
+    #[test]
+    fn an_error_line_sets_last_error() {
+        let mut snap = Cn28Snapshot::new();
+        assert!(snap.apply_line("ERROR: 22"));
+        assert_eq!(snap.last_error, Some(22));
+    }
+
+    #[test]
+    fn detect_process_lines_are_recognised_but_do_not_change_state() {
+        let mut snap = Cn28Snapshot::new();
+        assert!(snap.apply_line("PO detect start"));
+        assert!(snap.apply_line("P1_init"));
+        assert!(snap.apply_line("KLEFR NOT DETECTED!"));
+        assert_eq!(snap.meter_detected, None);
+        assert_eq!(snap.last_error, None);
+    }
+
+    #[test]
+    fn serializes_meter_detection_and_error_fields() {
+        let mut snap = Cn28Snapshot::new();
+        snap.apply_line("Any metering device NOT detected!");
+        snap.apply_line("ERROR: 22");
+        let json = snap.to_json();
+        assert!(json.contains(r#""meter_detected":false"#), "{json}");
+        assert!(json.contains(r#""last_error":22"#), "{json}");
+    }
+
+    #[test]
+    fn reassembler_emits_a_complete_line() {
+        let mut r = LineReassembler::new();
+        assert_eq!(r.push(b"Temp: 33 C\n"), vec!["Temp: 33 C".to_string()]);
+    }
+
+    #[test]
+    fn reassembler_buffers_a_token_split_across_chunks() {
+        let mut r = LineReassembler::new();
+        assert!(r.push(b"P1 NOT DETECTE").is_empty());
+        assert_eq!(r.push(b"D!\n"), vec!["P1 NOT DETECTED!".to_string()]);
+    }
+
+    #[test]
+    fn reassembler_emits_each_line_and_keeps_the_partial_tail() {
+        let mut r = LineReassembler::new();
+        assert_eq!(r.push(b"a\nb\nc"), vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(r.push(b"\n"), vec!["c".to_string()]);
+    }
+
+    #[test]
+    fn reassembler_strips_a_trailing_carriage_return() {
+        let mut r = LineReassembler::new();
+        assert_eq!(r.push(b"x\r\n"), vec!["x".to_string()]);
+    }
+
+    #[test]
+    fn reassembler_discards_an_overlong_unterminated_line() {
+        let mut r = LineReassembler::new();
+        let huge = alloc::vec![b'a'; MAX_LINE + 100];
+        assert!(r.push(&huge).is_empty());
+        // The overflowed head is dropped; the next newline resyncs and the
+        // following line comes through clean.
+        assert_eq!(r.push(b"junk-tail\nok\n"), vec!["ok".to_string()]);
     }
 }
