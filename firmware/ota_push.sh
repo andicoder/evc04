@@ -58,7 +58,9 @@ OTA_BIND="${OTA_BIND:-0.0.0.0}"
 # env! is compile-time and Cargo does not track env changes, so force a rebuild
 # of the baked creds (same reasoning as flash.sh).
 touch src/main.rs
-./build.sh --release
+# OTA_FEATURES enables extra Cargo features for a one-off image, e.g. a capture
+# build with the raw views: `OTA_FEATURES=raw-debug ./ota_push.sh` (#110).
+./build.sh --release ${OTA_FEATURES:+--features "$OTA_FEATURES"}
 
 ELF="target/xtensa-esp32-espidf/release/evc04-cn28-prober"
 SERVE_DIR="$(mktemp -d)"
