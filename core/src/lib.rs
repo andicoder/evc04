@@ -13,6 +13,7 @@ pub mod baud;
 pub mod cn28;
 pub mod command;
 pub mod control;
+pub mod discovery;
 pub mod dump;
 pub mod frame;
 pub mod intake;

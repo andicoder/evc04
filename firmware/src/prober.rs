@@ -31,6 +31,7 @@ use esp_idf_svc::ota::{EspOta, SlotState};
 use esp_idf_svc::sys::{esp_err_t, ESP_ERR_TIMEOUT};
 use evc04_cn28_core::cn28::{Cn28Snapshot, LineReassembler};
 use evc04_cn28_core::intake::{parse_ampere, parse_enable, IntakeError};
+use evc04_cn28_core::discovery::{cn28_discovery_messages, DiscoveryMeta};
 use evc04_cn28_core::version::{version_json, Version};
 use evc04_cn28_core::{baud, command, dump, ota};
 use log::{info, warn};
@@ -72,8 +73,11 @@ const TOPIC_CTRL_MEASURED: &str = "evc04/charge/measured";
 const TOPIC_CTRL_ENABLE: &str = "evc04/charge/enable";
 const TOPIC_CTRL_STATUS: &str = "evc04/charge/status";
 
-/// Send `\r\n` every N seconds so frames are captured with no command. 0 = off.
-const AUTO_WAKE_SECS: u64 = 0;
+/// Auto-poll the LOG every N seconds (sends `\r\n`) so the telemetry refreshes for
+/// HA/evcc without an external trigger; 0 = off. The box's own meter updates ~1 Hz,
+/// so below ~1–2 s only adds empty windows. This reads the box's KLEFR meter — not
+/// the grid meter, so it does not drive real-time load management (#98).
+const AUTO_WAKE_SECS: u64 = 2;
 /// Re-publish the retained `online` liveness this often. After a reboot the *new*
 /// session can publish `online` before the broker fires the *old* session's
 /// retained LWT `offline` (its will latency is ~keepalive×1.5), leaving the status
@@ -199,6 +203,11 @@ fn prober_loop(
                 // failure is logged, not propagated.
                 if let Err(e) = publish_version(client) {
                     warn!("version: publish skipped: {e:#}");
+                }
+                // Register the telemetry sensors with Home Assistant (retained
+                // discovery configs, #98). Idempotent on reconnect; non-fatal.
+                if let Err(e) = publish_discovery(client) {
+                    warn!("discovery: publish skipped: {e:#}");
                 }
                 // Reaching the broker is the proof a freshly-OTA'd image needs to
                 // cancel its pending rollback (#76). A confirm failure must not
@@ -465,6 +474,25 @@ fn publish_version(client: &mut EspMqttClient<'_>) -> Result<()> {
         pending_verify: slot.state == SlotState::Unverified,
     });
     client.publish(TOPIC_VERSION, QoS::AtLeastOnce, true, json.as_bytes())?;
+    Ok(())
+}
+
+/// Publish the Home Assistant MQTT discovery configs (retained) so the telemetry
+/// sensors auto-register (#98). One HA device (`evc04`) shared with the charge
+/// controller once it moves onto the ESP (#87). Idempotent across reconnects.
+fn publish_discovery(client: &mut EspMqttClient<'_>) -> Result<()> {
+    let meta = DiscoveryMeta {
+        prefix: "homeassistant",
+        node_id: "evc04_cn28",
+        device_id: "evc04",
+        device_name: "EVC04 CN28",
+        device_model: "EVC04-AC11-T2P",
+        sw_version: FW_VERSION,
+        state_topic: TOPIC_TELEMETRY,
+    };
+    for (topic, payload) in cn28_discovery_messages(&meta) {
+        client.publish(&topic, QoS::AtLeastOnce, true, payload.as_bytes())?;
+    }
     Ok(())
 }
 
