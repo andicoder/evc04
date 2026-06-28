@@ -28,6 +28,7 @@ use esp_idf_svc::ota::{EspOta, SlotState};
 use esp_idf_svc::sys::{esp_err_t, ESP_ERR_TIMEOUT};
 use evc04_cn28_core::cn28::Cn28Snapshot;
 use evc04_cn28_core::intake::{parse_ampere, parse_enable, IntakeError};
+use evc04_cn28_core::version::{version_json, Version};
 use evc04_cn28_core::{baud, command, dump, ota};
 use log::{info, warn};
 
@@ -52,6 +53,12 @@ const TOPIC_RAW_ASCII: &str = "evc04/cn28/raw/ascii";
 /// retained so a late subscriber (Home Assistant) gets the latest values at once.
 const TOPIC_TELEMETRY: &str = "evc04/cn28/telemetry";
 const TOPIC_STATUS: &str = "evc04/cn28/status";
+/// Build identity (#101): the running `git describe` and OTA slot, retained so an
+/// operator can read which image is live — and whether a freshly-OTA'd image is
+/// still pending rollback verification — without inferring it from the schema.
+const TOPIC_VERSION: &str = "evc04/cn28/version";
+/// Baked at build time by `build.rs` (`git describe --tags --always --dirty`).
+const FW_VERSION: &str = env!("FW_VERSION");
 
 // Meter-emulation control plane (#86). Device-scoped `evc04/charge/*` so it does
 // not collide with the k3s daemon's `evc04/*` topics while both run in parallel
@@ -173,6 +180,13 @@ fn prober_loop(
                 publish_charge_status(client, &control)?;
                 next_control = Instant::now() + CONTROL_TICK;
                 info!("connected; subscribed to cn28 + charge control topics");
+                // Announce the running build + slot (#101) *before* confirming, so
+                // `pending_verify` still reflects the just-booted (unverified) state
+                // — that is the signal an OTA actually took. Diagnostic only, so a
+                // failure is logged, not propagated.
+                if let Err(e) = publish_version(client) {
+                    warn!("version: publish skipped: {e:#}");
+                }
                 // Reaching the broker is the proof a freshly-OTA'd image needs to
                 // cancel its pending rollback (#76). A confirm failure must not
                 // kill the loop, so it is logged, not propagated.
@@ -415,6 +429,23 @@ fn confirm_running_slot() -> Result<()> {
         ota.mark_running_slot_valid().context("mark slot valid")?;
         info!("ota: confirmed running slot {}", slot.label);
     }
+    Ok(())
+}
+
+/// Publish the retained build identity (#101): the baked `git describe` and the
+/// running OTA slot, with `pending_verify` true while the image is still unverified
+/// (a fresh OTA that has not yet confirmed). Called before [`confirm_running_slot`]
+/// so that signal survives.
+fn publish_version(client: &mut EspMqttClient<'_>) -> Result<()> {
+    let ota = EspOta::new().context("ota init")?;
+    let slot = ota.get_running_slot().context("running slot")?;
+    let label = format!("{}", slot.label);
+    let json = version_json(&Version {
+        fw: FW_VERSION,
+        slot: &label,
+        pending_verify: slot.state == SlotState::Unverified,
+    });
+    client.publish(TOPIC_VERSION, QoS::AtLeastOnce, true, json.as_bytes())?;
     Ok(())
 }
 
