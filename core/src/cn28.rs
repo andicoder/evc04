@@ -1,9 +1,9 @@
-//! Decode the EVC04 CN28 "LOG" console — a free-running, line-oriented ASCII
-//! telemetry stream (evc04#66). The box emits it continuously; any probe byte
-//! only opens a capture window, so a window can begin or end mid-line. Decoding
-//! is therefore per *complete* line and tolerant: a partial or unrecognised line
-//! yields `None` rather than an error. Callers split the captured buffer on `\n`
-//! and feed whole lines here.
+//! Decode the EVC04 CN28 "LOG" console — a line-oriented ASCII telemetry stream
+//! the box emits *in response to a probe* (it sends nothing unprompted, evc04#66).
+//! The response is captured in a bounded window, so a window can begin or end
+//! mid-line. Decoding is therefore per *complete* line and tolerant: a partial or
+//! unrecognised line yields `None` rather than an error. Callers split the
+//! captured buffer on `\n` and feed whole lines here.
 //!
 //! Field units mirror the box's raw integers (verified by correlation while
 //! charging at 16 A, evc04#66): phase `V` is millivolts, `A` milliamps.
