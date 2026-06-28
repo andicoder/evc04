@@ -17,3 +17,4 @@ pub mod frame;
 pub mod intake;
 pub mod ota;
 pub mod status;
+pub mod version;
