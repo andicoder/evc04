@@ -58,6 +58,12 @@ pub enum LogRecord {
     ProbeValue(Probe, u32),
     /// `ERROR: {n}` — an error code from the box.
     Error(u16),
+    /// `CLEAR: {n}` — the box cleared a previously-raised error code.
+    Clear(u16),
+    /// `<PROBE> DETECTED` — a specific meter type *was* found (positive verdict).
+    ProbeDetected(Probe),
+    /// `Powercut Detected` — the box logged a mains power interruption.
+    PowerCut,
 }
 
 /// Classify and decode a single complete LOG line. Returns `None` for a blank,
@@ -68,6 +74,7 @@ pub fn parse_line(line: &str) -> Option<LogRecord> {
         .or_else(|| parse_no_data(line))
         .or_else(|| parse_meter_detection(line))
         .or_else(|| parse_error(line))
+        .or_else(|| parse_clear(line))
         .or_else(|| prefixed_u16(line, "ev current:").map(LogRecord::EvCurrent))
         .or_else(|| prefixed_u16(line, "max_offered_current:").map(LogRecord::MaxOffered))
         .or_else(|| prefixed_u16(line, "lb current:").map(LogRecord::LbCurrent))
@@ -95,8 +102,16 @@ fn parse_meter_detection(line: &str) -> Option<LogRecord> {
     if line == "Any metering device NOT detected!" {
         return Some(LogRecord::MeterNotDetected);
     }
+    if line == "Powercut Detected" {
+        return Some(LogRecord::PowerCut);
+    }
+    // `… NOT DETECTED!` (all-caps, trailing `!`) is the negative; check it before
+    // the positive `… DETECTED` so the latter can't swallow it.
     if let Some(probe) = line.strip_suffix(" NOT DETECTED!") {
         return Some(LogRecord::ProbeNotDetected(parse_probe(probe)?));
+    }
+    if let Some(probe) = line.strip_suffix(" DETECTED") {
+        return Some(LogRecord::ProbeDetected(parse_probe(probe)?));
     }
     if let Some(probe) = line.strip_suffix(" detect start") {
         return Some(LogRecord::DetectStart(parse_probe(probe)?));
@@ -120,6 +135,12 @@ fn parse_probe_value(line: &str) -> Option<LogRecord> {
 fn parse_error(line: &str) -> Option<LogRecord> {
     let code: u16 = line.strip_prefix("ERROR:")?.trim_start().parse().ok()?;
     Some(LogRecord::Error(code))
+}
+
+/// Decode `CLEAR: {n}` — the box clearing a previously-raised error code.
+fn parse_clear(line: &str) -> Option<LogRecord> {
+    let code: u16 = line.strip_prefix("CLEAR:")?.trim_start().parse().ok()?;
+    Some(LogRecord::Clear(code))
 }
 
 /// Decode `Temp: {n} C` — the value is the first whitespace token after the
@@ -239,12 +260,15 @@ impl Cn28Snapshot {
                 }
             }
             LogRecord::MeterNotDetected => self.meter_detected = Some(false),
+            LogRecord::ProbeDetected(_) => self.meter_detected = Some(true),
             LogRecord::Error(code) => self.last_error = Some(code),
-            // Recognised detection-process events that carry no snapshot state.
+            LogRecord::Clear(_) => self.last_error = None,
+            // Recognised events that carry no snapshot state.
             LogRecord::ProbeNotDetected(_)
             | LogRecord::DetectStart(_)
             | LogRecord::ProbeInit(_)
-            | LogRecord::ProbeValue(_, _) => {}
+            | LogRecord::ProbeValue(_, _)
+            | LogRecord::PowerCut => {}
         }
     }
 
@@ -545,6 +569,57 @@ mod tests {
     #[test]
     fn parses_an_error_code_line() {
         assert_eq!(parse_line("ERROR: 22"), Some(LogRecord::Error(22)));
+    }
+
+    #[test]
+    fn parses_a_positive_probe_detected_line() {
+        assert_eq!(
+            parse_line("KLEFR DETECTED"),
+            Some(LogRecord::ProbeDetected(Probe::Klefr))
+        );
+    }
+
+    #[test]
+    fn positive_detected_does_not_swallow_the_negative() {
+        // The all-caps " NOT DETECTED!" negative must still win over " DETECTED".
+        assert_eq!(
+            parse_line("KLEFR NOT DETECTED!"),
+            Some(LogRecord::ProbeNotDetected(Probe::Klefr))
+        );
+    }
+
+    #[test]
+    fn parses_a_powercut_line() {
+        assert_eq!(parse_line("Powercut Detected"), Some(LogRecord::PowerCut));
+    }
+
+    #[test]
+    fn parses_a_clear_code_line() {
+        assert_eq!(parse_line("CLEAR: 22"), Some(LogRecord::Clear(22)));
+    }
+
+    #[test]
+    fn a_probe_detected_sets_the_snapshot_flag_true() {
+        let mut snap = Cn28Snapshot::new();
+        assert!(snap.apply_line("KLEFR DETECTED"));
+        assert_eq!(snap.meter_detected, Some(true));
+    }
+
+    #[test]
+    fn a_clear_line_clears_last_error() {
+        let mut snap = Cn28Snapshot::new();
+        assert!(snap.apply_line("ERROR: 22"));
+        assert_eq!(snap.last_error, Some(22));
+        assert!(snap.apply_line("CLEAR: 22"));
+        assert_eq!(snap.last_error, None);
+    }
+
+    #[test]
+    fn a_powercut_is_recognised_without_changing_state() {
+        let mut snap = Cn28Snapshot::new();
+        assert!(snap.apply_line("Powercut Detected"));
+        assert_eq!(snap.meter_detected, None);
+        assert_eq!(snap.last_error, None);
     }
 
     #[test]
