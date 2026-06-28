@@ -49,6 +49,11 @@ OTA_TIMEOUT="${OTA_TIMEOUT:-180}"
 # The IP the ESP can reach us on: first global IPv4, override with OTA_HOST_IP.
 OTA_HOST_IP="${OTA_HOST_IP:-$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1)}"
 [ -n "$OTA_HOST_IP" ] || { echo "!! could not detect a LAN IP; set OTA_HOST_IP" >&2; exit 1; }
+# Bind the server to all interfaces, not just OTA_HOST_IP: on a multi-homed host
+# (docker/bridge IPs alongside the LAN address) binding to one IP can leave the
+# ESP's SYN unanswered, so the device silently never starts the download. The URL
+# still advertises OTA_HOST_IP — only the listen address is widened.
+OTA_BIND="${OTA_BIND:-0.0.0.0}"
 
 # env! is compile-time and Cargo does not track env changes, so force a rebuild
 # of the baked creds (same reasoning as flash.sh).
@@ -71,7 +76,7 @@ trap cleanup EXIT
 espflash save-image --chip esp32 "$ELF" "$SERVE_DIR/fw.bin"
 URL="http://$OTA_HOST_IP:$OTA_PORT/fw.bin"
 
-python3 -m http.server "$OTA_PORT" --bind "$OTA_HOST_IP" --directory "$SERVE_DIR" >/dev/null 2>&1 &
+python3 -m http.server "$OTA_PORT" --bind "$OTA_BIND" --directory "$SERVE_DIR" >/dev/null 2>&1 &
 HTTP_PID=$!
 
 # Subscribe to OTA status BEFORE triggering, so the non-retained progress messages

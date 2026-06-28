@@ -93,6 +93,12 @@ const FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(2);
 const READ_BUF: usize = 512;
 /// Chunk size for streaming the OTA image from HTTP into the inactive slot.
 const OTA_BUF: usize = 1024;
+/// Per-operation network timeout for the OTA HTTP transfer. Bounds connect and
+/// each read so an unreachable or stalled image server fails fast instead of
+/// blocking the prober thread forever — a hang there lapses the MQTT keepalive
+/// and wedges the device until a power-cycle (observed #76/#101). A healthy LAN
+/// server answers in milliseconds, so this only ever trips on a real fault.
+const OTA_HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 
 const MQTT_URL: &str = env!("MQTT_URL");
 
@@ -339,10 +345,13 @@ fn set_baud(client: &mut EspMqttClient<'_>, uart: &UartDriver<'_>, rate: u32) ->
 }
 
 /// Pull a firmware image over plain HTTP and flash it to the inactive slot, then
-/// reboot into it (#76). Runs on the prober thread: esp-mqtt services its own
-/// keepalive on an internal task, so blocking here for the length of a download
-/// does not drop the connection — and probe responsiveness is irrelevant during
-/// a flash. Progress is reported on the status topic so a rollout is observable.
+/// reboot into it (#76). Runs on the prober thread, so the download blocks the
+/// loop; a stalled transfer lapses the MQTT keepalive and the broker drops us
+/// (observed: an unreachable server wedged the device until a power-cycle). The
+/// HTTP client therefore carries a per-operation timeout ([`OTA_HTTP_TIMEOUT`])
+/// so a fault fails fast and the loop recovers. Probe responsiveness is
+/// irrelevant during a flash. Progress is reported on the status topic so a
+/// rollout is observable.
 ///
 /// A failure must never propagate: the running (good) image is untouched, so we
 /// publish `failed …` on the OTA status topic and carry on rather than killing
@@ -397,6 +406,7 @@ fn run_ota(client: &mut EspMqttClient<'_>, payload: &str) -> Result<()> {
 fn download_and_flash(url: &str) -> Result<usize> {
     let mut http = EspHttpConnection::new(&HttpConfig {
         buffer_size: Some(OTA_BUF),
+        timeout: Some(OTA_HTTP_TIMEOUT),
         ..Default::default()
     })
     .context("http client init")?;
