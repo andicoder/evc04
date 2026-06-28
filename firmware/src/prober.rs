@@ -33,7 +33,9 @@ use evc04_cn28_core::cn28::{Cn28Snapshot, LineReassembler};
 use evc04_cn28_core::intake::{parse_ampere, parse_enable, IntakeError};
 use evc04_cn28_core::discovery::{cn28_discovery_messages, DiscoveryMeta};
 use evc04_cn28_core::version::{version_json, Version};
-use evc04_cn28_core::{baud, command, dump, ota};
+use evc04_cn28_core::{baud, command, ota};
+#[cfg(feature = "raw-debug")]
+use evc04_cn28_core::dump;
 use log::{info, warn};
 
 use crate::control::ControlState;
@@ -50,8 +52,11 @@ const TOPIC_BAUD: &str = "evc04/cn28/baud";
 // durable `evc04/device/*` namespace rather than the prober's `cn28/*` topics.
 const TOPIC_OTA: &str = "evc04/device/ota";
 const TOPIC_OTA_STATUS: &str = "evc04/device/ota/status";
+#[cfg(feature = "raw-debug")]
 const TOPIC_RAW: &str = "evc04/cn28/raw";
+#[cfg(feature = "raw-debug")]
 const TOPIC_RAW_HEX: &str = "evc04/cn28/raw/hex";
+#[cfg(feature = "raw-debug")]
 const TOPIC_RAW_ASCII: &str = "evc04/cn28/raw/ascii";
 /// Decoded telemetry snapshot (#66): the structured view over the raw frames,
 /// retained so a late subscriber (Home Assistant) gets the latest values at once.
@@ -290,19 +295,24 @@ fn probe(
         }
     }
 
-    client.publish(TOPIC_RAW, QoS::AtLeastOnce, false, &resp)?;
-    client.publish(
-        TOPIC_RAW_HEX,
-        QoS::AtLeastOnce,
-        false,
-        dump::to_hex(&resp).as_bytes(),
-    )?;
-    client.publish(
-        TOPIC_RAW_ASCII,
-        QoS::AtLeastOnce,
-        false,
-        dump::to_printable(&resp).as_bytes(),
-    )?;
+    // Raw views are capture/discovery debug only — compiled out of production
+    // builds so the box does not spray three extra publishes per auto-poll (#110).
+    #[cfg(feature = "raw-debug")]
+    {
+        client.publish(TOPIC_RAW, QoS::AtLeastOnce, false, &resp)?;
+        client.publish(
+            TOPIC_RAW_HEX,
+            QoS::AtLeastOnce,
+            false,
+            dump::to_hex(&resp).as_bytes(),
+        )?;
+        client.publish(
+            TOPIC_RAW_ASCII,
+            QoS::AtLeastOnce,
+            false,
+            dump::to_printable(&resp).as_bytes(),
+        )?;
+    }
 
     // Reassemble whole lines from this window's bytes (a line, or even a token,
     // can straddle window boundaries — the reassembler holds the partial tail) and

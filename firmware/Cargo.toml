@@ -22,6 +22,12 @@ esp-idf-hal = "0.46"
 log = "0.4"
 anyhow = "1"
 
+[features]
+# Publish the raw CN28 views (evc04/cn28/raw{,/hex,/ascii}) on every probe. Off by
+# default: it is capture/discovery debug noise once the box auto-polls (#110). Build
+# a capture image with `--features raw-debug` (e.g. `OTA_FEATURES=raw-debug ./ota_push.sh`).
+raw-debug = []
+
 [build-dependencies]
 embuild = "0.33"
 
