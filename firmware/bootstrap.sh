@@ -82,16 +82,19 @@ espup install
 [ -f "$EXPORT_FILE" ] || die "espup finished but $EXPORT_FILE is missing."
 
 # ── libxml2/ICU compat shim for esp-clang ───────────────────────────────────
-# The bundled esp-clang links libxml2.so.2 (+ ICU 75), but rolling distros have
-# moved to a newer soname. Stage matching libs into a private dir that build.sh
-# adds to LD_LIBRARY_PATH; needed on Arch/Manjaro, a no-op where the libs match.
+# The ESP-IDF-bundled esp-clang (installed later, by the first build — NOT here)
+# links libxml2.so.2 (+ ICU 75), but rolling distros have moved to a newer soname.
+# Stage matching libs into a private dir that build.sh adds to LD_LIBRARY_PATH.
+# esp-clang isn't on disk yet at bootstrap time, so gate on whether the *system*
+# can already resolve libxml2.so.2 rather than on the (absent) clang binary.
 install_compat_libs() {
-  local clang compat="$HOME/.espressif/compat-libs"
-  clang=$(find "$HOME/.rustup/toolchains/esp" -path '*esp-clang*/bin/clang' 2>/dev/null | head -1)
-  [ -n "$clang" ] || return 0
-  ldd "$clang" 2>/dev/null | grep -q 'not found' || return 0  # already satisfied
+  local compat="$HOME/.espressif/compat-libs"
+  if ldconfig -p 2>/dev/null | grep -q 'libxml2\.so\.2 '; then
+    note "libxml2.so.2 present system-wide — no esp-clang compat shim needed"
+    return 0
+  fi
   if ! have pacman; then
-    warn "esp-clang is missing shared libs but this isn't Arch — install libxml2.so.2 + ICU 75 manually."
+    warn "libxml2.so.2 missing and this isn't Arch — if the later esp-clang build fails, install libxml2.so.2 + ICU 75 manually."
     return 0
   fi
   note "Staging libxml2/ICU compat libs for esp-clang into $compat"
