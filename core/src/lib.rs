@@ -9,6 +9,7 @@
 extern crate alloc;
 
 pub mod baud;
+pub mod cn28;
 pub mod command;
 pub mod control;
 pub mod dump;
