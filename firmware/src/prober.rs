@@ -1,10 +1,13 @@
 //! CN28 LOG remote prober (evc04#66/#70/#76).
 //!
-//! Read/explore only — no RS485, no control, no safety criticality. CN28 is
-//! strictly request/response: the box sends nothing on its own, but any byte on
-//! its RX triggers exactly one ASCII response frame. This turns an MQTT command
-//! topic into those bytes and republishes whatever comes back, so the shell surface
-//! can be probed live without reflashing. It also owns MQTT-triggered OTA (#76).
+//! Read/explore only — no RS485, no control, no safety criticality. CN28's LOG
+//! console is a *free-running* ASCII stream: the box emits per-phase metering,
+//! temperature and detection lines continuously. A byte on its RX nudges it, but
+//! a probe just opens a capture window over that ongoing stream — so a window can
+//! begin or end mid-line (reassembly + tolerant decoding handle that, #98). This
+//! turns an MQTT command topic into those bytes and republishes whatever comes
+//! back, so the shell surface can be probed live without reflashing. It also owns
+//! MQTT-triggered OTA (#76).
 //!
 //! [`run`] is the thread routine `main` spawns; everything else is its internals.
 //!
@@ -26,7 +29,7 @@ use esp_idf_svc::mqtt::client::{
 };
 use esp_idf_svc::ota::{EspOta, SlotState};
 use esp_idf_svc::sys::{esp_err_t, ESP_ERR_TIMEOUT};
-use evc04_cn28_core::cn28::Cn28Snapshot;
+use evc04_cn28_core::cn28::{Cn28Snapshot, LineReassembler};
 use evc04_cn28_core::intake::{parse_ampere, parse_enable, IntakeError};
 use evc04_cn28_core::version::{version_json, Version};
 use evc04_cn28_core::{baud, command, dump, ota};
@@ -154,6 +157,10 @@ fn prober_loop(
     // Accumulates the latest decoded LOG fields across probe windows so a
     // truncated window's gaps stay filled from earlier ones (#66).
     let mut telemetry = Cn28Snapshot::new();
+    // Reassembles whole LOG lines from the byte stream: the box's LOG is
+    // free-running, so a probe window can split a line — even a token — across its
+    // boundary. Lives across windows so the tail of one joins the head of the next.
+    let mut reassembler = LineReassembler::new();
 
     loop {
         // Block for a job, but never longer than the soonest pending timer so the
@@ -194,7 +201,7 @@ fn prober_loop(
                     warn!("ota: confirm skipped: {e:#}");
                 }
             }
-            Ok(Job::Probe(bytes)) => probe(client, uart, &bytes, &mut telemetry)?,
+            Ok(Job::Probe(bytes)) => probe(client, uart, &bytes, &mut telemetry, &mut reassembler)?,
             Ok(Job::SetBaud(rate)) => set_baud(client, uart, rate)?,
             Ok(Job::Ota(payload)) => run_ota(client, &payload)?,
             Ok(Job::Target(parsed)) => control.lock().unwrap().apply_target(parsed, Instant::now()),
@@ -216,7 +223,7 @@ fn prober_loop(
                 }
                 if let (Some(w), Some(d)) = (next_wake, auto_wake) {
                     if now >= w {
-                        probe(client, uart, b"\r\n", &mut telemetry)?; // auto-wake tick
+                        probe(client, uart, b"\r\n", &mut telemetry, &mut reassembler)?; // auto-wake tick
                         next_wake = Some(now + d);
                     }
                 }
@@ -243,6 +250,7 @@ fn probe(
     uart: &UartDriver<'_>,
     bytes: &[u8],
     telemetry: &mut Cn28Snapshot,
+    reassembler: &mut LineReassembler,
 ) -> Result<()> {
     uart.write(bytes).context("uart write")?;
 
@@ -281,13 +289,14 @@ fn probe(
         dump::to_printable(&resp).as_bytes(),
     )?;
 
-    // Fold each complete line into the running snapshot and republish it
-    // (retained) only when something decoded. A truncated leading/trailing line
-    // fails to parse and is skipped, so a partial window never corrupts the
-    // object — it just contributes whatever whole lines it carried.
+    // Reassemble whole lines from this window's bytes (a line, or even a token,
+    // can straddle window boundaries — the reassembler holds the partial tail) and
+    // fold each into the running snapshot. Republish (retained) only when something
+    // decoded. Unrecognised/garbled lines are skipped, so a partial window never
+    // corrupts the object — it just contributes whatever whole lines it carried.
     let mut updated = false;
-    for line in String::from_utf8_lossy(&resp).lines() {
-        updated |= telemetry.apply_line(line);
+    for line in reassembler.push(&resp) {
+        updated |= telemetry.apply_line(&line);
     }
     if updated {
         client.publish(
