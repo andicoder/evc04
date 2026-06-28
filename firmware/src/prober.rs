@@ -1,13 +1,13 @@
 //! CN28 LOG remote prober (evc04#66/#70/#76).
 //!
 //! Read/explore only — no RS485, no control, no safety criticality. CN28's LOG
-//! console is a *free-running* ASCII stream: the box emits per-phase metering,
-//! temperature and detection lines continuously. A byte on its RX nudges it, but
-//! a probe just opens a capture window over that ongoing stream — so a window can
-//! begin or end mid-line (reassembly + tolerant decoding handle that, #98). This
-//! turns an MQTT command topic into those bytes and republishes whatever comes
-//! back, so the shell surface can be probed live without reflashing. It also owns
-//! MQTT-triggered OTA (#76).
+//! console is request/response: it emits nothing unprompted — a byte on its RX
+//! triggers a burst of per-phase metering, temperature and detection lines. A
+//! probe captures that response in a bounded window, so a window can begin or end
+//! mid-line — even a token can straddle the boundary (reassembly + tolerant
+//! decoding handle that, #98). This turns an MQTT command topic into those bytes
+//! and republishes whatever comes back, so the shell surface can be probed live
+//! without reflashing. It also owns MQTT-triggered OTA (#76).
 //!
 //! [`run`] is the thread routine `main` spawns; everything else is its internals.
 //!
@@ -157,9 +157,9 @@ fn prober_loop(
     // Accumulates the latest decoded LOG fields across probe windows so a
     // truncated window's gaps stay filled from earlier ones (#66).
     let mut telemetry = Cn28Snapshot::new();
-    // Reassembles whole LOG lines from the byte stream: the box's LOG is
-    // free-running, so a probe window can split a line — even a token — across its
-    // boundary. Lives across windows so the tail of one joins the head of the next.
+    // Reassembles whole LOG lines from the byte stream: a probe's response is
+    // captured in a bounded window, so a line — even a token — can split across
+    // the boundary. Lives across windows so the tail of one joins the head of next.
     let mut reassembler = LineReassembler::new();
 
     loop {
