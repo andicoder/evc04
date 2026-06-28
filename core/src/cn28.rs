@@ -74,7 +74,12 @@ fn prefixed_u16(line: &str, prefix: &str) -> Option<u16> {
 /// field, or any non-numeric value, makes it `None` (a truncated line is junk).
 fn parse_phase(line: &str) -> Option<LogRecord> {
     let mut fields = line.split('\t');
-    let phase: u8 = fields.next()?.strip_prefix('P')?.strip_suffix(':')?.parse().ok()?;
+    let phase: u8 = fields
+        .next()?
+        .strip_prefix('P')?
+        .strip_suffix(':')?
+        .parse()
+        .ok()?;
     let v_mv = labelled(fields.next()?, "V")?;
     let a_ma = labelled(fields.next()?, "A")?;
     let w = labelled(fields.next()?, "W")?;
