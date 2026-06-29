@@ -15,14 +15,21 @@ pub struct Version<'a> {
     pub fw: &'a str,
     pub slot: &'a str,
     pub pending_verify: bool,
+    /// Why the device last booted (esp-idf reset reason, e.g. `software`,
+    /// `task_watchdog`, `panic`, `power_on`) — so an outage is diagnosable from
+    /// telemetry without a serial console (#113).
+    pub reset_reason: &'a str,
+    /// Seconds since the last boot.
+    pub uptime_s: u64,
 }
 
 /// Render [`Version`] as the retained version JSON (one flat object, field order
 /// fixed so subscribers' value templates stay stable).
 pub fn version_json(v: &Version) -> String {
     format!(
-        "{{\"fw\":\"{}\",\"slot\":\"{}\",\"pending_verify\":{}}}",
-        v.fw, v.slot, v.pending_verify,
+        "{{\"fw\":\"{}\",\"slot\":\"{}\",\"pending_verify\":{},\
+         \"reset_reason\":\"{}\",\"uptime_s\":{}}}",
+        v.fw, v.slot, v.pending_verify, v.reset_reason, v.uptime_s,
     )
 }
 
@@ -36,10 +43,12 @@ mod tests {
             fw: "v0.3.1-2-gc96eb6c",
             slot: "ota_0",
             pending_verify: false,
+            reset_reason: "software",
+            uptime_s: 3600,
         };
         assert_eq!(
             version_json(&v),
-            r#"{"fw":"v0.3.1-2-gc96eb6c","slot":"ota_0","pending_verify":false}"#
+            r#"{"fw":"v0.3.1-2-gc96eb6c","slot":"ota_0","pending_verify":false,"reset_reason":"software","uptime_s":3600}"#
         );
     }
 
@@ -49,10 +58,12 @@ mod tests {
             fw: "deadbeef-dirty",
             slot: "ota_1",
             pending_verify: true,
+            reset_reason: "task_watchdog",
+            uptime_s: 12,
         };
         assert_eq!(
             version_json(&v),
-            r#"{"fw":"deadbeef-dirty","slot":"ota_1","pending_verify":true}"#
+            r#"{"fw":"deadbeef-dirty","slot":"ota_1","pending_verify":true,"reset_reason":"task_watchdog","uptime_s":12}"#
         );
     }
 }

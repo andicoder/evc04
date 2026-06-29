@@ -21,6 +21,8 @@ use anyhow::{Context, Result};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::gpio;
 use esp_idf_svc::hal::peripherals::Peripherals;
+use esp_idf_svc::hal::reset::restart;
+use esp_idf_svc::hal::task::watchdog::{TWDTConfig, TWDTDriver};
 use esp_idf_svc::hal::uart::{
     config::Config as UartConfig, config::DataBits, config::StopBits, UartDriver,
 };
@@ -82,14 +84,34 @@ fn main() -> Result<()> {
     // answer the box. Mutex, not a channel, so the slave always has a value to serve.
     let control = Arc::new(Mutex::new(control::ControlState::new()));
 
+    // Task watchdog (#113): the prober subscribes its own task and feeds it each
+    // loop; a hang longer than this reboots the chip. 60 s clears the longest
+    // legitimate block (a bounded OTA download); panic_on_trigger turns the timeout
+    // into a clean reset (surfaced as `reset_reason: task_watchdog` in telemetry).
+    let twdt = TWDTDriver::new(
+        peripherals.twdt,
+        &TWDTConfig {
+            duration: Duration::from_secs(60),
+            panic_on_trigger: true,
+            ..Default::default()
+        },
+    )
+    .context("twdt init")?;
+
     std::thread::Builder::new()
         .stack_size(8192) // OTA (HTTP download + flash) runs on this thread (#76)
         .spawn({
             let control = Arc::clone(&control);
             move || {
-                if let Err(e) = prober::run(cn28, control) {
+                if let Err(e) = prober::run(cn28, control, twdt) {
                     error!("prober exited: {e:#}");
                 }
+                // The prober is the device's whole job and now feeds production
+                // telemetry; if its loop ever returns — a publish error on an MQTT
+                // blip, a dropped channel — don't sit dead. Reboot to re-run the
+                // full bring-up (#113).
+                error!("prober loop ended — rebooting to recover (#113)");
+                restart();
             }
         })
         .expect("spawn cn28 prober");
