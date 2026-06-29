@@ -28,12 +28,14 @@ See [`../charge/SPECS.md`](../charge/SPECS.md) and
 ## `core/` + `firmware/` — telemetry via the CN28 LOG port (UART)
 
 The CN28 path is **read-only** and on a **separate port** from control.
-[`../firmware/`](../firmware/) (ESP32) taps CN28 over UART and bridges raw frames to
-MQTT for remote probing; [`../core/`](../core/) holds the pure, host-tested decode
-and command logic the firmware reuses. This is discovery tooling today — a
-structured CN28 parser is the next step. The ESP32 pin assignment (CN28 read +
-the RS485 meter-emulation port that would replace the gateway) is in
-[`esp32-pinout.md`](esp32-pinout.md).
+[`../firmware/`](../firmware/) (ESP32) taps CN28 over UART; [`../core/`](../core/)
+holds the pure, host-tested decode and command logic the firmware reuses. The
+decoded per-phase metering, temperature and meter/charge state are published as a
+structured snapshot on `evc04/cn28/telemetry`, with Home Assistant MQTT discovery
+so the sensors self-register. The CN28 line format — the box's diagnostic
+interface — is documented in [`cn28-log-protocol.md`](cn28-log-protocol.md); the
+ESP32 pin assignment (CN28 read + the RS485 meter-emulation port that would replace
+the gateway) is in [`esp32-pinout.md`](esp32-pinout.md).
 
 ## Why one repo
 
