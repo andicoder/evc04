@@ -24,6 +24,41 @@ pub enum Probe {
     Klefr,
 }
 
+/// IEC-61851 control-pilot state from the `S:<state>` line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpState {
+    /// `A` — no vehicle connected.
+    NoVehicle,
+    /// `B` — vehicle connected, not charging.
+    Connected,
+    /// `C` — charging.
+    Charging,
+    /// `F` — fault / no meter.
+    Fault,
+}
+
+impl CpState {
+    fn from_letter(c: char) -> Option<Self> {
+        Some(match c {
+            'A' => CpState::NoVehicle,
+            'B' => CpState::Connected,
+            'C' => CpState::Charging,
+            'F' => CpState::Fault,
+            _ => return None,
+        })
+    }
+
+    /// The single-letter code, matching evcc's charger-status convention.
+    pub fn letter(self) -> char {
+        match self {
+            CpState::NoVehicle => 'A',
+            CpState::Connected => 'B',
+            CpState::Charging => 'C',
+            CpState::Fault => 'F',
+        }
+    }
+}
+
 /// One decoded CN28 LOG line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogRecord {
@@ -64,6 +99,11 @@ pub enum LogRecord {
     ProbeDetected(Probe),
     /// `Powercut Detected` — the box logged a mains power interruption.
     PowerCut,
+    /// `S:<state><n> … Cmax:<a> …` — control-pilot state line: the CP state plus
+    /// the current currently offered to the EV.
+    CpStatus { state: CpState, cmax_a: u16 },
+    /// `Stop Pwm<n>` — the CP PWM was stopped (a running charge is cut).
+    PwmStop,
 }
 
 /// Classify and decode a single complete LOG line. Returns `None` for a blank,
@@ -75,6 +115,8 @@ pub fn parse_line(line: &str) -> Option<LogRecord> {
         .or_else(|| parse_meter_detection(line))
         .or_else(|| parse_error(line))
         .or_else(|| parse_clear(line))
+        .or_else(|| parse_cp_status(line))
+        .or_else(|| parse_pwm_stop(line))
         .or_else(|| prefixed_u16(line, "ev current:").map(LogRecord::EvCurrent))
         .or_else(|| prefixed_u16(line, "max_offered_current:").map(LogRecord::MaxOffered))
         .or_else(|| prefixed_u16(line, "lb current:").map(LogRecord::LbCurrent))
@@ -141,6 +183,26 @@ fn parse_error(line: &str) -> Option<LogRecord> {
 fn parse_clear(line: &str) -> Option<LogRecord> {
     let code: u16 = line.strip_prefix("CLEAR:")?.trim_start().parse().ok()?;
     Some(LogRecord::Clear(code))
+}
+
+/// Decode `S:<state><n> Auth:<n> D:<n> Cmax:<a> Ph:<n> Relay:<n>` — the control-pilot
+/// state line. Needs a known state letter and a `Cmax:` field; the other fields are
+/// diagnostic and ignored.
+fn parse_cp_status(line: &str) -> Option<LogRecord> {
+    let rest = line.strip_prefix("S:")?;
+    let state = CpState::from_letter(rest.split_whitespace().next()?.chars().next()?)?;
+    let cmax_a = rest
+        .split_whitespace()
+        .find_map(|t| t.strip_prefix("Cmax:"))?
+        .parse()
+        .ok()?;
+    Some(LogRecord::CpStatus { state, cmax_a })
+}
+
+/// Decode `Stop Pwm{n}` — a PWM stop (charge cut). The index is not retained.
+fn parse_pwm_stop(line: &str) -> Option<LogRecord> {
+    line.strip_prefix("Stop Pwm")?.parse::<u8>().ok()?;
+    Some(LogRecord::PwmStop)
 }
 
 /// Decode `Temp: {n} C` — the value is the first whitespace token after the
@@ -228,6 +290,8 @@ pub struct Cn28Snapshot {
     pub meter_detected: Option<bool>,
     /// The most recent `ERROR: {n}` code, or `None` if none has been seen.
     pub last_error: Option<u16>,
+    /// Control-pilot state from the last `S:` line — the live plug/charge state.
+    pub cp_state: Option<CpState>,
 }
 
 impl Cn28Snapshot {
@@ -263,12 +327,14 @@ impl Cn28Snapshot {
             LogRecord::ProbeDetected(_) => self.meter_detected = Some(true),
             LogRecord::Error(code) => self.last_error = Some(code),
             LogRecord::Clear(_) => self.last_error = None,
+            LogRecord::CpStatus { state, .. } => self.cp_state = Some(state),
             // Recognised events that carry no snapshot state.
             LogRecord::ProbeNotDetected(_)
             | LogRecord::DetectStart(_)
             | LogRecord::ProbeInit(_)
             | LogRecord::ProbeValue(_, _)
-            | LogRecord::PowerCut => {}
+            | LogRecord::PowerCut
+            | LogRecord::PwmStop => {}
         }
     }
 
@@ -287,10 +353,14 @@ impl Cn28Snapshot {
     /// Render the snapshot as one flat JSON object (fixed field order so Home
     /// Assistant value templates stay stable); absent fields are `null`.
     pub fn to_json(&self) -> String {
+        let cp_state = match self.cp_state {
+            Some(s) => format!("\"{}\"", s.letter()),
+            None => String::from("null"),
+        };
         format!(
             "{{\"p1\":{},\"p2\":{},\"p3\":{},\"temp_c\":{},\
              \"ev_current_a\":{},\"max_offered_a\":{},\"lb_current_a\":{},\
-             \"meter_detected\":{},\"last_error\":{}}}",
+             \"meter_detected\":{},\"last_error\":{},\"cp_state\":{}}}",
             phase_json(&self.phases[0]),
             phase_json(&self.phases[1]),
             phase_json(&self.phases[2]),
@@ -300,6 +370,7 @@ impl Cn28Snapshot {
             opt_json(self.lb_current_a),
             opt_json(self.meter_detected),
             opt_json(self.last_error),
+            cp_state,
         )
     }
 
@@ -454,7 +525,7 @@ mod tests {
     fn empty_snapshot_serializes_every_field_as_null() {
         assert_eq!(
             Cn28Snapshot::new().to_json(),
-            r#"{"p1":null,"p2":null,"p3":null,"temp_c":null,"ev_current_a":null,"max_offered_a":null,"lb_current_a":null,"meter_detected":null,"last_error":null}"#
+            r#"{"p1":null,"p2":null,"p3":null,"temp_c":null,"ev_current_a":null,"max_offered_a":null,"lb_current_a":null,"meter_detected":null,"last_error":null,"cp_state":null}"#
         );
     }
 
@@ -513,7 +584,7 @@ mod tests {
         snap.apply_line("lb current:16");
         assert_eq!(
             snap.to_json(),
-            r#"{"p1":{"v_mv":234841,"a_ma":16150,"w":3761,"wh":2661},"p2":null,"p3":null,"temp_c":52,"ev_current_a":16,"max_offered_a":16,"lb_current_a":16,"meter_detected":null,"last_error":null}"#
+            r#"{"p1":{"v_mv":234841,"a_ma":16150,"w":3761,"wh":2661},"p2":null,"p3":null,"temp_c":52,"ev_current_a":16,"max_offered_a":16,"lb_current_a":16,"meter_detected":null,"last_error":null,"cp_state":null}"#
         );
     }
 
@@ -620,6 +691,59 @@ mod tests {
         assert!(snap.apply_line("Powercut Detected"));
         assert_eq!(snap.meter_detected, None);
         assert_eq!(snap.last_error, None);
+    }
+
+    #[test]
+    fn parses_a_charging_cp_state_line() {
+        assert_eq!(
+            parse_line("S:C2 Auth:1 D:281 Cmax:16 Ph:3 Relay:7"),
+            Some(LogRecord::CpStatus {
+                state: CpState::Charging,
+                cmax_a: 16,
+            })
+        );
+    }
+
+    #[test]
+    fn maps_all_known_cp_state_letters() {
+        let s = |line| match parse_line(line) {
+            Some(LogRecord::CpStatus { state, .. }) => Some(state),
+            _ => None,
+        };
+        assert_eq!(
+            s("S:A1 Auth:1 D:0 Cmax:0 Ph:3 Relay:7"),
+            Some(CpState::NoVehicle)
+        );
+        assert_eq!(
+            s("S:B1 Auth:1 D:211 Cmax:0 Ph:3 Relay:7"),
+            Some(CpState::Connected)
+        );
+        assert_eq!(
+            s("S:F1 Auth:1 D:0 Cmax:0 Ph:3 Relay:7"),
+            Some(CpState::Fault)
+        );
+    }
+
+    #[test]
+    fn an_unknown_cp_state_letter_is_not_recognised() {
+        assert_eq!(parse_line("S:Z9 Auth:1 D:0 Cmax:0 Ph:3 Relay:7"), None);
+    }
+
+    #[test]
+    fn parses_a_pwm_stop_line() {
+        assert_eq!(parse_line("Stop Pwm1"), Some(LogRecord::PwmStop));
+    }
+
+    #[test]
+    fn a_cp_state_line_sets_the_snapshot_and_serializes_the_letter() {
+        let mut snap = Cn28Snapshot::new();
+        assert!(snap.apply_line("S:C2 Auth:1 D:281 Cmax:16 Ph:3 Relay:7"));
+        assert_eq!(snap.cp_state, Some(CpState::Charging));
+        let json = snap.to_json();
+        assert!(json.contains(r#""cp_state":"C""#), "{json}");
+        // A later connected-idle line flips it to B.
+        assert!(snap.apply_line("S:B1 Auth:1 D:0 Cmax:0 Ph:3 Relay:7"));
+        assert_eq!(snap.cp_state, Some(CpState::Connected));
     }
 
     #[test]

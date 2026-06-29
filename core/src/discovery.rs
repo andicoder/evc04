@@ -242,6 +242,18 @@ pub fn cn28_discovery_messages(meta: &DiscoveryMeta) -> Vec<(String, String)> {
         None,
         true,
     );
+    push(
+        &mut out,
+        meta,
+        "sensor",
+        "cp_state",
+        "CP state",
+        "{{ value_json.cp_state }}",
+        None,
+        None,
+        None,
+        false,
+    );
     out
 }
 
@@ -312,8 +324,8 @@ mod tests {
     #[test]
     fn cn28_set_covers_phases_temp_verdict_and_error() {
         let msgs = cn28_discovery_messages(&meta());
-        // 3 phases x (V/A/W/Wh) + temp + ev + max + lb + meter_detected + last_error
-        assert_eq!(msgs.len(), 18);
+        // 3 phases x (V/A/W/Wh) + temp + ev + max + lb + meter_detected + last_error + cp_state
+        assert_eq!(msgs.len(), 19);
         let topics: Vec<&str> = msgs.iter().map(|(t, _)| t.as_str()).collect();
         assert!(topics.contains(&"homeassistant/sensor/evc04_cn28/p1_voltage/config"));
         assert!(topics.contains(&"homeassistant/sensor/evc04_cn28/p3_energy/config"));
