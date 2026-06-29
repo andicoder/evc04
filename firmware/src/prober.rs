@@ -27,8 +27,10 @@ use esp_idf_svc::http::Method;
 use esp_idf_svc::mqtt::client::{
     EspMqttClient, EspMqttConnection, EventPayload, LwtConfiguration, MqttClientConfiguration, QoS,
 };
+use esp_idf_svc::hal::reset::ResetReason;
+use esp_idf_svc::hal::task::watchdog::{TWDTDriver, WatchdogSubscription};
 use esp_idf_svc::ota::{EspOta, SlotState};
-use esp_idf_svc::sys::{esp_err_t, ESP_ERR_TIMEOUT};
+use esp_idf_svc::sys::{esp_err_t, esp_timer_get_time, ESP_ERR_TIMEOUT};
 use evc04_cn28_core::cn28::{Cn28Snapshot, LineReassembler};
 use evc04_cn28_core::intake::{parse_ampere, parse_enable, IntakeError};
 use evc04_cn28_core::discovery::{cn28_discovery_messages, DiscoveryMeta};
@@ -126,7 +128,11 @@ enum Job {
 
 /// Thread routine: connect to the broker, pump the connection, and serve probes /
 /// baud changes / OTA forever. `uart` is the CN28 UART (`main` owns construction).
-pub fn run(uart: UartDriver<'static>, control: Arc<Mutex<ControlState>>) -> Result<()> {
+pub fn run(
+    uart: UartDriver<'static>,
+    control: Arc<Mutex<ControlState>>,
+    mut twdt: TWDTDriver<'static>,
+) -> Result<()> {
     // The single allowed LWT goes to the safety-relevant charge status: an
     // ungraceful drop must tell an evcc/HA-managed controller the box went offline
     // (#86). cn28/status keeps its retained `online` via the heartbeat instead (it
@@ -156,7 +162,10 @@ pub fn run(uart: UartDriver<'static>, control: Arc<Mutex<ControlState>>) -> Resu
     let (tx, rx) = mpsc::channel::<Job>();
     spawn_connection_pump(connection, tx);
 
-    prober_loop(&mut client, &uart, rx, control)
+    // Watch this (the prober) task with the hardware watchdog (#113); the loop feeds
+    // it every iteration, so a hang reboots the chip.
+    let mut wdt = twdt.watch_current_task().context("twdt subscribe")?;
+    prober_loop(&mut client, &uart, rx, control, &mut wdt)
 }
 
 fn prober_loop(
@@ -164,6 +173,7 @@ fn prober_loop(
     uart: &UartDriver<'_>,
     rx: mpsc::Receiver<Job>,
     control: Arc<Mutex<ControlState>>,
+    wdt: &mut WatchdogSubscription<'_>,
 ) -> Result<()> {
     let auto_wake = (AUTO_WAKE_SECS > 0).then(|| Duration::from_secs(AUTO_WAKE_SECS));
     let mut next_heartbeat = Instant::now() + STATUS_HEARTBEAT;
@@ -178,6 +188,9 @@ fn prober_loop(
     let mut reassembler = LineReassembler::new();
 
     loop {
+        // Feed the task watchdog (#113): every loop turn proves we are alive; a
+        // hang past the watchdog timeout reboots the chip.
+        let _ = wdt.feed();
         // Block for a job, but never longer than the soonest pending timer so the
         // control tick, the heartbeat (and optional auto-wake) still fire on an idle
         // connection.
@@ -478,13 +491,32 @@ fn publish_version(client: &mut EspMqttClient<'_>) -> Result<()> {
     let ota = EspOta::new().context("ota init")?;
     let slot = ota.get_running_slot().context("running slot")?;
     let label = format!("{}", slot.label);
+    let uptime_s = (unsafe { esp_timer_get_time() } / 1_000_000) as u64;
     let json = version_json(&Version {
         fw: FW_VERSION,
         slot: &label,
         pending_verify: slot.state == SlotState::Unverified,
+        reset_reason: reset_reason_str(),
+        uptime_s,
     });
     client.publish(TOPIC_VERSION, QoS::AtLeastOnce, true, json.as_bytes())?;
     Ok(())
+}
+
+/// The esp-idf reset reason as a short stable string for telemetry (#113).
+fn reset_reason_str() -> &'static str {
+    match ResetReason::get() {
+        ResetReason::Software => "software",
+        ResetReason::Panic => "panic",
+        ResetReason::TaskWatchdog => "task_watchdog",
+        ResetReason::InterruptWatchdog => "int_watchdog",
+        ResetReason::Watchdog => "watchdog",
+        ResetReason::PowerOn => "power_on",
+        ResetReason::ExternalPin => "external_pin",
+        ResetReason::Brownout => "brownout",
+        ResetReason::DeepSleep => "deep_sleep",
+        _ => "other",
+    }
 }
 
 /// Publish the Home Assistant MQTT discovery configs (retained) so the telemetry
