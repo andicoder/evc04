@@ -42,6 +42,11 @@ pub struct Entity<'a> {
     pub device_class: Option<&'a str>,
     pub state_class: Option<&'a str>,
     pub diagnostic: bool,
+    /// When set, the entity gains an `availability_topic` (= the state topic) and
+    /// this `availability_template`, so HA renders it *unavailable* (not a stale
+    /// value) when the keyed field is absent — used for cp_state, which is null
+    /// after boot until the first CP transition (#117).
+    pub availability_template: Option<&'a str>,
 }
 
 /// Build the retained `(config_topic, payload)` pair for one entity.
@@ -77,6 +82,12 @@ pub fn entity_message(meta: &DiscoveryMeta, e: &Entity) -> (String, String) {
     if e.diagnostic {
         payload.push_str(",\"entity_category\":\"diagnostic\"");
     }
+    if let Some(at) = e.availability_template {
+        payload.push_str(&format!(
+            ",\"availability_topic\":\"{}\",\"availability_template\":\"{}\"",
+            meta.state_topic, at
+        ));
+    }
     payload.push('}');
     (topic, payload)
 }
@@ -105,6 +116,7 @@ fn push(
             device_class,
             state_class,
             diagnostic,
+            availability_template: None,
         },
     ));
 }
@@ -242,18 +254,25 @@ pub fn cn28_discovery_messages(meta: &DiscoveryMeta) -> Vec<(String, String)> {
         None,
         true,
     );
-    push(
-        &mut out,
+    // cp_state is null after boot until the first `S:` transition, so key HA
+    // availability on its presence: HA shows *unavailable* (not a frozen B/C)
+    // while unknown, which evcc maps to "not connected" (#117).
+    out.push(entity_message(
         meta,
-        "sensor",
-        "cp_state",
-        "CP state",
-        "{{ value_json.cp_state }}",
-        None,
-        None,
-        None,
-        false,
-    );
+        &Entity {
+            component: "sensor",
+            object_id: "cp_state",
+            name: "CP state",
+            value_template: "{{ value_json.cp_state }}",
+            unit: None,
+            device_class: None,
+            state_class: None,
+            diagnostic: false,
+            availability_template: Some(
+                "{{ 'online' if value_json.cp_state is not none else 'offline' }}",
+            ),
+        },
+    ));
     out
 }
 
@@ -284,6 +303,7 @@ mod tests {
             device_class: Some("temperature"),
             state_class: Some("measurement"),
             diagnostic: false,
+            availability_template: None,
         };
         let (topic, payload) = entity_message(&meta(), &e);
         assert_eq!(topic, "homeassistant/sensor/evc04_cn28/temperature/config");
@@ -312,6 +332,7 @@ mod tests {
             device_class: None,
             state_class: None,
             diagnostic: true,
+            availability_template: None,
         };
         let (_t, payload) = entity_message(&meta(), &e);
         assert!(
@@ -347,5 +368,35 @@ mod tests {
                 && payload.contains("if value_json.p1 else None"),
             "{payload}"
         );
+    }
+
+    #[test]
+    fn cp_state_is_unavailable_when_null() {
+        let msgs = cn28_discovery_messages(&meta());
+        let (_t, payload) = msgs
+            .iter()
+            .find(|(t, _)| t.ends_with("/cp_state/config"))
+            .expect("cp_state present");
+        assert!(
+            payload.contains(r#""availability_topic":"evc04/cn28/telemetry""#),
+            "{payload}"
+        );
+        assert!(
+            payload.contains(
+                r#""availability_template":"{{ 'online' if value_json.cp_state is not none else 'offline' }}""#
+            ),
+            "{payload}"
+        );
+    }
+
+    #[test]
+    fn entities_without_availability_omit_the_keys() {
+        let msgs = cn28_discovery_messages(&meta());
+        let (_t, payload) = msgs
+            .iter()
+            .find(|(t, _)| t.ends_with("/temperature/config"))
+            .expect("temperature present");
+        assert!(!payload.contains("availability_topic"), "{payload}");
+        assert!(!payload.contains("availability_template"), "{payload}");
     }
 }
