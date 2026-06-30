@@ -1,12 +1,17 @@
 //! Firmware entry point for the in-box ESP32 (evc04#66/#85).
 //!
-//! `main` only wires the hardware and launches the two independent worker threads,
-//! each its own routine in its own module:
-//!   - [`prober`] — CN28 LOG remote prober over UART1 + MQTT/OTA (#66/#70/#76).
-//!   - [`rs485`]  — PRO380 meter-emulation slave over UART2 + MAX3485 (#85).
+//! `main` only wires the hardware and launches the two worker threads, each its own
+//! routine in its own module:
+//!   - [`probe`] — CN28 LOG worker over UART1: probes, telemetry, the ~1 Hz control
+//!     tick, MQTT intake and MQTT-triggered OTA (#66/#70/#76/#86).
+//!   - [`rs485`] — PRO380 meter-emulation slave over UART2 + MAX3485 (#85).
 //!
-//! They share no state and run on separate threads, so the box's ~1 Hz meter poll
-//! is answered regardless of what the prober is doing (#87 hardens this further).
+//! Supporting modules: [`mqtt`] (broker client + connection pump), [`charge`] (the
+//! control state plus the lock-free [`charge::Handoff`] the two threads share),
+//! [`device`] (OTA/version/discovery), [`wifi`].
+//!
+//! The two threads share only that lock-free handoff, so the box's ~1 Hz meter poll
+//! is answered regardless of what the worker is doing (#87 hardens this further).
 //!
 //! Build/flash (locally only — never CI; needs Espressif's Xtensa toolchain):
 //!   ./bootstrap.sh                            # once: sysdeps + espup + cargo tools
@@ -31,8 +36,9 @@ use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use log::error;
 
 mod charge;
+mod device;
 mod mqtt;
-mod prober;
+mod probe;
 mod rs485;
 mod wifi;
 
@@ -55,7 +61,7 @@ fn main() -> Result<()> {
         peripherals.pins.gpio17, // RX ← CN28 TX (was GPIO16)
         Option::<gpio::AnyIOPin>::None,
         Option::<gpio::AnyIOPin>::None,
-        &UartConfig::new().baudrate(Hertz(prober::CN28_BAUD)),
+        &UartConfig::new().baudrate(Hertz(probe::CN28_BAUD)),
     )
     .context("cn28 uart init")?;
 
@@ -106,7 +112,7 @@ fn main() -> Result<()> {
         .spawn({
             let handoff = Arc::clone(&handoff);
             move || {
-                if let Err(e) = prober::run(cn28, handoff, twdt) {
+                if let Err(e) = probe::run(cn28, handoff, twdt) {
                     error!("prober exited: {e:#}");
                 }
                 // The prober is the device's whole job and now feeds production
