@@ -31,6 +31,7 @@ use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use log::error;
 
 mod control;
+mod mqtt;
 mod prober;
 mod rs485;
 mod wifi;

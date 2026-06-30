@@ -9,10 +9,13 @@
 //! and republishes whatever comes back, so the shell surface can be probed live
 //! without reflashing. It also owns MQTT-triggered OTA (#76).
 //!
+//! The MQTT transport — client, topics, pump, publishing — lives in [`crate::mqtt`];
+//! this module drives the worker loop and calls its typed publish methods.
+//!
 //! [`run`] is the thread routine `main` spawns; everything else is its internals.
 //!
-//! ⚠️ The esp-idf-svc API (MQTT event/connection split, OTA, HTTP) is
-//! version-sensitive — built against the pinned esp-idf-svc 0.52.
+//! ⚠️ The esp-idf-svc API (OTA, HTTP) is version-sensitive — built against the
+//! pinned esp-idf-svc 0.52.
 
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -20,66 +23,32 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use esp_idf_svc::hal::delay::TickType;
 use esp_idf_svc::hal::reset::restart;
+use esp_idf_svc::hal::reset::ResetReason;
+use esp_idf_svc::hal::task::watchdog::{TWDTDriver, WatchdogSubscription};
 use esp_idf_svc::hal::uart::UartDriver;
 use esp_idf_svc::hal::units::Hertz;
 use esp_idf_svc::http::client::{Configuration as HttpConfig, EspHttpConnection};
 use esp_idf_svc::http::Method;
-use esp_idf_svc::mqtt::client::{
-    EspMqttClient, EspMqttConnection, EventPayload, LwtConfiguration, MqttClientConfiguration, QoS,
-};
-use esp_idf_svc::hal::reset::ResetReason;
-use esp_idf_svc::hal::task::watchdog::{TWDTDriver, WatchdogSubscription};
 use esp_idf_svc::ota::{EspOta, SlotState};
 use esp_idf_svc::sys::{esp_err_t, esp_timer_get_time, ESP_ERR_TIMEOUT};
-use evc04_cn28_core::probe::cn28::{Cn28Snapshot, LineReassembler};
-use evc04_cn28_core::charge::intake::{parse_ampere, parse_enable, IntakeError};
 use evc04_cn28_core::device::discovery::{cn28_discovery_messages, DiscoveryMeta};
-use evc04_cn28_core::device::version::{version_json, Version};
-use evc04_cn28_core::probe::{baud, command};
 use evc04_cn28_core::device::ota;
+use evc04_cn28_core::device::version::{version_json, Version};
+use evc04_cn28_core::probe::cn28::{Cn28Snapshot, LineReassembler};
 #[cfg(feature = "raw-debug")]
 use evc04_cn28_core::debug::dump;
 use log::{info, warn};
 
 use crate::control::ControlState;
+use crate::mqtt::{InMsg, Mqtt};
 
 /// CN28 LOG UART rate: 9600 8N1, no flow control (bench bring-up #72 — the box's
 /// LOG console runs at 9600, not the 115200 first assumed). `main` configures UART1
 /// with it; `evc04/cn28/baud` can still re-tune it live for a future sweep.
 pub const CN28_BAUD: u32 = 9_600;
 
-const TOPIC_CMD: &str = "evc04/cn28/cmd";
-const TOPIC_BAUD: &str = "evc04/cn28/baud";
-// OTA is a device-management concern that outlives the cn28 prober (it stays in
-// use whatever firmware role this ESP takes later, #76), so it sits under its own
-// durable `evc04/device/*` namespace rather than the prober's `cn28/*` topics.
-const TOPIC_OTA: &str = "evc04/device/ota";
-const TOPIC_OTA_STATUS: &str = "evc04/device/ota/status";
-#[cfg(feature = "raw-debug")]
-const TOPIC_RAW: &str = "evc04/cn28/raw";
-#[cfg(feature = "raw-debug")]
-const TOPIC_RAW_HEX: &str = "evc04/cn28/raw/hex";
-#[cfg(feature = "raw-debug")]
-const TOPIC_RAW_ASCII: &str = "evc04/cn28/raw/ascii";
-/// Decoded telemetry snapshot (#66): the structured view over the raw frames,
-/// retained so a late subscriber (Home Assistant) gets the latest values at once.
-const TOPIC_TELEMETRY: &str = "evc04/cn28/telemetry";
-const TOPIC_STATUS: &str = "evc04/cn28/status";
-/// Build identity (#101): the running `git describe` and OTA slot, retained so an
-/// operator can read which image is live — and whether a freshly-OTA'd image is
-/// still pending rollback verification — without inferring it from the schema.
-const TOPIC_VERSION: &str = "evc04/cn28/version";
 /// Baked at build time by `build.rs` (`git describe --tags --always --dirty`).
 const FW_VERSION: &str = env!("FW_VERSION");
-
-// Meter-emulation control plane (#86). Device-scoped `evc04/charge/*` so it does
-// not collide with the k3s daemon's `evc04/*` topics while both run in parallel
-// (the daemon stays production until this port is proven, milestone #65/§12);
-// evcc/HA repoint here when the daemon is retired. Mirrors charge/docs/mqtt.md.
-const TOPIC_CTRL_TARGET: &str = "evc04/charge/target";
-const TOPIC_CTRL_MEASURED: &str = "evc04/charge/measured";
-const TOPIC_CTRL_ENABLE: &str = "evc04/charge/enable";
-const TOPIC_CTRL_STATUS: &str = "evc04/charge/status";
 
 /// Auto-poll the LOG every N seconds (sends `\r\n`) so the telemetry refreshes for
 /// HA/evcc without an external trigger; 0 = off. The box's own meter updates ~1 Hz,
@@ -112,21 +81,6 @@ const OTA_BUF: usize = 1024;
 /// server answers in milliseconds, so this only ever trips on a real fault.
 const OTA_HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 
-const MQTT_URL: &str = env!("MQTT_URL");
-
-/// Work pushed from the MQTT connection thread to the prober loop.
-enum Job {
-    Connected,
-    Probe(Vec<u8>),
-    SetBaud(u32),
-    Ota(String),
-    /// A control-plane input (#86): the parse result so the loop can apply a good
-    /// value or surface a rejection in status — the decode lives in the pump.
-    Target(Result<f32, IntakeError>),
-    Measured(Result<f32, IntakeError>),
-    Enable(Result<bool, IntakeError>),
-}
-
 /// Thread routine: connect to the broker, pump the connection, and serve probes /
 /// baud changes / OTA forever. `uart` is the CN28 UART (`main` owns construction).
 pub fn run(
@@ -134,45 +88,18 @@ pub fn run(
     control: Arc<Mutex<ControlState>>,
     mut twdt: TWDTDriver<'static>,
 ) -> Result<()> {
-    // The single allowed LWT goes to the safety-relevant charge status: an
-    // ungraceful drop must tell an evcc/HA-managed controller the box went offline
-    // (#86). cn28/status keeps its retained `online` via the heartbeat instead (it
-    // is a debug-prober liveness topic, not control-critical).
-    let lwt = LwtConfiguration {
-        topic: TOPIC_CTRL_STATUS,
-        payload: br#"{"online":false}"#,
-        qos: QoS::AtLeastOnce,
-        retain: true,
-    };
-    let mqtt_config = MqttClientConfiguration {
-        lwt: Some(lwt),
-        // Detect a dropped link within the keepalive window and let esp-mqtt
-        // auto-reconnect; each reconnect re-fires CONNECTED, which re-subscribes
-        // and republishes `online` (see prober_loop), so the device self-heals
-        // after a network blip. A brownout-induced *reset* is a hardware issue
-        // this cannot fix — see #79.
-        keep_alive_interval: Some(Duration::from_secs(30)),
-        reconnect_timeout: Some(Duration::from_secs(5)),
-        ..Default::default()
-    };
-    let (mut client, connection) =
-        EspMqttClient::new(MQTT_URL, &mqtt_config).context("mqtt connect")?;
-
-    // The connection must be pumped continuously or the client stalls. Decode
-    // command payloads there, hand raw probe jobs to the prober loop.
-    let (tx, rx) = mpsc::channel::<Job>();
-    spawn_connection_pump(connection, tx);
+    let (mut mqtt, rx) = Mqtt::connect()?;
 
     // Watch this (the prober) task with the hardware watchdog (#113); the loop feeds
     // it every iteration, so a hang reboots the chip.
     let mut wdt = twdt.watch_current_task().context("twdt subscribe")?;
-    prober_loop(&mut client, &uart, rx, control, &mut wdt)
+    prober_loop(&mut mqtt, &uart, rx, control, &mut wdt)
 }
 
 fn prober_loop(
-    client: &mut EspMqttClient<'_>,
+    mqtt: &mut Mqtt,
     uart: &UartDriver<'_>,
-    rx: mpsc::Receiver<Job>,
+    rx: mpsc::Receiver<InMsg>,
     control: Arc<Mutex<ControlState>>,
     wdt: &mut WatchdogSubscription<'_>,
 ) -> Result<()> {
@@ -202,30 +129,25 @@ fn prober_loop(
         let timeout = deadline.saturating_duration_since(Instant::now());
 
         match rx.recv_timeout(timeout) {
-            Ok(Job::Connected) => {
-                client.subscribe(TOPIC_CMD, QoS::AtLeastOnce)?;
-                client.subscribe(TOPIC_BAUD, QoS::AtLeastOnce)?;
-                client.subscribe(TOPIC_OTA, QoS::AtLeastOnce)?;
-                client.subscribe(TOPIC_CTRL_TARGET, QoS::AtLeastOnce)?;
-                client.subscribe(TOPIC_CTRL_MEASURED, QoS::AtLeastOnce)?;
-                client.subscribe(TOPIC_CTRL_ENABLE, QoS::AtLeastOnce)?;
-                client.publish(TOPIC_STATUS, QoS::AtLeastOnce, true, b"online")?;
+            Ok(InMsg::Connected) => {
+                mqtt.subscribe_all()?;
+                mqtt.publish_status_online()?;
                 next_heartbeat = Instant::now() + STATUS_HEARTBEAT;
                 // Republish charge status at once so it overwrites a stale LWT
                 // `offline` from a previous session as soon as we are back up.
-                publish_charge_status(client, &control)?;
+                publish_charge_status(mqtt, &control)?;
                 next_control = Instant::now() + CONTROL_TICK;
                 info!("connected; subscribed to cn28 + charge control topics");
                 // Announce the running build + slot (#101) *before* confirming, so
                 // `pending_verify` still reflects the just-booted (unverified) state
                 // — that is the signal an OTA actually took. Diagnostic only, so a
                 // failure is logged, not propagated.
-                if let Err(e) = publish_version(client) {
+                if let Err(e) = publish_version(mqtt) {
                     warn!("version: publish skipped: {e:#}");
                 }
                 // Register the telemetry sensors with Home Assistant (retained
                 // discovery configs, #98). Idempotent on reconnect; non-fatal.
-                if let Err(e) = publish_discovery(client) {
+                if let Err(e) = publish_discovery(mqtt) {
                     warn!("discovery: publish skipped: {e:#}");
                 }
                 // Reaching the broker is the proof a freshly-OTA'd image needs to
@@ -235,29 +157,31 @@ fn prober_loop(
                     warn!("ota: confirm skipped: {e:#}");
                 }
             }
-            Ok(Job::Probe(bytes)) => probe(client, uart, &bytes, &mut telemetry, &mut reassembler)?,
-            Ok(Job::SetBaud(rate)) => set_baud(client, uart, rate)?,
-            Ok(Job::Ota(payload)) => run_ota(client, &payload)?,
-            Ok(Job::Target(parsed)) => control.lock().unwrap().apply_target(parsed, Instant::now()),
-            Ok(Job::Measured(parsed)) => control
+            Ok(InMsg::Probe(bytes)) => {
+                probe(mqtt, uart, &bytes, &mut telemetry, &mut reassembler)?
+            }
+            Ok(InMsg::SetBaud(rate)) => set_baud(mqtt, uart, rate)?,
+            Ok(InMsg::Ota(payload)) => run_ota(mqtt, &payload)?,
+            Ok(InMsg::Target(parsed)) => control.lock().unwrap().apply_target(parsed, Instant::now()),
+            Ok(InMsg::Measured(parsed)) => control
                 .lock()
                 .unwrap()
                 .apply_measured(parsed, Instant::now()),
-            Ok(Job::Enable(parsed)) => control.lock().unwrap().apply_enable(parsed),
+            Ok(InMsg::Enable(parsed)) => control.lock().unwrap().apply_enable(parsed),
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let now = Instant::now();
                 if now >= next_control {
-                    publish_charge_status(client, &control)?;
+                    publish_charge_status(mqtt, &control)?;
                     next_control = now + CONTROL_TICK;
                 }
                 if now >= next_heartbeat {
-                    client.publish(TOPIC_STATUS, QoS::AtLeastOnce, true, b"online")?;
+                    mqtt.publish_status_online()?;
                     next_heartbeat = now + STATUS_HEARTBEAT;
                 }
                 if let (Some(w), Some(d)) = (next_wake, auto_wake) {
                     if now >= w {
-                        probe(client, uart, b"\r\n", &mut telemetry, &mut reassembler)?; // auto-wake tick
+                        probe(mqtt, uart, b"\r\n", &mut telemetry, &mut reassembler)?; // auto-wake tick
                         next_wake = Some(now + d);
                     }
                 }
@@ -268,19 +192,15 @@ fn prober_loop(
 }
 
 /// Advance the control loop one tick and publish the retained charge status (#86).
-fn publish_charge_status(
-    client: &mut EspMqttClient<'_>,
-    control: &Arc<Mutex<ControlState>>,
-) -> Result<()> {
+fn publish_charge_status(mqtt: &mut Mqtt, control: &Arc<Mutex<ControlState>>) -> Result<()> {
     let json = control.lock().unwrap().tick(Instant::now());
-    client.publish(TOPIC_CTRL_STATUS, QoS::AtLeastOnce, true, json.as_bytes())?;
-    Ok(())
+    mqtt.publish_charge_status(&json)
 }
 
-/// Write probe bytes to CN28, drain the response, republish the three raw views,
-/// and fold the decoded lines into the retained telemetry snapshot.
+/// Write probe bytes to CN28, drain the response, republish the raw views (debug
+/// only), and fold the decoded lines into the retained telemetry snapshot.
 fn probe(
-    client: &mut EspMqttClient<'_>,
+    mqtt: &mut Mqtt,
     uart: &UartDriver<'_>,
     bytes: &[u8],
     telemetry: &mut Cn28Snapshot,
@@ -312,21 +232,7 @@ fn probe(
     // Raw views are capture/discovery debug only — compiled out of production
     // builds so the box does not spray three extra publishes per auto-poll (#110).
     #[cfg(feature = "raw-debug")]
-    {
-        client.publish(TOPIC_RAW, QoS::AtLeastOnce, false, &resp)?;
-        client.publish(
-            TOPIC_RAW_HEX,
-            QoS::AtLeastOnce,
-            false,
-            dump::to_hex(&resp).as_bytes(),
-        )?;
-        client.publish(
-            TOPIC_RAW_ASCII,
-            QoS::AtLeastOnce,
-            false,
-            dump::to_printable(&resp).as_bytes(),
-        )?;
-    }
+    mqtt.publish_raw(&resp, &dump::to_hex(&resp), &dump::to_printable(&resp))?;
 
     // Reassemble whole lines from this window's bytes (a line, or even a token,
     // can straddle window boundaries — the reassembler holds the partial tail) and
@@ -338,12 +244,7 @@ fn probe(
         updated |= telemetry.apply_line(&line);
     }
     if updated {
-        client.publish(
-            TOPIC_TELEMETRY,
-            QoS::AtLeastOnce,
-            true,
-            telemetry.to_json().as_bytes(),
-        )?;
+        mqtt.publish_telemetry(&telemetry.to_json())?;
     }
 
     info!("probe {} B → {} B response", bytes.len(), resp.len());
@@ -353,25 +254,15 @@ fn probe(
 /// Re-tune the UART rate live for the baud sweep (#79). The result is echoed on
 /// the status topic *non-retained*, so it never clobbers the retained
 /// online/offline liveness (or the LWT).
-fn set_baud(client: &mut EspMqttClient<'_>, uart: &UartDriver<'_>, rate: u32) -> Result<()> {
+fn set_baud(mqtt: &mut Mqtt, uart: &UartDriver<'_>, rate: u32) -> Result<()> {
     match uart.change_baudrate(Hertz(rate)) {
         Ok(_) => {
             info!("uart baud set to {rate}");
-            client.publish(
-                TOPIC_STATUS,
-                QoS::AtLeastOnce,
-                false,
-                format!("baud {rate}").as_bytes(),
-            )?;
+            mqtt.publish_baud_result(rate, true)?;
         }
         Err(e) => {
             warn!("uart baud {rate} rejected: {e}");
-            client.publish(
-                TOPIC_STATUS,
-                QoS::AtLeastOnce,
-                false,
-                format!("baud {rate} failed").as_bytes(),
-            )?;
+            mqtt.publish_baud_result(rate, false)?;
         }
     }
     Ok(())
@@ -389,45 +280,34 @@ fn set_baud(client: &mut EspMqttClient<'_>, uart: &UartDriver<'_>, rate: u32) ->
 /// A failure must never propagate: the running (good) image is untouched, so we
 /// publish `failed …` on the OTA status topic and carry on rather than killing
 /// the loop.
-fn run_ota(client: &mut EspMqttClient<'_>, payload: &str) -> Result<()> {
+fn run_ota(mqtt: &mut Mqtt, payload: &str) -> Result<()> {
     // Security (#76): a *retained* trigger would re-fire an OTA from this URL on
     // every reconnect — e.g. against a since-dead image server — a flash loop. So
-    // the moment we act on any trigger, delete it (a zero-length retained publish
-    // removes the retained message), guaranteeing no OTA URL can persist on the
-    // broker regardless of who set it. The pump ignores the empty echo.
-    client.publish(TOPIC_OTA, QoS::AtLeastOnce, true, b"")?;
+    // the moment we act on any trigger, delete it, guaranteeing no OTA URL can
+    // persist on the broker regardless of who set it. The pump ignores the empty echo.
+    mqtt.clear_ota_trigger()?;
 
     let url = match ota::validate_ota_url(payload) {
         Ok(url) => url,
         Err(e) => {
             warn!("bad ota url {payload:?}: {e:?}");
-            client.publish(
-                TOPIC_OTA_STATUS,
-                QoS::AtLeastOnce,
-                false,
-                format!("failed {e:?}").as_bytes(),
-            )?;
+            mqtt.publish_ota_status(&format!("failed {e:?}"))?;
             return Ok(());
         }
     };
 
-    client.publish(TOPIC_OTA_STATUS, QoS::AtLeastOnce, false, b"downloading")?;
+    mqtt.publish_ota_status("downloading")?;
     match download_and_flash(url) {
         Ok(total) => {
             info!("ota wrote {total} B; rebooting into the new slot");
-            client.publish(TOPIC_OTA_STATUS, QoS::AtLeastOnce, false, b"ok")?;
+            mqtt.publish_ota_status("ok")?;
             // Let the broker flush the status before the link drops on reboot.
             std::thread::sleep(Duration::from_millis(500));
             restart();
         }
         Err(e) => {
             warn!("ota failed: {e:#}");
-            client.publish(
-                TOPIC_OTA_STATUS,
-                QoS::AtLeastOnce,
-                false,
-                format!("failed {e}").as_bytes(),
-            )?;
+            mqtt.publish_ota_status(&format!("failed {e}"))?;
             Ok(())
         }
     }
@@ -488,7 +368,7 @@ fn confirm_running_slot() -> Result<()> {
 /// running OTA slot, with `pending_verify` true while the image is still unverified
 /// (a fresh OTA that has not yet confirmed). Called before [`confirm_running_slot`]
 /// so that signal survives.
-fn publish_version(client: &mut EspMqttClient<'_>) -> Result<()> {
+fn publish_version(mqtt: &mut Mqtt) -> Result<()> {
     let ota = EspOta::new().context("ota init")?;
     let slot = ota.get_running_slot().context("running slot")?;
     let label = format!("{}", slot.label);
@@ -500,8 +380,7 @@ fn publish_version(client: &mut EspMqttClient<'_>) -> Result<()> {
         reset_reason: reset_reason_str(),
         uptime_s,
     });
-    client.publish(TOPIC_VERSION, QoS::AtLeastOnce, true, json.as_bytes())?;
-    Ok(())
+    mqtt.publish_version(&json)
 }
 
 /// The esp-idf reset reason as a short stable string for telemetry (#113).
@@ -523,7 +402,7 @@ fn reset_reason_str() -> &'static str {
 /// Publish the Home Assistant MQTT discovery configs (retained) so the telemetry
 /// sensors auto-register (#98). One HA device (`evc04`) shared with the charge
 /// controller once it moves onto the ESP (#87). Idempotent across reconnects.
-fn publish_discovery(client: &mut EspMqttClient<'_>) -> Result<()> {
+fn publish_discovery(mqtt: &mut Mqtt) -> Result<()> {
     let meta = DiscoveryMeta {
         prefix: "homeassistant",
         node_id: "evc04_cn28",
@@ -531,66 +410,7 @@ fn publish_discovery(client: &mut EspMqttClient<'_>) -> Result<()> {
         device_name: "EVC04 CN28",
         device_model: "EVC04-AC11-T2P",
         sw_version: FW_VERSION,
-        state_topic: TOPIC_TELEMETRY,
+        state_topic: crate::mqtt::TOPIC_TELEMETRY,
     };
-    for (topic, payload) in cn28_discovery_messages(&meta) {
-        client.publish(&topic, QoS::AtLeastOnce, true, payload.as_bytes())?;
-    }
-    Ok(())
-}
-
-fn spawn_connection_pump(mut connection: EspMqttConnection, tx: mpsc::Sender<Job>) {
-    std::thread::Builder::new()
-        .stack_size(6144)
-        .spawn(move || {
-            while let Ok(event) = connection.next() {
-                match event.payload() {
-                    EventPayload::Connected(_) => {
-                        let _ = tx.send(Job::Connected);
-                    }
-                    EventPayload::Received { topic, data, .. } => {
-                        let payload = core::str::from_utf8(data).unwrap_or_default();
-                        // Route by topic: baud re-tunes the UART, ota triggers a
-                        // firmware pull, any other (the command channel) is decoded
-                        // to probe bytes.
-                        match topic {
-                            Some(t) if t == TOPIC_BAUD => match baud::parse_baud(payload) {
-                                Ok(rate) => {
-                                    let _ = tx.send(Job::SetBaud(rate));
-                                }
-                                Err(e) => warn!("bad baud {payload:?}: {e:?}"),
-                            },
-                            Some(t) if t == TOPIC_OTA => {
-                                // Ignore our own retained-clear (empty payload);
-                                // forward every real trigger raw so run_ota both
-                                // validates it and deletes the retained message,
-                                // so no OTA URL can ever persist (#76).
-                                if !data.is_empty() {
-                                    let _ = tx.send(Job::Ota(payload.to_string()));
-                                }
-                            }
-                            // Control plane (#86): forward the parse result; the loop
-                            // applies a good value or surfaces a rejection in status.
-                            Some(t) if t == TOPIC_CTRL_TARGET => {
-                                let _ = tx.send(Job::Target(parse_ampere(payload)));
-                            }
-                            Some(t) if t == TOPIC_CTRL_MEASURED => {
-                                let _ = tx.send(Job::Measured(parse_ampere(payload)));
-                            }
-                            Some(t) if t == TOPIC_CTRL_ENABLE => {
-                                let _ = tx.send(Job::Enable(parse_enable(payload)));
-                            }
-                            _ => match command::decode_command(payload) {
-                                Ok(bytes) => {
-                                    let _ = tx.send(Job::Probe(bytes));
-                                }
-                                Err(e) => warn!("bad command {payload:?}: {e:?}"),
-                            },
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        })
-        .expect("spawn mqtt pump");
+    mqtt.publish_discovery(cn28_discovery_messages(&meta))
 }
