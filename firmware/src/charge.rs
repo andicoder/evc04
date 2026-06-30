@@ -4,7 +4,7 @@
 //! times), owns the clock, soft-ramps the offset, and each tick computes the
 //! per-poll reported current with the **host-tested** `core` control math — so the
 //! ESP serves the exact value the k3s daemon would (no second implementation that
-//! could drift). Shared `Arc<Mutex<ControlState>>` between the prober thread (which
+//! could drift). Shared `Arc<Mutex<Controller>>` between the prober thread (which
 //! drives the ~1 s tick and publishes status) and the RS485 slave (which reads
 //! `reported` to answer the box and stamps each poll).
 //!
@@ -32,7 +32,7 @@ const MEASURED_FAILSAFE: FailsafeMode = FailsafeMode::Pause;
 
 /// Live control state. Constructed paused (reported above the ceiling) so the RS485
 /// slave serves a safe value before the first tick or before any command lands.
-pub struct ControlState {
+pub struct Controller {
     target: Option<f32>,
     target_at: Option<Instant>,
     measured: f32,
@@ -46,7 +46,7 @@ pub struct ControlState {
     last_error: Option<String>,
 }
 
-impl ControlState {
+impl Controller {
     pub fn new() -> Self {
         let now = Instant::now();
         Self {
@@ -172,7 +172,7 @@ impl ControlState {
     }
 }
 
-impl Default for ControlState {
+impl Default for Controller {
     fn default() -> Self {
         Self::new()
     }

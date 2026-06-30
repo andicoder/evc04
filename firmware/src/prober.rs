@@ -39,7 +39,7 @@ use evc04_cn28_core::probe::cn28::{Cn28Snapshot, LineReassembler};
 use evc04_cn28_core::debug::dump;
 use log::{info, warn};
 
-use crate::control::ControlState;
+use crate::charge::Controller;
 use crate::mqtt::{InMsg, Mqtt};
 
 /// CN28 LOG UART rate: 9600 8N1, no flow control (bench bring-up #72 — the box's
@@ -85,7 +85,7 @@ const OTA_HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 /// baud changes / OTA forever. `uart` is the CN28 UART (`main` owns construction).
 pub fn run(
     uart: UartDriver<'static>,
-    control: Arc<Mutex<ControlState>>,
+    control: Arc<Mutex<Controller>>,
     mut twdt: TWDTDriver<'static>,
 ) -> Result<()> {
     let (mut mqtt, rx) = Mqtt::connect()?;
@@ -100,7 +100,7 @@ fn prober_loop(
     mqtt: &mut Mqtt,
     uart: &UartDriver<'_>,
     rx: mpsc::Receiver<InMsg>,
-    control: Arc<Mutex<ControlState>>,
+    control: Arc<Mutex<Controller>>,
     wdt: &mut WatchdogSubscription<'_>,
 ) -> Result<()> {
     let auto_wake = (AUTO_WAKE_SECS > 0).then(|| Duration::from_secs(AUTO_WAKE_SECS));
@@ -192,7 +192,7 @@ fn prober_loop(
 }
 
 /// Advance the control loop one tick and publish the retained charge status (#86).
-fn publish_charge_status(mqtt: &mut Mqtt, control: &Arc<Mutex<ControlState>>) -> Result<()> {
+fn publish_charge_status(mqtt: &mut Mqtt, control: &Arc<Mutex<Controller>>) -> Result<()> {
     let json = control.lock().unwrap().tick(Instant::now());
     mqtt.publish_charge_status(&json)
 }

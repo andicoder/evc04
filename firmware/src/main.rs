@@ -30,7 +30,7 @@ use esp_idf_svc::hal::units::Hertz;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use log::error;
 
-mod control;
+mod charge;
 mod mqtt;
 mod prober;
 mod rs485;
@@ -83,7 +83,7 @@ fn main() -> Result<()> {
     // Shared control state (#86): the prober thread runs the MQTT intake + ~1 Hz
     // control tick and writes the reported current; the RS485 slave reads it to
     // answer the box. Mutex, not a channel, so the slave always has a value to serve.
-    let control = Arc::new(Mutex::new(control::ControlState::new()));
+    let control = Arc::new(Mutex::new(charge::Controller::new()));
 
     // Task watchdog (#113): the prober subscribes its own task and feeds it each
     // loop; a hang longer than this reboots the chip. 60 s clears the longest
