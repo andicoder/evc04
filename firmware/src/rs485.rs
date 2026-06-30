@@ -19,17 +19,16 @@
 //! asserted until the last stop bit is out — so confirm that with a scope/logic
 //! analyzer on the bench (#88).
 
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::sync::Arc;
 
 use esp_idf_svc::hal::delay::TickType;
 use esp_idf_svc::hal::gpio::{Output, PinDriver};
 use esp_idf_svc::hal::uart::UartDriver;
-use esp_idf_svc::sys::{esp_err_t, ESP_ERR_TIMEOUT};
+use esp_idf_svc::sys::{esp_err_t, esp_timer_get_time, ESP_ERR_TIMEOUT};
 use evc04_cn28_core::charge::frame::{build_response, encode_currents, parse_request};
 use log::{info, warn};
 
-use crate::charge::Controller;
+use crate::charge::Handoff;
 
 /// RS485 meter bus baud (CN20): the box polls the emulated PRO380 at 9600 8E1
 /// (SPECS §3). `main` configures UART2 with it.
@@ -61,7 +60,7 @@ const READ_BUF: usize = 32;
 pub fn run(
     uart: UartDriver<'static>,
     mut de: PinDriver<'static, Output>,
-    control: Arc<Mutex<Controller>>,
+    handoff: Arc<Handoff>,
 ) {
     // Receive is the default line state; only flip DE high around our own transmit.
     let _ = de.set_low();
@@ -104,12 +103,11 @@ pub fn run(
         }
 
         // Our poll: stamp it (liveness) and serve the latest control-loop value
-        // (#86) on all three phases. The lock is held only for these two reads.
-        let amps = {
-            let mut state = control.lock().unwrap();
-            state.note_poll(Instant::now());
-            state.reported()
-        };
+        // (#86) on all three phases. Two lock-free atomic ops via the handoff — the
+        // slave never blocks on the worker thread to answer the box.
+        let now_ms = (unsafe { esp_timer_get_time() } / 1000) as u32;
+        handoff.note_poll(now_ms);
+        let amps = handoff.reported();
         let payload = encode_currents(amps, amps, amps);
         let response = build_response(SLAVE_ADDR, &payload);
 
