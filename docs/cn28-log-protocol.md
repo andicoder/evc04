@@ -162,6 +162,15 @@ S:A1 … Cmax:0  Relay:7   unplugged
 `S:` plus `Cmax` is a real **plug- and charge-state** signal — no control pilot
 read-out or OCPP needed.
 
+> **Unknown until the first transition.** Because `S:` is emitted only on a
+> transition, the CP state is fundamentally *"last transition observed"* — the
+> console cannot be queried for the current state. After a reboot the decoder
+> holds no `cp_state` (it reports `null`) until the next plug/unplug/charge event.
+> `null` is the honest, safe reading: the HA `cp_state` sensor keys its
+> availability on that field, so it shows **unavailable** rather than a frozen
+> `B`/`C` while unknown, and evcc maps unavailable → `A` (not connected). See
+> evc04 #117.
+
 ### Related control events
 
 | Line | Meaning |
