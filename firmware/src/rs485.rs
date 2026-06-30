@@ -29,7 +29,7 @@ use esp_idf_svc::sys::{esp_err_t, ESP_ERR_TIMEOUT};
 use evc04_cn28_core::charge::frame::{build_response, encode_currents, parse_request};
 use log::{info, warn};
 
-use crate::control::ControlState;
+use crate::charge::Controller;
 
 /// RS485 meter bus baud (CN20): the box polls the emulated PRO380 at 9600 8E1
 /// (SPECS §3). `main` configures UART2 with it.
@@ -61,7 +61,7 @@ const READ_BUF: usize = 32;
 pub fn run(
     uart: UartDriver<'static>,
     mut de: PinDriver<'static, Output>,
-    control: Arc<Mutex<ControlState>>,
+    control: Arc<Mutex<Controller>>,
 ) {
     // Receive is the default line state; only flip DE high around our own transmit.
     let _ = de.set_low();
