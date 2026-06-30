@@ -18,7 +18,7 @@ use esp_idf_svc::sys::{esp_wifi_connect, ESP_OK};
 use esp_idf_svc::wifi::{
     AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi, WifiEvent,
 };
-use evc04_cn28_core::backoff::capped_exponential;
+use evc04_cn28_core::device::backoff::capped_exponential;
 use log::{error, info, warn};
 
 const WIFI_SSID: &str = env!("WIFI_SSID");
