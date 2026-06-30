@@ -4,7 +4,7 @@
 //!
 //! The box is **master** and polls `addr 1 / FC03 / 0x500C × 6` at ~1.006 s
 //! (SPECS §4); we are the slave. The framing/encoding is the host-tested
-//! [`evc04_cn28_core::frame`] logic the daemon proved on hardware — this module is
+//! [`evc04_cn28_core::charge::frame`] logic the daemon proved on hardware — this module is
 //! only the UART + half-duplex direction glue around it.
 //!
 //! Wiring (UART2 + MAX3485, see `docs/esp32-pinout.md`):
@@ -26,7 +26,7 @@ use esp_idf_svc::hal::delay::TickType;
 use esp_idf_svc::hal::gpio::{Output, PinDriver};
 use esp_idf_svc::hal::uart::UartDriver;
 use esp_idf_svc::sys::{esp_err_t, ESP_ERR_TIMEOUT};
-use evc04_cn28_core::frame::{build_response, encode_currents, parse_request};
+use evc04_cn28_core::charge::frame::{build_response, encode_currents, parse_request};
 use log::{info, warn};
 
 use crate::control::ControlState;

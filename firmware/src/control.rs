@@ -15,9 +15,11 @@
 
 use std::time::{Duration, Instant};
 
-use evc04_cn28_core::control::{ramp_step, reported_current, Ampere, ControlInputs, FailsafeMode};
-use evc04_cn28_core::intake::IntakeError;
-use evc04_cn28_core::status::{charge_state, status_json, Status};
+use evc04_cn28_core::charge::control::{
+    ramp_step, reported_current, Ampere, ControlInputs, FailsafeMode,
+};
+use evc04_cn28_core::charge::intake::IntakeError;
+use evc04_cn28_core::charge::status::{charge_state, status_json, Status};
 
 const MAX_BOX_AMPERE: f32 = 16.0;
 const MIN_CHARGE_AMPERE: f32 = 6.0;

@@ -31,13 +31,14 @@ use esp_idf_svc::hal::reset::ResetReason;
 use esp_idf_svc::hal::task::watchdog::{TWDTDriver, WatchdogSubscription};
 use esp_idf_svc::ota::{EspOta, SlotState};
 use esp_idf_svc::sys::{esp_err_t, esp_timer_get_time, ESP_ERR_TIMEOUT};
-use evc04_cn28_core::cn28::{Cn28Snapshot, LineReassembler};
-use evc04_cn28_core::intake::{parse_ampere, parse_enable, IntakeError};
-use evc04_cn28_core::discovery::{cn28_discovery_messages, DiscoveryMeta};
-use evc04_cn28_core::version::{version_json, Version};
-use evc04_cn28_core::{baud, command, ota};
+use evc04_cn28_core::probe::cn28::{Cn28Snapshot, LineReassembler};
+use evc04_cn28_core::charge::intake::{parse_ampere, parse_enable, IntakeError};
+use evc04_cn28_core::device::discovery::{cn28_discovery_messages, DiscoveryMeta};
+use evc04_cn28_core::device::version::{version_json, Version};
+use evc04_cn28_core::probe::{baud, command};
+use evc04_cn28_core::device::ota;
 #[cfg(feature = "raw-debug")]
-use evc04_cn28_core::dump;
+use evc04_cn28_core::debug::dump;
 use log::{info, warn};
 
 use crate::control::ControlState;

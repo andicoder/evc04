@@ -7,7 +7,7 @@
 use alloc::format;
 use alloc::string::String;
 
-use crate::control::Ampere;
+use super::control::Ampere;
 
 /// Approximate evcc charge status (#28): `B` (connected, not charging) when the
 /// emulation pauses the box — reporting **above** the ceiling so the box actually
