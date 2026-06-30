@@ -14,7 +14,7 @@
 //!   cd firmware && cargo make build           # native esp build → host ELF
 //!   cargo make flash                          # flash + monitor on host (USB)
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -80,10 +80,12 @@ fn main() -> Result<()> {
     // Two independent routines, each on its own thread (same spawn pattern). The
     // RS485 slave must keep answering even if the prober exits, so neither blocks
     // the other and main outlives both.
-    // Shared control state (#86): the prober thread runs the MQTT intake + ~1 Hz
-    // control tick and writes the reported current; the RS485 slave reads it to
-    // answer the box. Mutex, not a channel, so the slave always has a value to serve.
-    let control = Arc::new(Mutex::new(charge::Controller::new()));
+    // Cross-thread hand-off (#86): the prober thread runs the MQTT intake + ~1 Hz
+    // control tick (the Controller lives there, on its own thread) and writes the
+    // reported current here; the RS485 slave reads it to answer the box and stamps
+    // each poll. Two lock-free atomics, so the slave always has a value to serve and
+    // never blocks on the worker.
+    let handoff = Arc::new(charge::Handoff::new());
 
     // Task watchdog (#113): the prober subscribes its own task and feeds it each
     // loop; a hang longer than this reboots the chip. 60 s clears the longest
@@ -102,9 +104,9 @@ fn main() -> Result<()> {
     std::thread::Builder::new()
         .stack_size(8192) // OTA (HTTP download + flash) runs on this thread (#76)
         .spawn({
-            let control = Arc::clone(&control);
+            let handoff = Arc::clone(&handoff);
             move || {
-                if let Err(e) = prober::run(cn28, control, twdt) {
+                if let Err(e) = prober::run(cn28, handoff, twdt) {
                     error!("prober exited: {e:#}");
                 }
                 // The prober is the device's whole job and now feeds production
@@ -119,7 +121,7 @@ fn main() -> Result<()> {
 
     std::thread::Builder::new()
         .stack_size(6144)
-        .spawn(move || rs485::run(meter_uart, de, control))
+        .spawn(move || rs485::run(meter_uart, de, handoff))
         .expect("spawn rs485 meter slave");
 
     // Keep the process — and the WiFi guard — alive; the workers run on their own

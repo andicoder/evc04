@@ -1,18 +1,23 @@
-//! On-box control-loop state for the meter emulation (evc04#86).
+//! On-box meter-emulation control (evc04#86): the worker-local [`Controller`] and
+//! the lock-free [`Handoff`] that carries two scalars across the thread boundary.
 //!
-//! Holds the MQTT control inputs (target / measured / enable and their arrival
-//! times), owns the clock, soft-ramps the offset, and each tick computes the
-//! per-poll reported current with the **host-tested** `core` control math — so the
-//! ESP serves the exact value the k3s daemon would (no second implementation that
-//! could drift). Shared `Arc<Mutex<Controller>>` between the prober thread (which
-//! drives the ~1 s tick and publishes status) and the RS485 slave (which reads
-//! `reported` to answer the box and stamps each poll).
+//! The [`Controller`] holds the MQTT control inputs (target / measured / enable and
+//! their arrival times), owns the clock, soft-ramps the offset, and each tick
+//! computes the per-poll reported current with the **host-tested** `core` control
+//! math — so the ESP serves the exact value the k3s daemon would (no second
+//! implementation that could drift). It lives only on the prober/worker thread.
+//!
+//! Only two values genuinely cross to the RS485 slave thread, so they live in
+//! [`Handoff`] (two atomics, no mutex): `reported` (worker → slave, the current to
+//! answer the box with) and `last_poll` (slave → worker, the box's last-poll
+//! timestamp for the status liveness).
 //!
 //! Config mirrors the daemon's env defaults (`charge/src/config.rs`); `MAX_BOX` is
 //! the box's DIP-set ceiling for this install. Failsafe direction is `pause` on
 //! both channels — a stale input STOPS an evcc/HA-managed box, never starts it
 //! (SPECS §9, #52).
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use evc04_cn28_core::charge::control::{
@@ -30,8 +35,20 @@ const MEASURED_TIMEOUT: Duration = Duration::from_secs(15);
 const TARGET_FAILSAFE: FailsafeMode = FailsafeMode::Pause;
 const MEASURED_FAILSAFE: FailsafeMode = FailsafeMode::Pause;
 
-/// Live control state. Constructed paused (reported above the ceiling) so the RS485
-/// slave serves a safe value before the first tick or before any command lands.
+/// Per-phase value that pauses the box: above the ceiling so an active charge is
+/// actually cut (#57). The [`Handoff`] starts here so the slave serves a safe value
+/// before the first tick or before any command lands.
+const PAUSE_REPORT_AMPERE: f32 = MAX_BOX_AMPERE + PAUSE_MARGIN_AMPERE;
+
+/// One control tick's outputs: the per-phase current to hand to the slave, and the
+/// retained status JSON to publish.
+pub struct Tick {
+    pub reported: f32,
+    pub status_json: String,
+}
+
+/// Worker-local control state. Lives only on the prober/worker thread; the value it
+/// computes for the slave crosses via [`Handoff`], not this struct.
 pub struct Controller {
     target: Option<f32>,
     target_at: Option<Instant>,
@@ -39,9 +56,7 @@ pub struct Controller {
     measured_at: Instant,
     enabled: bool,
     offset: f32,
-    reported: f32,
     ramping: bool,
-    last_poll_at: Instant,
     last_tick: Instant,
     last_error: Option<String>,
 }
@@ -58,24 +73,10 @@ impl Controller {
             measured_at: now,
             enabled: true,
             offset: MAX_BOX_AMPERE,
-            // Safe default until the first tick: report a pause (above the ceiling).
-            reported: MAX_BOX_AMPERE + PAUSE_MARGIN_AMPERE,
             ramping: false,
-            last_poll_at: now,
             last_tick: now,
             last_error: None,
         }
-    }
-
-    /// Per-phase current the RS485 slave should report this poll.
-    pub fn reported(&self) -> f32 {
-        self.reported
-    }
-
-    /// Stamp the moment the box polled us (drives `last_poll_age_s`; a growing value
-    /// signals a dead RS485 link).
-    pub fn note_poll(&mut self, now: Instant) {
-        self.last_poll_at = now;
     }
 
     /// Apply a parsed target. A good value clears `last_error`; a rejected payload is
@@ -113,9 +114,10 @@ impl Controller {
     }
 
     /// Advance the loop one tick: soft-ramp the offset toward `MAX_BOX − target`,
-    /// compute the reported current via `core`, store it for the slave, and return
-    /// the retained status JSON to publish.
-    pub fn tick(&mut self, now: Instant) -> String {
+    /// compute the reported current via `core`, and return it alongside the retained
+    /// status JSON. `last_poll_age_s` (the slave-stamped RS485 liveness) is supplied
+    /// by the caller from the [`Handoff`], since this struct no longer sees the poll.
+    pub fn tick(&mut self, now: Instant, last_poll_age_s: f32) -> Tick {
         let dt = now.saturating_duration_since(self.last_tick).as_secs_f32();
         self.last_tick = now;
 
@@ -147,32 +149,87 @@ impl Controller {
             target_failsafe: TARGET_FAILSAFE,
             measured_failsafe: MEASURED_FAILSAFE,
         };
-        self.reported = reported_current(&inputs).0;
+        let reported = reported_current(&inputs).0;
 
         let status = Status {
             online: true,
             target_ampere: self.target.unwrap_or(0.0),
             measured_ampere: self.measured,
             offset_ampere: self.offset,
-            reported_ampere: self.reported,
-            last_poll_age_s: now
-                .saturating_duration_since(self.last_poll_at)
-                .as_secs_f32(),
+            reported_ampere: reported,
+            last_poll_age_s,
             measurement_age_s: now
                 .saturating_duration_since(self.measured_at)
                 .as_secs_f32(),
             ramping: self.ramping,
             failsafe: target_stale,
             measurement_failsafe: measured_stale,
-            charge_state: charge_state(Ampere(self.reported), Ampere(MAX_BOX_AMPERE)),
+            charge_state: charge_state(Ampere(reported), Ampere(MAX_BOX_AMPERE)),
             enabled: self.enabled,
             last_error: self.last_error.as_deref(),
         };
-        status_json(&status)
+        Tick {
+            reported,
+            status_json: status_json(&status),
+        }
     }
 }
 
 impl Default for Controller {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Lock-free hand-off between the worker (control) thread and the RS485 slave.
+/// Only two scalars genuinely cross the boundary, so each is a single atomic — no
+/// mutex, and the slave never blocks on the worker to answer a poll.
+///
+/// Both are 32-bit: the ESP32 (Xtensa) has no native 64-bit atomics, so the poll
+/// timestamp is milliseconds (not microseconds) since boot. It wraps after ~49.7
+/// days; the worker reads it with `wrapping_sub`, which yields the correct age for
+/// any real gap (< the wrap period).
+pub struct Handoff {
+    /// `reported` as f32 bits: worker stores it each tick, slave loads it to answer.
+    reported_bits: AtomicU32,
+    /// `esp_timer` milliseconds of the box's last poll: slave stamps it, worker reads
+    /// it for `last_poll_age_s`. 0 = never polled (≈ boot, so age ≈ uptime).
+    last_poll_ms: AtomicU32,
+}
+
+impl Handoff {
+    /// Construct paused: report above the ceiling so the slave serves a safe value
+    /// before the first control tick (the cold-start pause, #52/#59).
+    pub fn new() -> Self {
+        Self {
+            reported_bits: AtomicU32::new(PAUSE_REPORT_AMPERE.to_bits()),
+            last_poll_ms: AtomicU32::new(0),
+        }
+    }
+
+    /// Worker: store the per-phase current the slave should report next.
+    pub fn set_reported(&self, amps: f32) {
+        self.reported_bits.store(amps.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Slave: the latest per-phase current to answer the box with.
+    pub fn reported(&self) -> f32 {
+        f32::from_bits(self.reported_bits.load(Ordering::Relaxed))
+    }
+
+    /// Slave: stamp the moment the box polled us (drives `last_poll_age_s`; a growing
+    /// gap signals a dead RS485 link). `now_ms` is `esp_timer` milliseconds.
+    pub fn note_poll(&self, now_ms: u32) {
+        self.last_poll_ms.store(now_ms, Ordering::Relaxed);
+    }
+
+    /// Worker: `esp_timer` milliseconds of the last poll (0 if never polled).
+    pub fn last_poll_ms(&self) -> u32 {
+        self.last_poll_ms.load(Ordering::Relaxed)
+    }
+}
+
+impl Default for Handoff {
     fn default() -> Self {
         Self::new()
     }

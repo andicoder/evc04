@@ -17,7 +17,7 @@
 //! ⚠️ The esp-idf-svc API (OTA, HTTP) is version-sensitive — built against the
 //! pinned esp-idf-svc 0.52.
 
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -39,7 +39,7 @@ use evc04_cn28_core::probe::cn28::{Cn28Snapshot, LineReassembler};
 use evc04_cn28_core::debug::dump;
 use log::{info, warn};
 
-use crate::charge::Controller;
+use crate::charge::{Controller, Handoff};
 use crate::mqtt::{InMsg, Mqtt};
 
 /// CN28 LOG UART rate: 9600 8N1, no flow control (bench bring-up #72 — the box's
@@ -85,7 +85,7 @@ const OTA_HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 /// baud changes / OTA forever. `uart` is the CN28 UART (`main` owns construction).
 pub fn run(
     uart: UartDriver<'static>,
-    control: Arc<Mutex<Controller>>,
+    handoff: Arc<Handoff>,
     mut twdt: TWDTDriver<'static>,
 ) -> Result<()> {
     let (mut mqtt, rx) = Mqtt::connect()?;
@@ -93,14 +93,14 @@ pub fn run(
     // Watch this (the prober) task with the hardware watchdog (#113); the loop feeds
     // it every iteration, so a hang reboots the chip.
     let mut wdt = twdt.watch_current_task().context("twdt subscribe")?;
-    prober_loop(&mut mqtt, &uart, rx, control, &mut wdt)
+    prober_loop(&mut mqtt, &uart, rx, &handoff, &mut wdt)
 }
 
 fn prober_loop(
     mqtt: &mut Mqtt,
     uart: &UartDriver<'_>,
     rx: mpsc::Receiver<InMsg>,
-    control: Arc<Mutex<Controller>>,
+    handoff: &Handoff,
     wdt: &mut WatchdogSubscription<'_>,
 ) -> Result<()> {
     let auto_wake = (AUTO_WAKE_SECS > 0).then(|| Duration::from_secs(AUTO_WAKE_SECS));
@@ -114,6 +114,9 @@ fn prober_loop(
     // captured in a bounded window, so a line — even a token — can split across
     // the boundary. Lives across windows so the tail of one joins the head of next.
     let mut reassembler = LineReassembler::new();
+    // The control state lives only on this thread; only its computed `reported`
+    // crosses to the slave, via `handoff`.
+    let mut controller = Controller::new();
 
     loop {
         // Feed the task watchdog (#113): every loop turn proves we are alive; a
@@ -135,7 +138,7 @@ fn prober_loop(
                 next_heartbeat = Instant::now() + STATUS_HEARTBEAT;
                 // Republish charge status at once so it overwrites a stale LWT
                 // `offline` from a previous session as soon as we are back up.
-                publish_charge_status(mqtt, &control)?;
+                control_tick(mqtt, &mut controller, handoff)?;
                 next_control = Instant::now() + CONTROL_TICK;
                 info!("connected; subscribed to cn28 + charge control topics");
                 // Announce the running build + slot (#101) *before* confirming, so
@@ -162,17 +165,14 @@ fn prober_loop(
             }
             Ok(InMsg::SetBaud(rate)) => set_baud(mqtt, uart, rate)?,
             Ok(InMsg::Ota(payload)) => run_ota(mqtt, &payload)?,
-            Ok(InMsg::Target(parsed)) => control.lock().unwrap().apply_target(parsed, Instant::now()),
-            Ok(InMsg::Measured(parsed)) => control
-                .lock()
-                .unwrap()
-                .apply_measured(parsed, Instant::now()),
-            Ok(InMsg::Enable(parsed)) => control.lock().unwrap().apply_enable(parsed),
+            Ok(InMsg::Target(parsed)) => controller.apply_target(parsed, Instant::now()),
+            Ok(InMsg::Measured(parsed)) => controller.apply_measured(parsed, Instant::now()),
+            Ok(InMsg::Enable(parsed)) => controller.apply_enable(parsed),
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let now = Instant::now();
                 if now >= next_control {
-                    publish_charge_status(mqtt, &control)?;
+                    control_tick(mqtt, &mut controller, handoff)?;
                     next_control = now + CONTROL_TICK;
                 }
                 if now >= next_heartbeat {
@@ -191,10 +191,15 @@ fn prober_loop(
     Ok(())
 }
 
-/// Advance the control loop one tick and publish the retained charge status (#86).
-fn publish_charge_status(mqtt: &mut Mqtt, control: &Arc<Mutex<Controller>>) -> Result<()> {
-    let json = control.lock().unwrap().tick(Instant::now());
-    mqtt.publish_charge_status(&json)
+/// Advance the control loop one tick: read the slave-stamped poll liveness from the
+/// handoff, tick the controller, hand the new per-phase current back to the slave via
+/// the handoff, and publish the retained charge status (#86).
+fn control_tick(mqtt: &mut Mqtt, controller: &mut Controller, handoff: &Handoff) -> Result<()> {
+    let now_ms = (unsafe { esp_timer_get_time() } / 1000) as u32;
+    let last_poll_age_s = now_ms.wrapping_sub(handoff.last_poll_ms()) as f32 / 1000.0;
+    let tick = controller.tick(Instant::now(), last_poll_age_s);
+    handoff.set_reported(tick.reported);
+    mqtt.publish_charge_status(&tick.status_json)
 }
 
 /// Write probe bytes to CN28, drain the response, republish the raw views (debug
