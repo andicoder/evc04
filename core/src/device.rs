@@ -4,5 +4,6 @@
 
 pub mod backoff;
 pub mod discovery;
+pub mod led;
 pub mod ota;
 pub mod version;
