@@ -5,24 +5,23 @@
 //! The box is **master** and polls `addr 1 / FC03 / 0x500C × 6` at ~1.006 s
 //! (SPECS §4); we are the slave. The framing/encoding is the host-tested
 //! [`evc04_cn28_core::charge::frame`] logic the daemon proved on hardware — this module is
-//! only the UART + half-duplex direction glue around it.
+//! only the UART glue around it.
 //!
-//! Wiring (UART2 + MAX3485, see `docs/esp32-pinout.md`):
-//!   GPIO25 (TX) → DI · GPIO26 (RX) ← RO · GPIO27 → DE/RE · A/B → CN20 · 9600 8E1
+//! Wiring (UART2 + TTL485 v2 auto-direction module, see `docs/esp32-pinout.md`):
+//!   GPIO25 (TX) → RXD · GPIO26 (RX) ← TXD · A/B → CN20 · 9600 8E1
+//!
+//! The transceiver switches TX/RX itself (no DE line), so this module never touches
+//! the bus direction — it just reads the poll and writes the reply.
 //!
 //! Scope (#85): answer the poll with a static bench value ([`BENCH_REPORT_AMPERE`]).
 //! MQTT-driven values are #86; coexistence with the CN28 read loop and a continuity
 //! watchdog are #87.
 //!
-//! Compiles against the pinned esp-idf-hal 0.46.2 / esp-idf-svc 0.52.1. What the
-//! build can't prove is the DE *timing* on the wire — that `wait_tx_done` holds DE
-//! asserted until the last stop bit is out — so confirm that with a scope/logic
-//! analyzer on the bench (#88).
+//! Compiles against the pinned esp-idf-hal 0.46.2 / esp-idf-svc 0.52.1.
 
 use std::sync::Arc;
 
 use esp_idf_svc::hal::delay::TickType;
-use esp_idf_svc::hal::gpio::{Output, PinDriver};
 use esp_idf_svc::hal::uart::UartDriver;
 use esp_idf_svc::sys::{esp_err_t, esp_timer_get_time, ESP_ERR_TIMEOUT};
 use evc04_cn28_core::charge::frame::{build_response, encode_currents, parse_request};
@@ -47,23 +46,14 @@ const FIRST_BYTE_MS: u64 = 1000;
 /// 20 ms is comfortably above that (and above the FreeRTOS tick) without risking a
 /// merge with the next ~1 s poll.
 const READ_GAP_MS: u64 = 20;
-/// Cap on the wait for the TX FIFO to drain before releasing DE — a full 8N/8E
-/// frame is tens of bytes at most, milliseconds on the wire.
-const TX_DRAIN_MS: u64 = 100;
 /// An RTU read request is 8 bytes; a little headroom absorbs line noise.
 const READ_BUF: usize = 32;
 
 /// Thread routine: serve the meter-emulation slave forever — assemble each inbound
 /// poll, and when it is *our* poll, answer with [`BENCH_REPORT_AMPERE`]. `main`
-/// owns construction of `uart`/`de` and moves them onto this thread (#86 will feed
-/// the reported value from MQTT instead of the bench const).
-pub fn run(
-    uart: UartDriver<'static>,
-    mut de: PinDriver<'static, Output>,
-    handoff: Arc<Handoff>,
-) {
-    // Receive is the default line state; only flip DE high around our own transmit.
-    let _ = de.set_low();
+/// owns construction of `uart` and moves it onto this thread (#86 will feed the
+/// reported value from MQTT instead of the bench const).
+pub fn run(uart: UartDriver<'static>, handoff: Arc<Handoff>) {
     info!("rs485: meter slave up (addr {SLAVE_ADDR}, 0x{POLL_REGISTER:04x}×{POLL_QUANTITY}, 9600 8E1)");
 
     let first = TickType::new_millis(FIRST_BYTE_MS).ticks();
@@ -111,20 +101,11 @@ pub fn run(
         let payload = encode_currents(amps, amps, amps);
         let response = build_response(SLAVE_ADDR, &payload);
 
-        // Half-duplex turnaround: assert DE, transmit, and hold DE until the last
-        // stop bit has left the wire. Dropping DE right after `write` returns only
-        // means the bytes are queued, not sent — releasing early truncates the final
-        // byte and the box sees a CRC error (see docs/esp32-pinout.md "Driving DE").
-        // (The hardware RS485-via-RTS alternative would replace this block; the
-        // manual path is used here because it is correct regardless of HAL support.)
-        let _ = de.set_high();
+        // The TTL485 v2 handles the half-duplex turnaround itself — it drives the bus
+        // while we transmit and falls back to receive once the line idles — so there
+        // is no direction line to hold; just write the reply.
         if let Err(e) = uart.write(&response) {
             warn!("rs485: uart write error: {e}");
         }
-        // `wait_tx_done` blocks until the TX FIFO is empty. Whether that is late
-        // enough to hold DE through the final stop bit is the one thing only a bench
-        // scope can confirm (#88); if it releases early, add a short post-delay.
-        let _ = uart.wait_tx_done(TickType::new_millis(TX_DRAIN_MS).ticks());
-        let _ = de.set_low();
     }
 }

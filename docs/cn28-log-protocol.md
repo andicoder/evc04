@@ -20,6 +20,25 @@ lines observed so far and grows as new ones appear. Treat field meanings marked
 | Cadence | **request/response-ish**: the box emits nothing useful unprompted — writing any byte (the prober sends `\r\n`) opens a window in which it streams a burst of the lines below. A burst can begin or end mid-line, even mid-token, so consumers must reassemble whole lines across read windows before parsing (`core::cn28::LineReassembler`). |
 | Robustness | unknown/garbled lines must be ignored, never fatal. |
 
+### Connector
+
+CN28 is a **4-pin 3.3 V TTL header**. Physical order, **counted from the bottom** of
+the header (observed on one box — confirm orientation against your unit):
+
+| Pin (from bottom) | Signal              | Wires to ESP32     |
+|-------------------|---------------------|--------------------|
+| 1                 | GND                 | GND                |
+| 2                 | box TX (box sends)  | GPIO17 (UART1 RX)  |
+| 3                 | box RX (box recvs)  | GPIO16 (UART1 TX)  |
+| 4                 | — (NC)              | leave unconnected  |
+
+Normal UART **cross-over**: the box's transmit (pin 2) feeds the ESP's **RX**
+(GPIO17), and the box's receive (pin 3) is driven by the ESP's **TX** (GPIO16) —
+never RX-to-RX. 🤔 The CN28 silk labels are **unreliable** (they don't line up with
+signal direction the naive way), so wire by the pin position / function above, not by
+the printed `RX2`/`TX2`. Pin 4 has no supply, so the ESP is powered separately (USB).
+See [`esp32-pinout.md`](esp32-pinout.md) for the full device wiring.
+
 Two data domains share the console:
 
 1. **Metering** — the box's *own internal* energy meter (brand **KLEFR**, 3 CTs),
