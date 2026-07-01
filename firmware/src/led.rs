@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::thread::sleep;
 use std::time::Duration;
 
-use esp_idf_svc::hal::gpio::{Gpio2, Output, PinDriver};
+use esp_idf_svc::hal::gpio::{Output, PinDriver};
 use esp_idf_svc::sys::esp_timer_get_time;
 use evc04_cn28_core::device::led::{led_on, led_state, LedInputs};
 
@@ -71,7 +71,7 @@ fn inputs() -> LedInputs {
 /// LED-timing thread routine (`main` spawns it and owns the pin construction). Loops
 /// forever: resolve the current state, ask `core` whether the LED is lit this instant,
 /// drive the pin. A GPIO write can't meaningfully fail, so any error is ignored.
-pub fn run(mut pin: PinDriver<'static, Gpio2, Output>) -> ! {
+pub fn run(mut pin: PinDriver<'static, Output>) -> ! {
     loop {
         let state = led_state(&inputs());
         let now_ms = (unsafe { esp_timer_get_time() } / 1000) as u32;
