@@ -224,6 +224,25 @@ CLEAR: 22
 
 ---
 
+## 8. Frame cadence
+
+The LOG console is request/response: a byte on RX triggers a burst. But the
+**metering values inside that burst refresh only ~every 5 s** — the box answers every
+wake (the firmware auto-wakes every 2 s), yet only recomputes the per-phase `P{n}` /
+`A:` / `lb current` / `ev current` fields on its own ~5 s internal metering tick. So
+polling faster than ~5 s returns **repeated** values, not fresher ones. Observed live
+on hardware.
+
+That is the **same speed class as a home-automation grid measurement (~3–6 s)** and
+**slower** than the ~1 s source the 6–8 A bottom of the control band would need
+(`charge/SPECS.md` §6). It is why the on-box floor-seek (#119) advances its integral
+trim **once per fresh ~5 s sample, not per 1 s control tick** (integrating stale data
+each tick would over-correct ~5× and oscillate), and why a stable 6 A may be
+physically unreachable at this feedback rate — the trim is built to *reveal* the real
+achievable minimum, not assume it.
+
+---
+
 ## Decoder mapping
 
 `core::cn28::parse_line` decodes a subset into `LogRecord`, folded into a

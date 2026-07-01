@@ -40,6 +40,14 @@ pub struct Status<'a> {
     /// Reason for the most recent rejected input, or `None` when healthy. Internal
     /// fixed strings (never raw payload), so they need no JSON escaping.
     pub last_error: Option<&'a str>,
+    /// #119: the integral trim currently applied on top of the closed loop (A). It
+    /// saturating at `TRIM_MAX` is the signal that the box's real minimum has been
+    /// found — the achievable-min diagnostic (#119 Goal 2).
+    pub trim_ampere: f32,
+    /// Latest CN28-reported actual per-phase charge current feeding the trim (A).
+    pub cn28_actual_ampere: f32,
+    /// Whether the CN28 feedback is stale — the trim is decaying, not integrating.
+    pub cn28_feedback_stale: bool,
 }
 
 /// Render [`Status`] as the retained status JSON (one flat object, field order
@@ -54,7 +62,8 @@ pub fn status_json(s: &Status) -> String {
          \"offset_ampere\":{},\"reported_ampere\":{},\"last_poll_age_s\":{},\
          \"measurement_age_s\":{},\"ramping\":{},\"failsafe\":{},\
          \"measurement_failsafe\":{},\"charge_state\":\"{}\",\"enabled\":{},\
-         \"last_error\":{}}}",
+         \"last_error\":{},\"trim_ampere\":{},\"cn28_actual_ampere\":{},\
+         \"cn28_feedback_stale\":{}}}",
         s.online,
         s.target_ampere,
         s.measured_ampere,
@@ -68,6 +77,9 @@ pub fn status_json(s: &Status) -> String {
         s.charge_state,
         s.enabled,
         last_error,
+        s.trim_ampere,
+        s.cn28_actual_ampere,
+        s.cn28_feedback_stale,
     )
 }
 
@@ -111,10 +123,13 @@ mod tests {
             charge_state: 'C',
             enabled: true,
             last_error: None,
+            trim_ampere: 0.0,
+            cn28_actual_ampere: 0.0,
+            cn28_feedback_stale: false,
         };
         assert_eq!(
             status_json(&s),
-            r#"{"online":true,"target_ampere":6.5,"measured_ampere":5,"offset_ampere":1.5,"reported_ampere":6.5,"last_poll_age_s":0.4,"measurement_age_s":1.1,"ramping":false,"failsafe":false,"measurement_failsafe":false,"charge_state":"C","enabled":true,"last_error":null}"#
+            r#"{"online":true,"target_ampere":6.5,"measured_ampere":5,"offset_ampere":1.5,"reported_ampere":6.5,"last_poll_age_s":0.4,"measurement_age_s":1.1,"ramping":false,"failsafe":false,"measurement_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"trim_ampere":0,"cn28_actual_ampere":0,"cn28_feedback_stale":false}"#
         );
     }
 
@@ -134,10 +149,16 @@ mod tests {
             charge_state: 'C',
             enabled: false,
             last_error: Some("bad target"),
+            trim_ampere: 2.5,
+            cn28_actual_ampere: 9.0,
+            cn28_feedback_stale: true,
         };
         let json = status_json(&s);
         assert!(json.contains(r#""last_error":"bad target""#), "{json}");
         assert!(json.contains(r#""measurement_failsafe":true"#), "{json}");
         assert!(json.contains(r#""enabled":false"#), "{json}");
+        assert!(json.contains(r#""trim_ampere":2.5"#), "{json}");
+        assert!(json.contains(r#""cn28_actual_ampere":9"#), "{json}");
+        assert!(json.contains(r#""cn28_feedback_stale":true"#), "{json}");
     }
 }

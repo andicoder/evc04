@@ -87,6 +87,34 @@ pub fn ramp_step(offset: Ampere, setpoint: Ampere, max_step: Ampere) -> Ampere {
     }
 }
 
+/// Advance the integral trim by one **fresh CN28 sample** (#119). The trim integrates
+/// the error between the box's actual delivered current and the target: while the box
+/// charges *above* target, the term grows, lifting `reported` so the box throttles
+/// further — a slow floor-seeker below the band the base loop can hold.
+///
+/// Stepped once per fresh sample (~5 s), **not** per 1 s tick — integrating stale data
+/// each tick would over-correct ~5×. `ki` is small; `trim_max` is the anti-windup
+/// clamp, and the term never goes negative (it only ever *reduces* charge).
+pub fn trim_step(
+    trim: Ampere,
+    cn28_actual: Ampere,
+    target: Ampere,
+    ki: f32,
+    trim_max: Ampere,
+) -> Ampere {
+    let next = trim.0 + ki * (cn28_actual.0 - target.0);
+    Ampere(next).clamp(Ampere(0.0), trim_max)
+}
+
+/// Relax the trim toward zero by `step` while CN28 feedback is stale (#119): a lost
+/// feedback sample decays the correction back to the hardware-proven `offset + measured`
+/// loop instead of holding a value the loop can no longer see. Never crosses zero.
+pub fn trim_decay(trim: Ampere, step: Ampere) -> Ampere {
+    // Decay only ever lowers the term; clamp to [0, trim] floors it at zero without
+    // an `f32::max` (libm-gated in no_std, same reason as `ramp_step`).
+    Ampere(trim.0 - step.0).clamp(Ampere(0.0), trim)
+}
+
 /// Everything the per-poll decision needs, supplied by the firmware. Holding the last
 /// good `target`/`measured`/`offset` and judging staleness is the firmware's job (it
 /// owns the clock); this struct is the snapshot it hands in each poll.
@@ -103,6 +131,11 @@ pub struct ControlInputs {
     pub target: Option<Ampere>,
     /// The current soft-ramped offset the firmware maintains via [`ramp_step`] (#24).
     pub offset: Ampere,
+    /// Integral trim the firmware accumulates on ~5 s CN28 feedback to push the box
+    /// below its natural ~9–15 A floor (#119), advanced via [`trim_step`] /
+    /// [`trim_decay`]. Added on top of the closed loop; `0` is byte-identical to the
+    /// pre-#119 path, so the proven 9–15 A behaviour is unchanged when it is idle.
+    pub trim: Ampere,
     /// Latest live measured per-phase current that closes the loop (#22).
     pub measured: Ampere,
     /// The enable gate (#60): `false` hard-pauses regardless of the target.
@@ -162,7 +195,14 @@ pub fn reported_current(inputs: &ControlInputs) -> Ampere {
     if target.clamp(Ampere(0.0), inputs.max).0 < inputs.min_charge.0 {
         return pause;
     }
-    reported_from_offset(inputs.max, inputs.offset, inputs.measured)
+    // #119: the integral trim rides on top of the offset — `clamp(offset + measured +
+    // trim, 0, max)`. It is 0 outside the floor-seek, so this is a no-op for the
+    // hardware-proven 9–15 A path.
+    reported_from_offset(
+        inputs.max,
+        Ampere(inputs.offset.0 + inputs.trim.0),
+        inputs.measured,
+    )
 }
 
 #[cfg(test)]
@@ -185,6 +225,7 @@ mod tests {
             pause_margin: MARGIN,
             target: Some(Ampere(20.0)),
             offset: Ampere(12.0),
+            trim: Ampere(0.0),
             measured: Ampere(5.0),
             enabled: true,
             target_stale: false,
@@ -254,11 +295,94 @@ mod tests {
         assert_eq!(ramp_step(Ampere(5.0), Ampere(5.0), STEP), Ampere(5.0));
     }
 
+    // --- #119 integral trim (advanced once per fresh CN28 sample) ---
+
+    #[test]
+    fn trim_grows_when_the_box_charges_above_target() {
+        // actual 10 A, target 6 A → err 4 A, ki 0.5 → +2 A onto the trim.
+        assert_eq!(
+            trim_step(Ampere(0.0), Ampere(10.0), Ampere(6.0), 0.5, Ampere(8.0)),
+            Ampere(2.0)
+        );
+    }
+
+    #[test]
+    fn trim_shrinks_when_the_box_charges_below_target() {
+        // actual 5 A, target 6 A → err -1 A, ki 0.5 → -0.5 A off the held trim.
+        assert_eq!(
+            trim_step(Ampere(2.0), Ampere(5.0), Ampere(6.0), 0.5, Ampere(8.0)),
+            Ampere(1.5)
+        );
+    }
+
+    #[test]
+    fn trim_saturates_at_trim_max_anti_windup() {
+        assert_eq!(
+            trim_step(Ampere(7.9), Ampere(100.0), Ampere(6.0), 0.5, Ampere(8.0)),
+            Ampere(8.0)
+        );
+    }
+
+    #[test]
+    fn trim_never_goes_negative() {
+        // A big undershoot can't drive the term below zero — it only ever cuts charge.
+        assert_eq!(
+            trim_step(Ampere(0.2), Ampere(0.0), Ampere(6.0), 0.5, Ampere(8.0)),
+            Ampere(0.0)
+        );
+    }
+
+    #[test]
+    fn trim_decays_toward_zero_while_stale() {
+        assert_eq!(trim_decay(Ampere(5.0), Ampere(1.0)), Ampere(4.0));
+    }
+
+    #[test]
+    fn trim_decay_stops_at_zero() {
+        assert_eq!(trim_decay(Ampere(0.5), Ampere(1.0)), Ampere(0.0));
+    }
+
+    #[test]
+    fn trim_decay_holds_at_zero() {
+        assert_eq!(trim_decay(Ampere(0.0), Ampere(1.0)), Ampere(0.0));
+    }
+
     // --- the decision (mirrors charge/tests/control.rs, pure) ---
 
     #[test]
     fn closed_loop_reports_offset_plus_measured() {
         assert_eq!(reported_current(&base()), Ampere(17.0));
+    }
+
+    #[test]
+    fn closed_loop_adds_the_trim_on_top() {
+        // base offset 12 + measured 5 = 17, plus a trim of 3 = 20 (below the ceiling).
+        let i = ControlInputs {
+            trim: Ampere(3.0),
+            ..base()
+        };
+        assert_eq!(reported_current(&i), Ampere(20.0));
+    }
+
+    #[test]
+    fn a_large_trim_is_clamped_into_the_ceiling() {
+        let i = ControlInputs {
+            trim: Ampere(100.0),
+            ..base()
+        };
+        assert_eq!(reported_current(&i), MAX);
+    }
+
+    #[test]
+    fn trim_does_not_leak_into_a_pause() {
+        // The trim rides only on the live closed loop; a cold-start pause ignores it,
+        // so a stale/absent target can never be nudged toward charging by a stale trim.
+        let i = ControlInputs {
+            target: None,
+            trim: Ampere(5.0),
+            ..base()
+        };
+        assert_eq!(reported_current(&i), PAUSE);
     }
 
     #[test]
