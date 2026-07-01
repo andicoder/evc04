@@ -442,6 +442,34 @@ range (§9).
 > ([`docs/evcc.md`](docs/evcc.md), #28). Only the high-DIP modulation question
 > (#27, needs a hardware test) is deferred beyond v0.1.
 
+### On-box floor-seek: layered integral trim (#119, core + firmware only)
+
+The `9–15 A` band above is set by the ~3–6 s measurement round-trip. The **on-box**
+device (the `core` + `firmware` port, **not** this daemon — the daemon has no CN28
+feed) adds a **layered integral trim** on top of the proven loop to push below that
+band toward the box's real minimum:
+
+```
+reported = clamp(offset + measured + trim, 0, MAX_BOX_AMPERE)     (per phase)
+# advanced once per FRESH CN28 sample (~5 s), NOT per 1 s tick:
+trim += TRIM_KI · (cn28_actual − target)        # anti-windup: clamp(trim, 0, TRIM_MAX)
+```
+
+`cn28_actual` is the box's own delivered per-phase current read from the CN28 LOG
+(the internal KLEFR meter, #108). The trim is a slow **floor-seeker**: while the box
+charges above target it grows, lifting `reported` so the box throttles further, until
+`cn28_actual = target` (equilibrium) or `trim` saturates at `TRIM_MAX` — and that
+**saturation is the achievable-minimum signal** (#119 Goal 2: the box may not reach
+6 A, so the trim *reveals* the real floor instead of assuming it).
+
+Key constraint — **CN28 feedback is ~5 s, not ~1 s.** The box answers every 2 s wake
+but only recomputes its metering ~every 5 s, so the trim integrates **per fresh
+sample**, not per tick — integrating stale data each 1 s tick would over-correct ~5×
+and oscillate. When the feedback goes stale the trim **decays toward 0** (`TRIM_DECAY`
+per sample), relaxing back to the proven `offset + measured` loop rather than holding
+a value it can no longer see. `trim = 0` is byte-identical to the pre-#119 path, so
+the hardware-proven 9–15 A behaviour is unchanged whenever the trim is idle.
+
 ---
 
 ## 7. The service

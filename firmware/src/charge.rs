@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use evc04_cn28_core::charge::control::{
-    ramp_step, reported_current, Ampere, ControlInputs, FailsafeMode,
+    ramp_step, reported_current, trim_decay, trim_step, Ampere, ControlInputs, FailsafeMode,
 };
 use evc04_cn28_core::charge::intake::IntakeError;
 use evc04_cn28_core::charge::status::{charge_state, status_json, Status};
@@ -34,6 +34,23 @@ const TARGET_TIMEOUT: Duration = Duration::from_secs(60);
 const MEASURED_TIMEOUT: Duration = Duration::from_secs(15);
 const TARGET_FAILSAFE: FailsafeMode = FailsafeMode::Pause;
 const MEASURED_FAILSAFE: FailsafeMode = FailsafeMode::Pause;
+
+/// #119 layered integral trim: pushes the box below its natural ~9–15 A floor by
+/// integrating the CN28-reported actual charge current against the target.
+/// 🤔 `TRIM_KI` and `TRIM_MAX_AMPERE` are first guesses that need live tuning on the
+/// box (the box may not drop below ~9 A at all — the trim is built to *reveal* the
+/// real minimum via saturation, not to assume it).
+const TRIM_KI: f32 = 0.5;
+const TRIM_MAX_AMPERE: f32 = 8.0;
+/// Per stale-sample decay back toward 0 (#119): when CN28 feedback ages out we relax
+/// the correction to the hardware-proven `offset + measured` loop rather than hold a
+/// value the loop can no longer see.
+const TRIM_DECAY_AMPERE: f32 = 1.0;
+/// Advance the trim at the box's metering cadence (~5 s), **not** per 1 s tick —
+/// integrating stale data each tick would over-correct ~5× and oscillate (#119).
+const CN28_FEEDBACK_PERIOD: Duration = Duration::from_secs(5);
+/// CN28 feedback older than this is stale → the trim decays instead of integrating.
+const CN28_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Per-phase value that pauses the box: above the ceiling so an active charge is
 /// actually cut (#57). The [`Handoff`] starts here so the slave serves a safe value
@@ -59,6 +76,12 @@ pub struct Controller {
     ramping: bool,
     last_tick: Instant,
     last_error: Option<String>,
+    /// #119: latest CN28-reported actual per-phase charge current and when it landed,
+    /// the integral `trim`, and when the trim was last advanced (its ~5 s cadence).
+    cn28_actual: f32,
+    cn28_at: Instant,
+    trim: f32,
+    last_trim_at: Instant,
 }
 
 impl Controller {
@@ -76,7 +99,22 @@ impl Controller {
             ramping: false,
             last_tick: now,
             last_error: None,
+            // Start with the trim idle and a fresh (zero) feedback reading, so the
+            // loop behaves exactly like pre-#119 until real CN28 current arrives.
+            cn28_actual: 0.0,
+            cn28_at: now,
+            trim: 0.0,
+            last_trim_at: now,
         }
+    }
+
+    /// Feed the latest CN28-reported actual per-phase charge current (#119). Called by
+    /// the prober whenever a telemetry window decodes a phase reading; it only stamps
+    /// the value and its arrival time — the trim itself advances in [`tick`] on the
+    /// ~5 s cadence, so repeated identical readings between refreshes don't over-integrate.
+    pub fn apply_cn28_feedback(&mut self, actual_ampere: f32, now: Instant) {
+        self.cn28_actual = actual_ampere;
+        self.cn28_at = now;
     }
 
     /// Apply a parsed target. A good value clears `last_error`; a rejected payload is
@@ -131,6 +169,25 @@ impl Controller {
             self.offset = next.0;
         }
 
+        // #119: advance the integral trim at the box's ~5 s metering cadence, not per
+        // 1 s tick. Fresh feedback with a target → integrate toward the floor; stale
+        // feedback (or no target to seek) → decay back toward the proven base loop.
+        let cn28_stale = now.saturating_duration_since(self.cn28_at) > CN28_TIMEOUT;
+        if now.saturating_duration_since(self.last_trim_at) >= CN28_FEEDBACK_PERIOD {
+            self.last_trim_at = now;
+            self.trim = match self.target {
+                Some(target) if !cn28_stale => trim_step(
+                    Ampere(self.trim),
+                    Ampere(self.cn28_actual),
+                    Ampere(target),
+                    TRIM_KI,
+                    Ampere(TRIM_MAX_AMPERE),
+                ),
+                _ => trim_decay(Ampere(self.trim), Ampere(TRIM_DECAY_AMPERE)),
+            }
+            .0;
+        }
+
         let target_stale = self
             .target_at
             .is_some_and(|t| now.saturating_duration_since(t) > TARGET_TIMEOUT);
@@ -142,6 +199,7 @@ impl Controller {
             pause_margin: Ampere(PAUSE_MARGIN_AMPERE),
             target: self.target.map(Ampere),
             offset: Ampere(self.offset),
+            trim: Ampere(self.trim),
             measured: Ampere(self.measured),
             enabled: self.enabled,
             target_stale,
@@ -167,6 +225,9 @@ impl Controller {
             charge_state: charge_state(Ampere(reported), Ampere(MAX_BOX_AMPERE)),
             enabled: self.enabled,
             last_error: self.last_error.as_deref(),
+            trim_ampere: self.trim,
+            cn28_actual_ampere: self.cn28_actual,
+            cn28_feedback_stale: cn28_stale,
         };
         Tick {
             reported,
