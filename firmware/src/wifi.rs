@@ -68,6 +68,7 @@ pub fn connect(
     RECONNECT_FAILS.store(0, Ordering::Relaxed);
     let link_lost = sysloop.subscribe::<WifiEvent, _>(|event| {
         if matches!(event, WifiEvent::StaDisconnected(_)) {
+            crate::led::set_wifi_up(false);
             let fails = RECONNECT_FAILS.fetch_add(1, Ordering::Relaxed) + 1;
             if fails > MAX_RECONNECT_FAILS {
                 error!("wifi: {fails} lost-link events without a stable re-join; rebooting");
@@ -85,6 +86,7 @@ pub fn connect(
     let got_ip = sysloop.subscribe::<IpEvent, _>(|event| {
         if matches!(event, IpEvent::DhcpIpAssigned(_)) {
             RECONNECT_FAILS.store(0, Ordering::Relaxed);
+            crate::led::set_wifi_up(true);
             info!("wifi link restored (got ip)");
         }
     })?;
@@ -103,6 +105,7 @@ fn join_or_reboot(wifi: &mut BlockingWifi<EspWifi<'static>>) {
         match wifi.connect().and_then(|()| wifi.wait_netif_up()) {
             Ok(()) => {
                 info!("wifi up: {WIFI_SSID} (attempt {}/{JOIN_ATTEMPTS})", attempt + 1);
+                crate::led::set_wifi_up(true);
                 return;
             }
             Err(e) => {

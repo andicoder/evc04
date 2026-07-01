@@ -57,11 +57,17 @@ const CN28_TIMEOUT: Duration = Duration::from_secs(15);
 /// before the first tick or before any command lands.
 const PAUSE_REPORT_AMPERE: f32 = MAX_BOX_AMPERE + PAUSE_MARGIN_AMPERE;
 
-/// One control tick's outputs: the per-phase current to hand to the slave, and the
-/// retained status JSON to publish.
+/// One control tick's outputs: the per-phase current to hand to the slave, the
+/// retained status JSON to publish, and the two flags the status LED reflects (#123).
 pub struct Tick {
     pub reported: f32,
     pub status_json: String,
+    /// Charge allowed and current flowing (`charge_state == 'C'`).
+    pub charging: bool,
+    /// A rejected control input is in effect (a genuine fault worth surfacing on the
+    /// LED). Routine target/measurement staleness is *not* an error here — with the
+    /// pause failsafe it is the normal idle state, not a fault to blink about.
+    pub error: bool,
 }
 
 /// Worker-local control state. Lives only on the prober/worker thread; the value it
@@ -209,6 +215,7 @@ impl Controller {
         };
         let reported = reported_current(&inputs).0;
 
+        let charge_state_letter = charge_state(Ampere(reported), Ampere(MAX_BOX_AMPERE));
         let status = Status {
             online: true,
             target_ampere: self.target.unwrap_or(0.0),
@@ -222,7 +229,7 @@ impl Controller {
             ramping: self.ramping,
             failsafe: target_stale,
             measurement_failsafe: measured_stale,
-            charge_state: charge_state(Ampere(reported), Ampere(MAX_BOX_AMPERE)),
+            charge_state: charge_state_letter,
             enabled: self.enabled,
             last_error: self.last_error.as_deref(),
             trim_ampere: self.trim,
@@ -232,6 +239,8 @@ impl Controller {
         Tick {
             reported,
             status_json: status_json(&status),
+            charging: charge_state_letter == 'C',
+            error: self.last_error.is_some(),
         }
     }
 }

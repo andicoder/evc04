@@ -113,6 +113,7 @@ fn worker_loop(
 
         match rx.recv_timeout(timeout) {
             Ok(InMsg::Connected) => {
+                crate::led::set_mqtt_up(true);
                 mqtt.subscribe_all()?;
                 mqtt.publish_status_online()?;
                 next_heartbeat = Instant::now() + STATUS_HEARTBEAT;
@@ -184,6 +185,8 @@ fn control_tick(mqtt: &mut Mqtt, controller: &mut Controller, handoff: &Handoff)
     let last_poll_age_s = now_ms.wrapping_sub(handoff.last_poll_ms()) as f32 / 1000.0;
     let tick = controller.tick(Instant::now(), last_poll_age_s);
     handoff.set_reported(tick.reported);
+    crate::led::set_charging(tick.charging);
+    crate::led::set_error(tick.error);
     mqtt.publish_charge_status(&tick.status_json)
 }
 

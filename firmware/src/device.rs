@@ -62,6 +62,9 @@ pub fn run_ota(mqtt: &mut Mqtt, payload: &str) -> Result<()> {
     };
 
     mqtt.publish_ota_status("downloading")?;
+    // Light the OTA pattern for the duration of the flash (#123). Success reboots, so
+    // it only needs clearing on the failure path.
+    crate::led::set_ota(true);
     match download_and_flash(url) {
         Ok(total) => {
             info!("ota wrote {total} B; rebooting into the new slot");
@@ -71,6 +74,7 @@ pub fn run_ota(mqtt: &mut Mqtt, payload: &str) -> Result<()> {
             restart();
         }
         Err(e) => {
+            crate::led::set_ota(false);
             warn!("ota failed: {e:#}");
             mqtt.publish_ota_status(&format!("failed {e}"))?;
             Ok(())
