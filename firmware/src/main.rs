@@ -4,7 +4,7 @@
 //! routine in its own module:
 //!   - [`probe`] — CN28 LOG worker over UART1: probes, telemetry, the ~1 Hz control
 //!     tick, MQTT intake and MQTT-triggered OTA (#66/#70/#76/#86).
-//!   - [`rs485`] — PRO380 meter-emulation slave over UART2 + MAX3485 (#85).
+//!   - [`rs485`] — PRO380 meter-emulation slave over UART2 + TTL485 v2 (#85).
 //!
 //! Supporting modules: [`mqtt`] (broker client + connection pump), [`charge`] (the
 //! control state plus the lock-free [`charge::Handoff`] the two threads share),
@@ -57,23 +57,23 @@ fn main() -> Result<()> {
     // UART1 → CN28 LOG (9600 8N1). UART0 stays free for the USB log monitor.
     let cn28 = UartDriver::new(
         peripherals.uart1,
-        peripherals.pins.gpio16, // TX → CN28 RX (RX/TX swapped in SW for the zero-byte LOG bring-up)
-        peripherals.pins.gpio17, // RX ← CN28 TX (was GPIO16)
+        peripherals.pins.gpio16, // TX → CN28 pin 3 (box RX)
+        peripherals.pins.gpio17, // RX ← CN28 pin 2 (box TX)
         Option::<gpio::AnyIOPin>::None,
         Option::<gpio::AnyIOPin>::None,
         &UartConfig::new().baudrate(Hertz(probe::CN28_BAUD)),
     )
     .context("cn28 uart init")?;
 
-    // UART2 → MAX3485 on the RS485 meter bus (9600 8E1, EVEN parity — different from
-    // CN28's UART1, independent controllers). DE direction is driven manually on
-    // GPIO27 (see rs485.rs); RTS is left unused.
+    // UART2 → TTL485 v2 on the RS485 meter bus (9600 8E1, EVEN parity — different from
+    // CN28's UART1, independent controllers). The module switches TX/RX itself, so
+    // there is no DE line to drive; CTS/RTS are both unused.
     let meter_uart = UartDriver::new(
         peripherals.uart2,
-        peripherals.pins.gpio25,        // TX → MAX3485 DI
-        peripherals.pins.gpio26,        // RX ← MAX3485 RO
+        peripherals.pins.gpio25,        // TX → TTL485 RXD
+        peripherals.pins.gpio26,        // RX ← TTL485 TXD
         Option::<gpio::AnyIOPin>::None, // CTS unused
-        Option::<gpio::AnyIOPin>::None, // RTS unused (manual DE on GPIO27)
+        Option::<gpio::AnyIOPin>::None, // RTS unused (auto-direction module)
         &UartConfig::new()
             .baudrate(Hertz(rs485::BAUD))
             .data_bits(DataBits::DataBits8)
@@ -81,7 +81,6 @@ fn main() -> Result<()> {
             .stop_bits(StopBits::STOP1),
     )
     .context("rs485 uart init")?;
-    let de = gpio::PinDriver::output(peripherals.pins.gpio27).context("rs485 DE pin")?;
 
     // Two independent routines, each on its own thread (same spawn pattern). The
     // RS485 slave must keep answering even if the prober exits, so neither blocks
@@ -127,7 +126,7 @@ fn main() -> Result<()> {
 
     std::thread::Builder::new()
         .stack_size(6144)
-        .spawn(move || rs485::run(meter_uart, de, handoff))
+        .spawn(move || rs485::run(meter_uart, handoff))
         .expect("spawn rs485 meter slave");
 
     // Keep the process — and the WiFi guard — alive; the workers run on their own
