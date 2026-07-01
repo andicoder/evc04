@@ -37,6 +37,7 @@ use log::error;
 
 mod charge;
 mod device;
+mod led;
 mod mqtt;
 mod probe;
 mod rs485;
@@ -81,6 +82,15 @@ fn main() -> Result<()> {
             .stop_bits(StopBits::STOP1),
     )
     .context("rs485 uart init")?;
+
+    // Status LED (#123): the workers set condition bits; a small timing thread
+    // renders the blink pattern on GPIO2 (the onboard LED), independent of both
+    // workers so blink timing never perturbs the control tick or the RS485 poll.
+    let status_led = gpio::PinDriver::output(peripherals.pins.gpio2).context("led gpio2")?;
+    std::thread::Builder::new()
+        .stack_size(3072)
+        .spawn(move || led::run(status_led))
+        .expect("spawn status led");
 
     // Two independent routines, each on its own thread (same spawn pattern). The
     // RS485 slave must keep answering even if the prober exits, so neither blocks
