@@ -197,6 +197,25 @@ on every state transition). Home Assistant reads it via one MQTT sensor using
 | `enabled`              | bool           | The enable gate (#60): `false` while charging is hard-paused regardless of the target. `true` by default and for single-topic deployments. evcc's `enabled` read maps here. |
 | `last_error`           | string or null | Reason for the most recent rejected input or link fault; `null` when healthy. |
 
+> **`charge_state` is a command, not the car's real pilot state — don't confuse it with
+> `cp_state`.** `charge_state` (this control-plane `status` topic) is what the emulation
+> *commands*: derived purely from `reported_ampere` (`> max` → `B`, else `C`), only ever
+> `B`/`C`, and read by evcc as its charger `status`. With no control-pilot line it can
+> never assert `A` (no vehicle) — so through this field evcc **cannot** tell an unplugged
+> car from a connected-but-idle one, and it can even read `C` spuriously when grid import
+> alone trips the charging floor.
+>
+> The box's **real** IEC-61851 pilot state (`A`/`B`/`C`/`F`) is `cp_state`, decoded from
+> the CN28 LOG on the telemetry plane (`evc04/cn28/telemetry`, see
+> [`docs/cn28-log-protocol.md`](../../docs/cn28-log-protocol.md)). It is the genuine
+> plug/charge observation, but it is nullable/unreliable — `null` until the next
+> plug/unplug/charge event (#117) — so HA treats it as *unavailable* when null and it
+> must stay an observation/diagnostic signal, **not** an automation or control input.
+>
+> The two look alike (both use `A`/`B`/`C`) but answer different questions:
+> `charge_state` = our *intent*, `cp_state` = the box's *reality*. Keep the roles
+> separate; never feed the unreliable `cp_state` into the control path.
+
 ### Last Will and Testament
 
 On connect, the service registers an LWT on `MQTT_TOPIC_STATUS` (retained) so an
