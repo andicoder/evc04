@@ -5,6 +5,7 @@
 //! all ported `no_std` from the `charge` daemon so the on-box firmware serves the
 //! same hardware-proven value (evc04#85/#86).
 
+pub mod boxsim;
 pub mod control;
 pub mod frame;
 pub mod intake;
