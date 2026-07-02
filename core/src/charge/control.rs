@@ -106,6 +106,21 @@ pub fn trim_step(
     Ampere(next).clamp(Ampere(0.0), trim_max)
 }
 
+/// Measurement probe (#135 step 6): lift a *live* meter answer to slightly above
+/// the ceiling, so the box's response in the `max..max+cut` region — invisible
+/// until now because the upper clamp never reports past `max` (#134 H1) — becomes
+/// observable on real hardware. A pause/failsafe report (`base > max`) is never
+/// masked, and `max_over` caps the lift below the pause margin so a probe cannot
+/// reach the box's cut threshold ahead of measuring it.
+pub fn probe_report(base: Ampere, over: Ampere, max: Ampere, max_over: Ampere) -> Ampere {
+    if over.0 <= 0.0 || base.0 > max.0 {
+        return base;
+    }
+    // Branch instead of `f32::min` (libm-gated in no_std, same reason as `ramp_step`).
+    let over = if over.0 > max_over.0 { max_over } else { over };
+    Ampere(max.0 + over.0)
+}
+
 /// Relax the trim toward zero by `step` while CN28 feedback is stale (#119): a lost
 /// feedback sample decays the correction back to the hardware-proven `offset + measured`
 /// loop instead of holding a value the loop can no longer see. Never crosses zero.
@@ -233,6 +248,49 @@ mod tests {
             target_failsafe: FailsafeMode::FullCharge,
             measured_failsafe: FailsafeMode::FullCharge,
         }
+    }
+
+    // --- probe_report (#135 step 6) ---
+
+    #[test]
+    fn probe_lifts_a_live_report_just_over_the_ceiling() {
+        // Base 12 is live modulation; over 1 → the box must read MAX + 1.
+        assert_eq!(
+            probe_report(Ampere(12.0), Ampere(1.0), MAX, Ampere(3.5)),
+            Ampere(33.0)
+        );
+    }
+
+    #[test]
+    fn probe_lift_is_capped() {
+        assert_eq!(
+            probe_report(Ampere(12.0), Ampere(9.0), MAX, Ampere(3.5)),
+            Ampere(35.5)
+        );
+    }
+
+    #[test]
+    fn probe_zero_is_inactive() {
+        assert_eq!(
+            probe_report(Ampere(12.0), Ampere(0.0), MAX, Ampere(3.5)),
+            Ampere(12.0)
+        );
+    }
+
+    #[test]
+    fn probe_never_masks_a_pause() {
+        // A forced pause (above the ceiling) must pass through untouched.
+        assert_eq!(probe_report(PAUSE, Ampere(1.0), MAX, Ampere(3.5)), PAUSE);
+    }
+
+    #[test]
+    fn probe_lifts_a_report_sitting_exactly_at_the_ceiling() {
+        // The pinned case (#134): reported clamped to exactly MAX is live
+        // modulation (#57) and is precisely where the probe is needed.
+        assert_eq!(
+            probe_report(MAX, Ampere(0.5), MAX, Ampere(3.5)),
+            Ampere(32.5)
+        );
     }
 
     // --- building blocks ---

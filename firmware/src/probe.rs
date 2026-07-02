@@ -181,6 +181,7 @@ fn worker_loop(
             Ok(InMsg::Target(parsed)) => controller.apply_target(parsed, Instant::now()),
             Ok(InMsg::Measured(parsed)) => controller.apply_measured(parsed, Instant::now()),
             Ok(InMsg::Enable(parsed)) => controller.apply_enable(parsed),
+            Ok(InMsg::ProbeOver(parsed)) => controller.apply_probe_over(parsed, Instant::now()),
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let now = Instant::now();
