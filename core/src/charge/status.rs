@@ -48,6 +48,9 @@ pub struct Status<'a> {
     pub cn28_actual_ampere: f32,
     /// Whether the CN28 feedback is stale — the trim is decaying, not integrating.
     pub cn28_feedback_stale: bool,
+    /// #135 step 6: active measurement-probe lift over the ceiling (A), 0 when off.
+    /// While set, `reported_ampere` sits above the ceiling *on purpose*.
+    pub probe_over_ampere: f32,
 }
 
 /// Render [`Status`] as the retained status JSON (one flat object, field order
@@ -63,7 +66,7 @@ pub fn status_json(s: &Status) -> String {
          \"measurement_age_s\":{},\"ramping\":{},\"failsafe\":{},\
          \"measurement_failsafe\":{},\"charge_state\":\"{}\",\"enabled\":{},\
          \"last_error\":{},\"trim_ampere\":{},\"cn28_actual_ampere\":{},\
-         \"cn28_feedback_stale\":{}}}",
+         \"cn28_feedback_stale\":{},\"probe_over_ampere\":{}}}",
         s.online,
         s.target_ampere,
         s.measured_ampere,
@@ -80,6 +83,7 @@ pub fn status_json(s: &Status) -> String {
         s.trim_ampere,
         s.cn28_actual_ampere,
         s.cn28_feedback_stale,
+        s.probe_over_ampere,
     )
 }
 
@@ -126,10 +130,11 @@ mod tests {
             trim_ampere: 0.0,
             cn28_actual_ampere: 0.0,
             cn28_feedback_stale: false,
+            probe_over_ampere: 0.0,
         };
         assert_eq!(
             status_json(&s),
-            r#"{"online":true,"target_ampere":6.5,"measured_ampere":5,"offset_ampere":1.5,"reported_ampere":6.5,"last_poll_age_s":0.4,"measurement_age_s":1.1,"ramping":false,"failsafe":false,"measurement_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"trim_ampere":0,"cn28_actual_ampere":0,"cn28_feedback_stale":false}"#
+            r#"{"online":true,"target_ampere":6.5,"measured_ampere":5,"offset_ampere":1.5,"reported_ampere":6.5,"last_poll_age_s":0.4,"measurement_age_s":1.1,"ramping":false,"failsafe":false,"measurement_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"trim_ampere":0,"cn28_actual_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}"#
         );
     }
 
@@ -152,6 +157,7 @@ mod tests {
             trim_ampere: 2.5,
             cn28_actual_ampere: 9.0,
             cn28_feedback_stale: true,
+            probe_over_ampere: 1.5,
         };
         let json = status_json(&s);
         assert!(json.contains(r#""last_error":"bad target""#), "{json}");
@@ -160,5 +166,6 @@ mod tests {
         assert!(json.contains(r#""trim_ampere":2.5"#), "{json}");
         assert!(json.contains(r#""cn28_actual_ampere":9"#), "{json}");
         assert!(json.contains(r#""cn28_feedback_stale":true"#), "{json}");
+        assert!(json.contains(r#""probe_over_ampere":1.5"#), "{json}");
     }
 }

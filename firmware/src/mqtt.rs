@@ -51,6 +51,10 @@ const TOPIC_CTRL_TARGET: &str = "evc04/charge/target";
 const TOPIC_CTRL_MEASURED: &str = "evc04/charge/measured";
 const TOPIC_CTRL_ENABLE: &str = "evc04/charge/enable";
 const TOPIC_CTRL_STATUS: &str = "evc04/charge/status";
+/// Measurement probe (#135 step 6): `{"ampere": N}` lifts the served meter answer
+/// to `MAX + N` (bounded, auto-expiring) so the box's response just above its limit
+/// can be measured. Diagnostic-only; never part of the evcc/HA control contract.
+const TOPIC_CTRL_PROBE: &str = "evc04/charge/probe_over";
 
 const MQTT_URL: &str = env!("MQTT_URL");
 
@@ -65,6 +69,7 @@ pub enum InMsg {
     Target(Result<f32, IntakeError>),
     Measured(Result<f32, IntakeError>),
     Enable(Result<bool, IntakeError>),
+    ProbeOver(Result<f32, IntakeError>),
 }
 
 /// Owns the broker client; all publishes go through its methods so the topic
@@ -112,6 +117,7 @@ impl Mqtt {
             TOPIC_CTRL_TARGET,
             TOPIC_CTRL_MEASURED,
             TOPIC_CTRL_ENABLE,
+            TOPIC_CTRL_PROBE,
         ] {
             self.client.subscribe(topic, QoS::AtLeastOnce)?;
         }
@@ -234,6 +240,9 @@ fn spawn_connection_pump(mut connection: EspMqttConnection, tx: mpsc::Sender<InM
                             }
                             Some(t) if t == TOPIC_CTRL_ENABLE => {
                                 let _ = tx.send(InMsg::Enable(parse_enable(payload)));
+                            }
+                            Some(t) if t == TOPIC_CTRL_PROBE => {
+                                let _ = tx.send(InMsg::ProbeOver(parse_ampere(payload)));
                             }
                             _ => match command::decode_command(payload) {
                                 Ok(bytes) => {

@@ -24,7 +24,8 @@ use std::time::{Duration, Instant};
 
 use esp_idf_svc::nvs::{EspDefaultNvs, EspDefaultNvsPartition, EspNvs};
 use evc04_cn28_core::charge::control::{
-    ramp_step, reported_current, trim_decay, trim_step, Ampere, ControlInputs, FailsafeMode,
+    probe_report, ramp_step, reported_current, trim_decay, trim_step, Ampere, ControlInputs,
+    FailsafeMode,
 };
 use evc04_cn28_core::charge::intake::IntakeError;
 use evc04_cn28_core::charge::status::{charge_state, status_json, Status};
@@ -69,6 +70,14 @@ const CN28_TIMEOUT: Duration = Duration::from_secs(15);
 /// before the first tick or before any command lands.
 const PAUSE_REPORT_AMPERE: f32 = MAX_BOX_AMPERE + PAUSE_MARGIN_AMPERE;
 
+/// Measurement probe (#135 step 6): the largest accepted lift over the ceiling —
+/// below `PAUSE_MARGIN_AMPERE`, so a probe can approach the box's cut threshold
+/// (#57: ~2–4 A over) without commanding the hard pause outright.
+const PROBE_MAX_OVER_AMPERE: f32 = 3.5;
+/// A probe expires on its own: a forgotten publish must not keep perturbing the
+/// meter answer. Re-publish to extend a running measurement.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// One control tick's outputs: the per-phase current to hand to the slave, the
 /// retained status JSON to publish, and the two flags the status LED reflects (#123).
 pub struct Tick {
@@ -99,6 +108,11 @@ pub struct Controller {
     cn28_at: Instant,
     trim: f32,
     last_trim_at: Instant,
+    /// #135 step 6: active measurement-probe lift (A over the ceiling) and when it
+    /// was last commanded; expires after [`PROBE_TIMEOUT`]. Deliberately *not*
+    /// persisted to NVS — a probe is a manual measurement, never a reboot survivor.
+    probe_over: f32,
+    probe_at: Option<Instant>,
     /// Persisted-setpoint store: the last `target`/`enable` are written here on change
     /// and restored on boot so an OTA/reboot resumes instead of cold-start pausing.
     /// `None` if NVS could not be opened — persistence off, the box still runs.
@@ -125,6 +139,8 @@ impl Controller {
             cn28_at: now,
             trim: 0.0,
             last_trim_at: now,
+            probe_over: 0.0,
+            probe_at: None,
             nvs: None,
         };
         // Open the persistence namespace and restore the last commanded setpoint, so
@@ -214,6 +230,23 @@ impl Controller {
         }
     }
 
+    /// Command a measurement probe (#135 step 6): lift the served meter answer to
+    /// `MAX + over` for the next [`PROBE_TIMEOUT`]. Boundary validation here: only
+    /// `0 ..= PROBE_MAX_OVER_AMPERE` is accepted (0 clears), anything else is
+    /// rejected and surfaced — a typo'd payload must not push the box to the cut.
+    pub fn apply_probe_over(&mut self, parsed: Result<f32, IntakeError>, now: Instant) {
+        match parsed {
+            Ok(v) if (0.0..=PROBE_MAX_OVER_AMPERE).contains(&v) => {
+                self.probe_over = v;
+                self.probe_at = (v > 0.0).then_some(now);
+                self.last_error = None;
+                warn!("probe_over set to {v} A (auto-expires in {PROBE_TIMEOUT:?})");
+            }
+            Ok(v) => self.last_error = Some(format!("probe_over out of range: {v}")),
+            Err(e) => self.last_error = Some(format!("bad probe_over: {e:?}")),
+        }
+    }
+
     pub fn apply_enable(&mut self, parsed: Result<bool, IntakeError>) {
         match parsed {
             Ok(b) => {
@@ -286,13 +319,34 @@ impl Controller {
         };
         let reported = reported_current(&inputs).0;
 
+        // Expire a stale probe before applying it (#135 step 6).
+        if self
+            .probe_at
+            .is_some_and(|at| now.saturating_duration_since(at) > PROBE_TIMEOUT)
+        {
+            self.probe_over = 0.0;
+            self.probe_at = None;
+            warn!("probe_over expired");
+        }
+        // charge_state (and the LED below) stay derived from the UNprobed value: the
+        // probe perturbs only what the meter tells the box, not our command state —
+        // evcc reads charge_state as its charger status, and a probe flipping it to
+        // 'B' would make evcc believe the charge stopped.
         let charge_state_letter = charge_state(Ampere(reported), Ampere(MAX_BOX_AMPERE));
+        let served = probe_report(
+            Ampere(reported),
+            Ampere(self.probe_over),
+            Ampere(MAX_BOX_AMPERE),
+            Ampere(PROBE_MAX_OVER_AMPERE),
+        )
+        .0;
         let status = Status {
             online: true,
             target_ampere: self.target.unwrap_or(0.0),
             measured_ampere: self.measured,
             offset_ampere: self.offset,
-            reported_ampere: reported,
+            // The status shows what the slave actually serves — probe included.
+            reported_ampere: served,
             last_poll_age_s,
             measurement_age_s: now
                 .saturating_duration_since(self.measured_at)
@@ -307,9 +361,14 @@ impl Controller {
             trim_ampere: self.trim,
             cn28_actual_ampere: self.cn28_actual,
             cn28_feedback_stale: cn28_stale,
+            probe_over_ampere: if self.probe_at.is_some() {
+                self.probe_over
+            } else {
+                0.0
+            },
         };
         Tick {
-            reported,
+            reported: served,
             status_json: status_json(&status),
             charging: charge_state_letter == 'C',
             error: self.last_error.is_some(),
