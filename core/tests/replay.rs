@@ -119,35 +119,39 @@ fn run(sc: &Scenario) -> Vec<Sample> {
         // #119 trim on its 5 s cadence, fed by the box-measured car draw (CN28).
         if t % TRIM_PERIOD_S == 0 {
             trim = match (&sc.reporting, target) {
-                (Reporting::AsShipped, Some(tgt)) => trim_step(
-                    Ampere(trim),
-                    Ampere(ev.amps),
-                    Ampere(tgt),
-                    TRIM_KI,
-                    Ampere(TRIM_MAX),
-                )
-                .0,
+                (Reporting::AsShipped, Some(tgt)) => {
+                    trim_step(
+                        Ampere(trim),
+                        Ampere(ev.amps),
+                        Ampere(tgt),
+                        TRIM_KI,
+                        Ampere(TRIM_MAX),
+                    )
+                    .0
+                }
                 (Reporting::AsShipped, None) => trim_decay(Ampere(trim), Ampere(1.0)).0,
                 (Reporting::OpenClamp { .. }, _) => 0.0,
             };
         }
 
         let reported = match sc.reporting {
-            Reporting::AsShipped => reported_current(&ControlInputs {
-                max: Ampere(MAX_BOX),
-                min_charge: Ampere(MIN_CHARGE),
-                pause_margin: Ampere(PAUSE_MARGIN),
-                target: target.map(Ampere),
-                offset: Ampere(offset),
-                trim: Ampere(trim),
-                measured: Ampere(measured),
-                enabled,
-                target_stale: false,
-                measured_stale: false,
-                target_failsafe: FailsafeMode::Pause,
-                measured_failsafe: FailsafeMode::Pause,
-            })
-            .0,
+            Reporting::AsShipped => {
+                reported_current(&ControlInputs {
+                    max: Ampere(MAX_BOX),
+                    min_charge: Ampere(MIN_CHARGE),
+                    pause_margin: Ampere(PAUSE_MARGIN),
+                    target: target.map(Ampere),
+                    offset: Ampere(offset),
+                    trim: Ampere(trim),
+                    measured: Ampere(measured),
+                    enabled,
+                    target_stale: false,
+                    measured_stale: false,
+                    target_failsafe: FailsafeMode::Pause,
+                    measured_failsafe: FailsafeMode::Pause,
+                })
+                .0
+            }
             Reporting::OpenClamp { cap } => {
                 if !enabled || target.is_none() || target.is_some_and(|t| t < MIN_CHARGE) {
                     MAX_BOX + PAUSE_MARGIN
@@ -210,10 +214,7 @@ fn replay_2026_06_30_reproduces_pinned_high_charge() {
     let end = &trace[850];
     assert_eq!(end.target, Some(13.0));
     // Bug reproduced: the car sits well above the target (fixture: ~15.2 A) …
-    assert!(
-        end.car >= 14.0,
-        "expected pinned-high charge, got {end:?}"
-    );
+    assert!(end.car >= 14.0, "expected pinned-high charge, got {end:?}");
     // … while the meter answer is pinned at the upper clamp (H1): the box is never
     // told "over the limit", so it never comes down.
     assert!(
