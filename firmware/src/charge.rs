@@ -22,11 +22,13 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
+use esp_idf_svc::nvs::{EspDefaultNvs, EspDefaultNvsPartition, EspNvs};
 use evc04_cn28_core::charge::control::{
     ramp_step, reported_current, trim_decay, trim_step, Ampere, ControlInputs, FailsafeMode,
 };
 use evc04_cn28_core::charge::intake::IntakeError;
 use evc04_cn28_core::charge::status::{charge_state, status_json, Status};
+use log::warn;
 
 const MAX_BOX_AMPERE: f32 = 16.0;
 const MIN_CHARGE_AMPERE: f32 = 6.0;
@@ -34,6 +36,16 @@ const PAUSE_MARGIN_AMPERE: f32 = 4.0;
 const RAMP_RATE_AMPERE_PER_S: f32 = 0.5;
 const MEASURED_TIMEOUT: Duration = Duration::from_secs(15);
 const MEASURED_FAILSAFE: FailsafeMode = FailsafeMode::Pause;
+
+/// NVS namespace + keys for the persisted setpoint. The `target` topic is
+/// non-retained and evcc publishes the current on-change (then holds it), so without
+/// this the box would cold-start paused after every OTA/reboot until evcc's next
+/// change — the car would not resume. Persisting the last commanded `target`/`enable`
+/// lets a reboot pick up where it left off. Written only on change, so flash wear
+/// stays negligible (evcc changes the target minutes apart, within NVS wear-levelling).
+const NVS_NAMESPACE: &str = "charge";
+const NVS_KEY_TARGET: &str = "target";
+const NVS_KEY_ENABLE: &str = "enable";
 
 /// #119 layered integral trim: pushes the box below its natural ~9–15 A floor by
 /// integrating the CN28-reported actual charge current against the target.
@@ -87,12 +99,16 @@ pub struct Controller {
     cn28_at: Instant,
     trim: f32,
     last_trim_at: Instant,
+    /// Persisted-setpoint store: the last `target`/`enable` are written here on change
+    /// and restored on boot so an OTA/reboot resumes instead of cold-start pausing.
+    /// `None` if NVS could not be opened — persistence off, the box still runs.
+    nvs: Option<EspDefaultNvs>,
 }
 
 impl Controller {
-    pub fn new() -> Self {
+    pub fn new(partition: EspDefaultNvsPartition) -> Self {
         let now = Instant::now();
-        Self {
+        let mut controller = Self {
             target: None,
             // Start with a fresh "measured 0" (like the daemon) so the loop isn't
             // instantly in the measurement failsafe; it ages out if nothing arrives.
@@ -109,6 +125,53 @@ impl Controller {
             cn28_at: now,
             trim: 0.0,
             last_trim_at: now,
+            nvs: None,
+        };
+        // Open the persistence namespace and restore the last commanded setpoint, so
+        // an OTA/reboot resumes rather than cold-starting paused. Best-effort: if NVS
+        // won't open, persistence is simply off and the box cold-starts as before.
+        match EspNvs::new(partition, NVS_NAMESPACE, true) {
+            Ok(nvs) => {
+                controller.restore_from(&nvs);
+                controller.nvs = Some(nvs);
+            }
+            Err(e) => warn!("charge: NVS open failed, persistence off: {e:#}"),
+        }
+        controller
+    }
+
+    /// Seed `target`/`enable`/`offset` from the persisted setpoint. Only a value the
+    /// controller actually commanded before is restored — a first-ever boot with no
+    /// stored key still starts `target = None` → cold-start pause, never a default
+    /// charge (#59).
+    fn restore_from(&mut self, nvs: &EspDefaultNvs) {
+        if let Ok(Some(bits)) = nvs.get_u32(NVS_KEY_TARGET) {
+            let target = f32::from_bits(bits);
+            self.target = Some(target);
+            // Resume at the setpoint's offset so `reported` lands on the loop value
+            // immediately instead of blipping through the cold-start pause on boot.
+            self.offset = MAX_BOX_AMPERE - target;
+        }
+        if let Ok(Some(b)) = nvs.get_u8(NVS_KEY_ENABLE) {
+            self.enabled = b != 0;
+        }
+    }
+
+    /// Persist the target as raw f32 bits (NVS has no float type). Best-effort: a
+    /// write failure only means this reboot won't resume — never fatal.
+    fn persist_target(&self, v: f32) {
+        if let Some(nvs) = &self.nvs {
+            if let Err(e) = nvs.set_u32(NVS_KEY_TARGET, v.to_bits()) {
+                warn!("charge: persist target failed: {e:#}");
+            }
+        }
+    }
+
+    fn persist_enable(&self, b: bool) {
+        if let Some(nvs) = &self.nvs {
+            if let Err(e) = nvs.set_u8(NVS_KEY_ENABLE, b as u8) {
+                warn!("charge: persist enable failed: {e:#}");
+            }
         }
     }
 
@@ -128,6 +191,11 @@ impl Controller {
     pub fn apply_target(&mut self, parsed: Result<f32, IntakeError>, _now: Instant) {
         match parsed {
             Ok(v) => {
+                // Persist only on change: evcc shifts the target minutes apart on
+                // PV/price moves, so this stays well within NVS wear-levelling.
+                if self.target != Some(v) {
+                    self.persist_target(v);
+                }
                 self.target = Some(v);
                 self.last_error = None;
             }
@@ -149,6 +217,9 @@ impl Controller {
     pub fn apply_enable(&mut self, parsed: Result<bool, IntakeError>) {
         match parsed {
             Ok(b) => {
+                if self.enabled != b {
+                    self.persist_enable(b);
+                }
                 self.enabled = b;
                 self.last_error = None;
             }
@@ -243,12 +314,6 @@ impl Controller {
             charging: charge_state_letter == 'C',
             error: self.last_error.is_some(),
         }
-    }
-}
-
-impl Default for Controller {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

@@ -52,8 +52,10 @@ fn main() -> Result<()> {
     let nvs = EspDefaultNvsPartition::take()?;
 
     // main owns the WiFi guard: it must outlive both workers, so it is held here
-    // for the life of the process.
-    let _wifi = wifi::connect(peripherals.modem, sysloop, nvs)?;
+    // for the life of the process. The NVS partition handle is cloneable (an Arc):
+    // WiFi keeps one for its calibration store, the prober gets another for the
+    // persisted charge setpoint (its own namespace, so the two never collide).
+    let _wifi = wifi::connect(peripherals.modem, sysloop, nvs.clone())?;
 
     // UART1 → CN28 LOG (9600 8N1). UART0 stays free for the USB log monitor.
     let cn28 = UartDriver::new(
@@ -121,7 +123,7 @@ fn main() -> Result<()> {
         .spawn({
             let handoff = Arc::clone(&handoff);
             move || {
-                if let Err(e) = probe::run(cn28, handoff, twdt) {
+                if let Err(e) = probe::run(cn28, handoff, twdt, nvs) {
                     error!("prober exited: {e:#}");
                 }
                 // The prober is the device's whole job and now feeds production
