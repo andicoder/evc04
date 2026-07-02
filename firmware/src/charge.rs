@@ -13,9 +13,11 @@
 //! timestamp for the status liveness).
 //!
 //! Config mirrors the daemon's env defaults (`charge/src/config.rs`); `MAX_BOX` is
-//! the box's DIP-set ceiling for this install. Failsafe direction is `pause` on
-//! both channels — a stale input STOPS an evcc/HA-managed box, never starts it
-//! (SPECS §9, #52).
+//! the box's DIP-set ceiling for this install. The `target` is a **latched** setpoint
+//! (never aged out); `measured` staleness and the `enable` gate carry the pause
+//! failsafe — a stale measurement or `enable=false` STOPS an evcc/HA-managed box,
+//! never starts it (SPECS §9, #52). Aging the target would deadlock evcc, whose MQTT
+//! charger publishes the current on-change and then holds it (Option A timeout fix).
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -30,9 +32,7 @@ const MAX_BOX_AMPERE: f32 = 16.0;
 const MIN_CHARGE_AMPERE: f32 = 6.0;
 const PAUSE_MARGIN_AMPERE: f32 = 4.0;
 const RAMP_RATE_AMPERE_PER_S: f32 = 0.5;
-const TARGET_TIMEOUT: Duration = Duration::from_secs(60);
 const MEASURED_TIMEOUT: Duration = Duration::from_secs(15);
-const TARGET_FAILSAFE: FailsafeMode = FailsafeMode::Pause;
 const MEASURED_FAILSAFE: FailsafeMode = FailsafeMode::Pause;
 
 /// #119 layered integral trim: pushes the box below its natural ~9–15 A floor by
@@ -74,7 +74,6 @@ pub struct Tick {
 /// computes for the slave crosses via [`Handoff`], not this struct.
 pub struct Controller {
     target: Option<f32>,
-    target_at: Option<Instant>,
     measured: f32,
     measured_at: Instant,
     enabled: bool,
@@ -95,7 +94,6 @@ impl Controller {
         let now = Instant::now();
         Self {
             target: None,
-            target_at: None,
             // Start with a fresh "measured 0" (like the daemon) so the loop isn't
             // instantly in the measurement failsafe; it ages out if nothing arrives.
             measured: 0.0,
@@ -124,12 +122,13 @@ impl Controller {
     }
 
     /// Apply a parsed target. A good value clears `last_error`; a rejected payload is
-    /// held (last good stays in effect) and surfaced.
-    pub fn apply_target(&mut self, parsed: Result<f32, IntakeError>, now: Instant) {
+    /// held (last good stays in effect) and surfaced. The target is latched — once set
+    /// it never ages out (evcc publishes it on-change and holds it), so no arrival time
+    /// is tracked; `_now` is kept for call-site symmetry with `apply_measured`.
+    pub fn apply_target(&mut self, parsed: Result<f32, IntakeError>, _now: Instant) {
         match parsed {
             Ok(v) => {
                 self.target = Some(v);
-                self.target_at = Some(now);
                 self.last_error = None;
             }
             Err(e) => self.last_error = Some(format!("bad target: {e:?}")),
@@ -194,9 +193,6 @@ impl Controller {
             .0;
         }
 
-        let target_stale = self
-            .target_at
-            .is_some_and(|t| now.saturating_duration_since(t) > TARGET_TIMEOUT);
         let measured_stale = now.saturating_duration_since(self.measured_at) > MEASURED_TIMEOUT;
 
         let inputs = ControlInputs {
@@ -208,9 +204,13 @@ impl Controller {
             trim: Ampere(self.trim),
             measured: Ampere(self.measured),
             enabled: self.enabled,
-            target_stale,
+            // Target is a latched setpoint, never stale: evcc's MQTT charger sets the
+            // current on-change and holds it, so a target timeout would deadlock (box
+            // forgets → pauses → evcc never re-sends). The cold-start pause (target
+            // `None`) and the `measured`/`enable` failsafes below still gate charging.
+            target_stale: false,
             measured_stale,
-            target_failsafe: TARGET_FAILSAFE,
+            target_failsafe: FailsafeMode::Pause,
             measured_failsafe: MEASURED_FAILSAFE,
         };
         let reported = reported_current(&inputs).0;
@@ -227,7 +227,8 @@ impl Controller {
                 .saturating_duration_since(self.measured_at)
                 .as_secs_f32(),
             ramping: self.ramping,
-            failsafe: target_stale,
+            // The target never ages out (latched), so no target-staleness failsafe.
+            failsafe: false,
             measurement_failsafe: measured_stale,
             charge_state: charge_state_letter,
             enabled: self.enabled,
