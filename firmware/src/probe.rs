@@ -23,6 +23,7 @@ use esp_idf_svc::hal::delay::TickType;
 use esp_idf_svc::hal::task::watchdog::{TWDTDriver, WatchdogSubscription};
 use esp_idf_svc::hal::uart::UartDriver;
 use esp_idf_svc::hal::units::Hertz;
+use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys::{esp_err_t, esp_timer_get_time, ESP_ERR_TIMEOUT};
 use evc04_cn28_core::probe::cn28::{Cn28Snapshot, LineReassembler};
 #[cfg(feature = "raw-debug")]
@@ -67,13 +68,14 @@ pub fn run(
     uart: UartDriver<'static>,
     handoff: Arc<Handoff>,
     mut twdt: TWDTDriver<'static>,
+    nvs: EspDefaultNvsPartition,
 ) -> Result<()> {
     let (mut mqtt, rx) = Mqtt::connect()?;
 
     // Watch this (the worker) task with the hardware watchdog (#113); the loop feeds
     // it every iteration, so a hang reboots the chip.
     let mut wdt = twdt.watch_current_task().context("twdt subscribe")?;
-    worker_loop(&mut mqtt, &uart, rx, &handoff, &mut wdt)
+    worker_loop(&mut mqtt, &uart, rx, &handoff, &mut wdt, nvs)
 }
 
 fn worker_loop(
@@ -82,6 +84,7 @@ fn worker_loop(
     rx: mpsc::Receiver<InMsg>,
     handoff: &Handoff,
     wdt: &mut WatchdogSubscription<'_>,
+    nvs: EspDefaultNvsPartition,
 ) -> Result<()> {
     let auto_wake = (AUTO_WAKE_SECS > 0).then(|| Duration::from_secs(AUTO_WAKE_SECS));
     let mut next_heartbeat = Instant::now() + STATUS_HEARTBEAT;
@@ -95,8 +98,9 @@ fn worker_loop(
     // the boundary. Lives across windows so the tail of one joins the head of next.
     let mut reassembler = LineReassembler::new();
     // The control state lives only on this thread; only its computed `reported`
-    // crosses to the slave, via `handoff`.
-    let mut controller = Controller::new();
+    // crosses to the slave, via `handoff`. It restores the last persisted setpoint
+    // from `nvs` on construction so a reboot resumes instead of cold-start pausing.
+    let mut controller = Controller::new(nvs);
 
     loop {
         // Feed the task watchdog (#113): every loop turn proves we are alive; a
