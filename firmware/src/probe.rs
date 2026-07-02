@@ -30,7 +30,7 @@ use evc04_cn28_core::probe::cn28::{Cn28Snapshot, LineReassembler};
 use evc04_cn28_core::debug::dump;
 use log::{info, warn};
 
-use crate::charge::{Controller, Handoff};
+use crate::charge::{Controller, Handoff, Tick};
 use crate::device;
 use crate::mqtt::{InMsg, Mqtt};
 
@@ -70,12 +70,35 @@ pub fn run(
     mut twdt: TWDTDriver<'static>,
     nvs: EspDefaultNvsPartition,
 ) -> Result<()> {
-    let (mut mqtt, rx) = Mqtt::connect()?;
-
-    // Watch this (the worker) task with the hardware watchdog (#113); the loop feeds
-    // it every iteration, so a hang reboots the chip.
+    // Watch this (the worker) task with the hardware watchdog (#113); every path that
+    // can block feeds it.
     let mut wdt = twdt.watch_current_task().context("twdt subscribe")?;
-    worker_loop(&mut mqtt, &uart, rx, &handoff, &mut wdt, nvs)
+    // The control state lives for the whole thread lifetime — *across* MQTT reconnects.
+    // It restores the last persisted setpoint from `nvs` on construction (resume after
+    // reboot) and then carries target/offset/trim + the staleness clocks; recreating it
+    // on every reconnect would drop that state.
+    let mut controller = Controller::new(nvs);
+
+    // Reconnect forever. A WiFi/MQTT drop must NEVER bubble out of `run`: `main` reboots
+    // the chip when this returns, which kills the RS485 slave thread and lets the box
+    // see a silent meter → solid-red hard-fault (SPECS §9, #87). Instead we drop the
+    // dead session and reconnect, while `worker_loop`/`offline_tick` keep the control
+    // tick running (so the measured-failsafe still engages) and the slave keeps
+    // answering the box's ~1 Hz poll throughout.
+    loop {
+        match Mqtt::connect() {
+            Ok((mut mqtt, rx)) => {
+                if let Err(e) =
+                    worker_loop(&mut mqtt, &uart, rx, &handoff, &mut wdt, &mut controller)
+                {
+                    warn!("mqtt session ended: {e:#}");
+                }
+            }
+            Err(e) => warn!("mqtt connect failed: {e:#}"),
+        }
+        crate::led::set_mqtt_up(false);
+        offline_tick(&mut controller, &handoff, &mut wdt);
+    }
 }
 
 fn worker_loop(
@@ -84,7 +107,7 @@ fn worker_loop(
     rx: mpsc::Receiver<InMsg>,
     handoff: &Handoff,
     wdt: &mut WatchdogSubscription<'_>,
-    nvs: EspDefaultNvsPartition,
+    controller: &mut Controller,
 ) -> Result<()> {
     let auto_wake = (AUTO_WAKE_SECS > 0).then(|| Duration::from_secs(AUTO_WAKE_SECS));
     let mut next_heartbeat = Instant::now() + STATUS_HEARTBEAT;
@@ -97,10 +120,6 @@ fn worker_loop(
     // captured in a bounded window, so a line — even a token — can split across
     // the boundary. Lives across windows so the tail of one joins the head of next.
     let mut reassembler = LineReassembler::new();
-    // The control state lives only on this thread; only its computed `reported`
-    // crosses to the slave, via `handoff`. It restores the last persisted setpoint
-    // from `nvs` on construction so a reboot resumes instead of cold-start pausing.
-    let mut controller = Controller::new(nvs);
 
     loop {
         // Feed the task watchdog (#113): every loop turn proves we are alive; a
@@ -118,12 +137,19 @@ fn worker_loop(
         match rx.recv_timeout(timeout) {
             Ok(InMsg::Connected) => {
                 crate::led::set_mqtt_up(true);
-                mqtt.subscribe_all()?;
-                mqtt.publish_status_online()?;
+                // Non-fatal like every MQTT op in this loop (#87): a subscribe/publish
+                // that fails on a flapping reconnect must not reboot the chip. The next
+                // CONNECTED re-subscribes; the heartbeat/tick re-publish.
+                if let Err(e) = mqtt.subscribe_all() {
+                    warn!("subscribe skipped (mqtt flap?): {e:#}");
+                }
+                if let Err(e) = mqtt.publish_status_online() {
+                    warn!("status-online publish skipped: {e:#}");
+                }
                 next_heartbeat = Instant::now() + STATUS_HEARTBEAT;
                 // Republish charge status at once so it overwrites a stale LWT
                 // `offline` from a previous session as soon as we are back up.
-                control_tick(mqtt, &mut controller, handoff)?;
+                control_tick(mqtt, controller, handoff);
                 next_control = Instant::now() + CONTROL_TICK;
                 info!("connected; subscribed to cn28 + charge control topics");
                 // Announce the running build + slot (#101) *before* confirming, so
@@ -147,7 +173,7 @@ fn worker_loop(
             }
             Ok(InMsg::Probe(bytes)) => {
                 if probe(mqtt, uart, &bytes, &mut telemetry, &mut reassembler)? {
-                    feed_cn28_feedback(&mut controller, &telemetry);
+                    feed_cn28_feedback(controller, &telemetry);
                 }
             }
             Ok(InMsg::SetBaud(rate)) => set_baud(mqtt, uart, rate)?,
@@ -159,18 +185,20 @@ fn worker_loop(
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let now = Instant::now();
                 if now >= next_control {
-                    control_tick(mqtt, &mut controller, handoff)?;
+                    control_tick(mqtt, controller, handoff);
                     next_control = now + CONTROL_TICK;
                 }
                 if now >= next_heartbeat {
-                    mqtt.publish_status_online()?;
+                    if let Err(e) = mqtt.publish_status_online() {
+                        warn!("heartbeat publish skipped (mqtt down?): {e:#}");
+                    }
                     next_heartbeat = now + STATUS_HEARTBEAT;
                 }
                 if let (Some(w), Some(d)) = (next_wake, auto_wake) {
                     if now >= w {
                         // auto-wake tick
                         if probe(mqtt, uart, b"\r\n", &mut telemetry, &mut reassembler)? {
-                            feed_cn28_feedback(&mut controller, &telemetry);
+                            feed_cn28_feedback(controller, &telemetry);
                         }
                         next_wake = Some(now + d);
                     }
@@ -184,14 +212,38 @@ fn worker_loop(
 /// Advance the control loop one tick: read the slave-stamped poll liveness from the
 /// handoff, tick the controller, hand the new per-phase current back to the slave via
 /// the handoff, and publish the retained charge status (#86).
-fn control_tick(mqtt: &mut Mqtt, controller: &mut Controller, handoff: &Handoff) -> Result<()> {
+/// The safety-critical, **MQTT-independent** half of a control tick: read the
+/// slave-stamped poll liveness, tick the controller, hand the new per-phase current to
+/// the slave and mirror the state on the LED. This must run every tick — online *or*
+/// offline — so the RS485 slave always gets a failsafe-correct value (a stale
+/// measurement engages the pause) even while WiFi/MQTT is down (#87).
+fn tick_control(controller: &mut Controller, handoff: &Handoff) -> Tick {
     let now_ms = (unsafe { esp_timer_get_time() } / 1000) as u32;
     let last_poll_age_s = now_ms.wrapping_sub(handoff.last_poll_ms()) as f32 / 1000.0;
     let tick = controller.tick(Instant::now(), last_poll_age_s);
     handoff.set_reported(tick.reported);
     crate::led::set_charging(tick.charging);
     crate::led::set_error(tick.error);
-    mqtt.publish_charge_status(&tick.status_json)
+    tick
+}
+
+/// Tick then publish the retained charge status (#86). The publish is best-effort: a
+/// WiFi/MQTT drop must never propagate — `run` reconnects instead of rebooting, and the
+/// tick above already gave the slave its value regardless of the broker (#87).
+fn control_tick(mqtt: &mut Mqtt, controller: &mut Controller, handoff: &Handoff) {
+    let tick = tick_control(controller, handoff);
+    if let Err(e) = mqtt.publish_charge_status(&tick.status_json) {
+        warn!("charge status publish skipped (mqtt down?): {e:#}");
+    }
+}
+
+/// Bridge the gap between broker sessions while reconnecting: keep the control tick and
+/// the watchdog alive (so the slave keeps getting failsafe-correct values and the TWDT
+/// never trips), and pace the reconnect so a persistent failure can't tight-loop (#87).
+fn offline_tick(controller: &mut Controller, handoff: &Handoff, wdt: &mut WatchdogSubscription<'_>) {
+    let _ = wdt.feed();
+    tick_control(controller, handoff);
+    std::thread::sleep(CONTROL_TICK);
 }
 
 /// Write probe bytes to CN28, drain the response, republish the raw views (debug
@@ -244,7 +296,12 @@ fn probe(
         updated |= telemetry.apply_line(&line);
     }
     if updated {
-        mqtt.publish_telemetry(&telemetry.to_json())?;
+        // Best-effort like the charge-status publish: an auto-wake probe keeps firing
+        // during a WiFi/MQTT outage, and a failed telemetry publish must not reboot the
+        // chip (which would silence the RS485 slave and red-fault the box, #87).
+        if let Err(e) = mqtt.publish_telemetry(&telemetry.to_json()) {
+            warn!("telemetry publish skipped (mqtt down?): {e:#}");
+        }
     }
 
     info!("probe {} B → {} B response", bytes.len(), resp.len());
