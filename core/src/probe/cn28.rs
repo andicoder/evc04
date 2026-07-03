@@ -328,13 +328,15 @@ impl Cn28Snapshot {
             LogRecord::Error(code) => self.last_error = Some(code),
             LogRecord::Clear(_) => self.last_error = None,
             LogRecord::CpStatus { state, .. } => self.cp_state = Some(state),
+            // A cut ends the session, and the box prints no `LB current` while
+            // idle — without this the last grant would stay latched and mislead
+            // the V4 start-grant (#135).
+            LogRecord::PowerCut | LogRecord::PwmStop => self.lb_current_a = Some(0),
             // Recognised events that carry no snapshot state.
             LogRecord::ProbeNotDetected(_)
             | LogRecord::DetectStart(_)
             | LogRecord::ProbeInit(_)
-            | LogRecord::ProbeValue(_, _)
-            | LogRecord::PowerCut
-            | LogRecord::PwmStop => {}
+            | LogRecord::ProbeValue(_, _) => {}
         }
     }
 
@@ -555,6 +557,22 @@ mod tests {
         assert_eq!(snap.ev_current_a, Some(16));
         assert_eq!(snap.max_offered_a, Some(14));
         assert_eq!(snap.lb_current_a, Some(10));
+    }
+
+    #[test]
+    fn a_pwm_stop_zeroes_the_grant() {
+        let mut snap = Cn28Snapshot::new();
+        snap.apply_line("lb current:10");
+        snap.apply_line("Stop Pwm1");
+        assert_eq!(snap.lb_current_a, Some(0));
+    }
+
+    #[test]
+    fn a_power_cut_zeroes_the_grant() {
+        let mut snap = Cn28Snapshot::new();
+        snap.apply_line("lb current:10");
+        snap.apply_line("Powercut Detected");
+        assert_eq!(snap.lb_current_a, Some(0));
     }
 
     #[test]
