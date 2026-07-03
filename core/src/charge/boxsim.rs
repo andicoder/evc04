@@ -2,14 +2,14 @@
 //!
 //! Black-box model of the box's *internal* charge-limit loop, fitted to the
 //! measured sessions in `core/tests/fixtures/sessions/` (analysis #134). The box's
-//! firmware is closed; what we model is the observed rule: on a ~5–10 s cadence the
+//! firmware is closed; what we model is the observed rule: on a ~6 s cadence the
 //! box grants the car `car_draw + (DIP limit − reported meter value)` — apparent
 //! headroom is *added on top of the current draw* — holds while the meter sits
 //! exactly at the limit, and hard-cuts once the meter exceeds the limit by a margin
-//! (#57). Whether a *gentle* down-regulation exists between "at the limit" and the
-//! cut threshold is unknown (our upper clamp never let the box see that region —
-//! #134 H1), so it is a parameter (`down_step`, default 0 = never observed) that a
-//! planned live test will measure.
+//! (#57). The region between "at the limit" and the cut threshold was measured on
+//! hardware (#135 step 6, `2026-07-02-probe-measurement.log`): a dead zone up to
+//! ~0.5 A over, then a *proportional* down-regulation of `floor(excess)` amps per
+//! eval (+1.0/+1.5 → −1 A per ~6 s, +2.0 → −2 A per ~6 s), with no cut at +2.0.
 //!
 //! Pure and clock-free like the rest of `core`: the caller owns time and feeds
 //! elapsed seconds. Deviations knowingly not modelled: the ~1 A down-trickle seen
@@ -33,11 +33,12 @@ pub struct BoxSimParams {
     pub max_dip: Ampere,
     /// How often the box re-evaluates its grant (~5–10 s observed).
     pub eval_period_s: f32,
-    /// Meter excess over `max_dip` at which the box cuts the charge (#57: 2–4 A).
+    /// Meter excess over `max_dip` at which the box cuts the charge (measured
+    /// between +2 (still modulating) and +4 (cuts, #57)).
     pub cut_margin: Ampere,
-    /// Gentle down-regulation per eval while `max_dip < reported < max_dip +
-    /// cut_margin`. Never observed (H1 masked the region); 0 = hold.
-    pub down_step: Ampere,
+    /// Excess over `max_dip` the box ignores before down-regulating (measured
+    /// ≤0.5 A, #135 step 6). Above it the box sheds `floor(excess)` per eval.
+    pub down_dead_zone: Ampere,
 }
 
 /// The box's charge-limit state: the current grant (`lb_current` in the CN28 LOG)
@@ -98,10 +99,11 @@ impl BoxSim {
         }
     }
 
-    /// One grant decision (the ~5–10 s cadence). The order encodes the observed
+    /// One grant decision (the ~6 s cadence). The order encodes the observed
     /// priorities: a clear over-limit cuts; visible headroom is added on top of the
-    /// live draw (the fast-up ratchet from #134); the region just above the limit
-    /// is the parameterised unknown; exactly at the limit the box holds (#57).
+    /// live draw (the fast-up ratchet from #134); past the dead zone the box sheds
+    /// the excess proportionally (#135 step 6); at the limit (and inside the dead
+    /// zone) it holds (#57).
     fn eval(&mut self, reported: Ampere, car_draw: Ampere) {
         let p = self.params;
         if reported.0 >= p.max_dip.0 + p.cut_margin.0 {
@@ -110,8 +112,17 @@ impl BoxSim {
         } else if reported.0 < p.max_dip.0 {
             let headroom = p.max_dip.0 - reported.0;
             self.lb = Ampere(round_amp(car_draw.0 + headroom)).clamp(Ampere(0.0), p.max_dip);
-        } else if reported.0 > p.max_dip.0 {
-            self.lb = Ampere(self.lb.0 - p.down_step.0).clamp(Ampere(0.0), p.max_dip);
+        } else if reported.0 > p.max_dip.0 + p.down_dead_zone.0 {
+            // floor(excess), at least 1 past the dead zone: the measured shed rate
+            // (−1 at +1.0 *and* +1.5, −2 at +2.0). Truncation is floor here —
+            // excess is positive (`f32::floor` is libm-gated in no_std).
+            let excess = reported.0 - p.max_dip.0;
+            let step = if excess < 1.0 {
+                1.0
+            } else {
+                excess as i32 as f32
+            };
+            self.lb = Ampere(self.lb.0 - step).clamp(Ampere(0.0), p.max_dip);
         }
     }
 }
@@ -125,7 +136,7 @@ mod tests {
             max_dip: Ampere(16.0),
             eval_period_s: 10.0,
             cut_margin: Ampere(4.0),
-            down_step: Ampere(0.0),
+            down_dead_zone: Ampere(0.5),
         }
     }
 
@@ -193,42 +204,70 @@ mod tests {
         assert_eq!(b.lb(), Ampere(0.0));
     }
 
-    #[test]
-    fn slightly_over_limit_holds_when_down_step_is_zero() {
-        // H1 region (max..max+cut): with down_step 0 the box holds — the
-        // conservative default until the live test measures a real down-step.
-        let mut b = charging_box(9.5);
-        b.tick(10.0, Ampere(9.0), Ampere(7.0)); // -> 14
-        b.tick(10.0, Ampere(17.5), Ampere(14.0));
-        assert!(b.charging());
-        assert_eq!(b.lb(), Ampere(14.0));
+    /// Box charging flat-out at 16 A, as in the probe measurement session.
+    fn box_at_full_grant() -> BoxSim {
+        let mut b = BoxSim::new(params());
+        assert!(b.try_start(Ampere(0.0)));
+        assert_eq!(b.lb(), Ampere(16.0));
+        b
     }
 
     #[test]
-    fn slightly_over_limit_down_steps_when_configured() {
-        let mut b = BoxSim::new(BoxSimParams {
-            down_step: Ampere(1.0),
-            ..params()
-        });
-        assert!(b.try_start(Ampere(9.5)));
-        b.tick(10.0, Ampere(9.0), Ampere(7.0)); // -> 14
-        b.tick(10.0, Ampere(17.5), Ampere(14.0));
-        b.tick(10.0, Ampere(17.5), Ampere(13.0));
-        assert_eq!(b.lb(), Ampere(12.0));
+    fn holds_inside_the_dead_zone_over_the_limit() {
+        // Probe stage +0.5 (21:34:48–21:35:48): 60 s at reported 16.5, lb stayed 16.
+        let mut b = box_at_full_grant();
+        b.tick(60.0, Ampere(16.5), Ampere(16.0));
+        assert!(b.charging());
+        assert_eq!(b.lb(), Ampere(16.0));
+    }
+
+    #[test]
+    fn one_amp_over_steps_one_amp_per_eval() {
+        // Probe stage +1.0 (21:36:40–21:37:41): lb walked 16→…→6, −1 A per ~6 s.
+        let mut b = box_at_full_grant();
+        b.tick(10.0, Ampere(17.0), Ampere(16.0));
+        assert_eq!(b.lb(), Ampere(15.0));
+        b.tick(10.0, Ampere(17.0), Ampere(15.0));
+        assert_eq!(b.lb(), Ampere(14.0));
+        assert!(b.charging());
+    }
+
+    #[test]
+    fn fractional_excess_still_steps_whole_amps() {
+        // Probe stage +1.5 (21:39:23–21:39:47): same −1 A per eval as +1.0 — the
+        // step is the floor of the excess, not its rounding.
+        let mut b = box_at_full_grant();
+        b.tick(10.0, Ampere(17.5), Ampere(16.0));
+        assert_eq!(b.lb(), Ampere(15.0));
+    }
+
+    #[test]
+    fn two_amps_over_steps_two_amps_per_eval_without_cutting() {
+        // Probe stage +2.0 (21:41:33–21:41:48): −2 A per eval, still no cut — the
+        // cut threshold sits above +2 (#57: pause at +4 cuts).
+        let mut b = box_at_full_grant();
+        b.tick(10.0, Ampere(18.0), Ampere(16.0));
+        assert_eq!(b.lb(), Ampere(14.0));
+        assert!(b.charging());
+    }
+
+    #[test]
+    fn down_ride_floors_at_zero() {
+        let mut b = box_at_full_grant();
+        for _ in 0..20 {
+            let lb = b.lb();
+            b.tick(10.0, Ampere(18.0), lb);
+        }
+        assert_eq!(b.lb(), Ampere(0.0));
         assert!(b.charging());
     }
 
     #[test]
     fn long_tick_spans_multiple_evals() {
         // Replay feeds ~1 s ticks, but the model must stay correct for coarser dt.
-        let mut b = BoxSim::new(BoxSimParams {
-            down_step: Ampere(1.0),
-            ..params()
-        });
-        assert!(b.try_start(Ampere(9.5)));
-        b.tick(10.0, Ampere(9.0), Ampere(7.0)); // -> 14
-        b.tick(20.0, Ampere(17.5), Ampere(14.0)); // two evals -> two down-steps
-        assert_eq!(b.lb(), Ampere(12.0));
+        let mut b = box_at_full_grant();
+        b.tick(20.0, Ampere(17.0), Ampere(16.0)); // two evals -> two down-steps
+        assert_eq!(b.lb(), Ampere(14.0));
     }
 
     #[test]
