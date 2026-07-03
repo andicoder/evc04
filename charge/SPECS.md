@@ -496,11 +496,16 @@ eval cadence** (observed 5–10 s) the box recomputes its grant to the car
 
 Session start grants the apparent headroom outright: `lb ← MAX − reported`.
 
-Two more rules, measured on the flag-day cutover 2026-07-03
-(`2026-07-03-flagday-start-cut.log`): **at/over the ceiling with an idle car
-(< ~1 A) the box withdraws the PWM within one eval** — the dead-zone hold only
-exists while the car draws — and **after any cut it refuses a new session for
-~30 s**. A real car needs 10–30 s of standing offer before it draws anything
+Three more rules, measured on the flag-day cutover 2026-07-03
+(`2026-07-03-flagday-start-cut.log` + the staircase capture): **at/over the
+ceiling with an idle car (< ~1 A) the box withdraws the PWM within one eval** —
+the dead-zone hold only exists while the car draws, and it degrades the grant
+(observed 16→10) even at ~5 A, i.e. below the pilot minimum; **after any cut it
+refuses a new session for ~30 s** (with little apparent headroom it took minutes
+to re-engage); and **a shed step of ≥2 A that lands at/below the 6 A pilot
+minimum drops the session** instead of shedding (lb 8 at reported +2 → cut while
+the car drew 6.2 A — the measured −1 A ride down *to* 6 from 2026-07-02 did not
+cut). A real car also needs 10–30 s of standing offer before it draws anything
 ("contactor lag"), so a controller that reports the ceiling the moment the box
 grants produces an endless ~40 s grant/cut cycle and the car shows "Ladegerät
 nicht bereit".
@@ -510,16 +515,20 @@ grant directly on the ~5 s CN28 `lb_current` feedback and stop stacking
 offset/measured/trim. Grant above target → report `MAX + clamp(err, 1, 2)` (the box
 sheds it proportionally); at target (±1 A) → report exactly `MAX` (holds); below
 target → report the deficit as headroom (`MAX − (target − lb)`), which also covers
-the start-grant (`lb = 0` → grant = target). **Start-posture gate**: while the car
-draws less than `CAR_DRAW_FLOOR` (1 A, max phase current from the CN28 metering)
-the grant feedback is overridden to 0, so the report stays at the deficit
-(`MAX − target`), the box's grant law pins `lb = target`, and the PWM offer
-survives the car's contactor lag — snapping to the ceiling hold before the car
-draws triggers the idle-car cut above. Proven in the simulator across the full
-6–16 A staircase, under deep PV export, for eval periods 5–10 s and car start
-lags 0/15 s (`core/tests/replay.rs`); the single planned live test (#135 step 6)
-confirmed the box side. Grid `measured` is no longer part of the modulation math —
-which also retires the H2 export-clamp failure mode by construction (#136).
+the start-grant (`lb = 0` → grant = target). **Ramp pin**: while the car draws
+less than the 6 A pilot minimum (max phase current from the CN28 metering) the
+report is `MAX − target + car` instead — per the box's grant law that holds
+`lb = target` through the contactor lag *and* the 0→6 A ramp; any ceiling report
+before the car draws properly triggers the idle-car cut/degrade above. **Shed
+floor**: the over-report is additionally capped at `lb − (MIN_CHARGE + 1)`, so
+the box is never told to shed into its pilot floor — target 6 deliberately
+settles at 7 A (inside the ±1 A acceptance) instead of risking the ≥2 A-step
+cut. Proven in the simulator across the full 6–16 A staircase, under deep PV
+export, for eval periods 5–10 s and car start lags 0/15 s
+(`core/tests/replay.rs`); the box-side dynamics are pinned by the 2026-07-02
+probe and the 2026-07-03 flag-day captures. Grid `measured` is no longer part of
+the modulation math — which also retires the H2 export-clamp failure mode by
+construction (#136).
 
 ---
 
