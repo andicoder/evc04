@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use esp_idf_svc::mqtt::client::{
     EspMqttClient, EspMqttConnection, EventPayload, LwtConfiguration, MqttClientConfiguration, QoS,
 };
-use evc04_cn28_core::charge::intake::{parse_ampere, parse_enable, IntakeError};
+use evc04_cn28_core::charge::intake::{parse_ampere, parse_enable, parse_watt, IntakeError};
 use evc04_cn28_core::probe::{baud, command};
 use log::warn;
 
@@ -48,7 +48,9 @@ const TOPIC_VERSION: &str = "evc04/cn28/version";
 // (the daemon stays production until this port is proven, milestone #65/§12);
 // evcc/HA repoint here when the daemon is retired. Mirrors charge/docs/mqtt.md.
 const TOPIC_CTRL_TARGET: &str = "evc04/charge/target";
-const TOPIC_CTRL_MEASURED: &str = "evc04/charge/measured";
+/// Raw signed grid power (#136): `{"watt": N}`, negative = export, forwarded by HA
+/// untouched. V4 uses only its cadence (liveness failsafe) — never the value.
+const TOPIC_CTRL_GRID_POWER: &str = "evc04/charge/grid_power";
 const TOPIC_CTRL_ENABLE: &str = "evc04/charge/enable";
 const TOPIC_CTRL_STATUS: &str = "evc04/charge/status";
 /// Measurement probe (#135 step 6): `{"ampere": N}` lifts the served meter answer
@@ -67,7 +69,7 @@ pub enum InMsg {
     SetBaud(u32),
     Ota(String),
     Target(Result<f32, IntakeError>),
-    Measured(Result<f32, IntakeError>),
+    GridPower(Result<f32, IntakeError>),
     Enable(Result<bool, IntakeError>),
     ProbeOver(Result<f32, IntakeError>),
 }
@@ -115,7 +117,7 @@ impl Mqtt {
             TOPIC_BAUD,
             TOPIC_OTA,
             TOPIC_CTRL_TARGET,
-            TOPIC_CTRL_MEASURED,
+            TOPIC_CTRL_GRID_POWER,
             TOPIC_CTRL_ENABLE,
             TOPIC_CTRL_PROBE,
         ] {
@@ -235,8 +237,8 @@ fn spawn_connection_pump(mut connection: EspMqttConnection, tx: mpsc::Sender<InM
                             Some(t) if t == TOPIC_CTRL_TARGET => {
                                 let _ = tx.send(InMsg::Target(parse_ampere(payload)));
                             }
-                            Some(t) if t == TOPIC_CTRL_MEASURED => {
-                                let _ = tx.send(InMsg::Measured(parse_ampere(payload)));
+                            Some(t) if t == TOPIC_CTRL_GRID_POWER => {
+                                let _ = tx.send(InMsg::GridPower(parse_watt(payload)));
                             }
                             Some(t) if t == TOPIC_CTRL_ENABLE => {
                                 let _ = tx.send(InMsg::Enable(parse_enable(payload)));

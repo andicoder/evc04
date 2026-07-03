@@ -179,7 +179,7 @@ fn worker_loop(
             Ok(InMsg::SetBaud(rate)) => set_baud(mqtt, uart, rate)?,
             Ok(InMsg::Ota(payload)) => device::run_ota(mqtt, &payload)?,
             Ok(InMsg::Target(parsed)) => controller.apply_target(parsed, Instant::now()),
-            Ok(InMsg::Measured(parsed)) => controller.apply_measured(parsed, Instant::now()),
+            Ok(InMsg::GridPower(parsed)) => controller.apply_grid_power(parsed, Instant::now()),
             Ok(InMsg::Enable(parsed)) => controller.apply_enable(parsed),
             Ok(InMsg::ProbeOver(parsed)) => controller.apply_probe_over(parsed, Instant::now()),
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -309,13 +309,13 @@ fn probe(
     Ok(updated)
 }
 
-/// Push the freshest CN28 per-phase actual charge current into the controller for the
-/// #119 integral trim. Takes the largest present phase (conservative — the highest draw
-/// drives the strongest correction). Called only after a window that decoded something,
-/// so it stamps feedback freshness only when the box is actually still reporting.
+/// Push the box's freshest grant (`lb_current` from the CN28 LOG) into the
+/// controller — the V4 feedback variable (#135). Called only after a window that
+/// decoded something, so it stamps feedback freshness only when the box is actually
+/// still reporting.
 fn feed_cn28_feedback(controller: &mut Controller, telemetry: &Cn28Snapshot) {
-    if let Some(max_ma) = telemetry.phases.iter().flatten().map(|p| p.a_ma).max() {
-        controller.apply_cn28_feedback(max_ma as f32 / 1000.0, Instant::now());
+    if let Some(lb) = telemetry.lb_current_a {
+        controller.apply_cn28_feedback(lb as f32, Instant::now());
     }
 }
 
