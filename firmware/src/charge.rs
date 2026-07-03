@@ -1,31 +1,31 @@
 //! On-box meter-emulation control (evc04#86): the worker-local [`Controller`] and
 //! the lock-free [`Handoff`] that carries two scalars across the thread boundary.
 //!
-//! The [`Controller`] holds the MQTT control inputs (target / measured / enable and
-//! their arrival times), owns the clock, soft-ramps the offset, and each tick
-//! computes the per-poll reported current with the **host-tested** `core` control
-//! math — so the ESP serves the exact value the k3s daemon would (no second
-//! implementation that could drift). It lives only on the prober/worker thread.
+//! The [`Controller`] holds the MQTT control inputs (target / grid heartbeat /
+//! enable and their arrival times), owns the clock, and each tick computes the
+//! per-poll reported current with the **host-tested** `core` V4 grant tracking
+//! (#135): the box's own `lb_current` from the CN28 LOG is the feedback, the meter
+//! answer tells the box "over / at / under the limit" and the box's measured
+//! internal loop does the ramping. It lives only on the prober/worker thread.
 //!
 //! Only two values genuinely cross to the RS485 slave thread, so they live in
 //! [`Handoff`] (two atomics, no mutex): `reported` (worker → slave, the current to
 //! answer the box with) and `last_poll` (slave → worker, the box's last-poll
 //! timestamp for the status liveness).
 //!
-//! Config mirrors the daemon's env defaults (`charge/src/config.rs`); `MAX_BOX` is
-//! the box's DIP-set ceiling for this install. The `target` is a **latched** setpoint
-//! (never aged out); `measured` staleness and the `enable` gate carry the pause
-//! failsafe — a stale measurement or `enable=false` STOPS an evcc/HA-managed box,
-//! never starts it (SPECS §9, #52). Aging the target would deadlock evcc, whose MQTT
-//! charger publishes the current on-change and then holds it (Option A timeout fix).
+//! `MAX_BOX` is the box's DIP-set ceiling for this install. The `target` is a
+//! **latched** setpoint (never aged out — aging it would deadlock evcc, whose MQTT
+//! charger publishes the current on-change and then holds it). The failsafes all
+//! pause: a stale grid heartbeat (#136 — HA/evcc gone while the latched target
+//! would charge forever), stale CN28 feedback (the regulation is blind) and
+//! `enable=false` each STOP an evcc/HA-managed box, never start it (SPECS §9, #52).
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use esp_idf_svc::nvs::{EspDefaultNvs, EspDefaultNvsPartition, EspNvs};
 use evc04_cn28_core::charge::control::{
-    probe_report, ramp_step, reported_current, trim_decay, trim_step, Ampere, ControlInputs,
-    FailsafeMode,
+    grant_tracking_current, probe_report, Ampere, GrantControlInputs,
 };
 use evc04_cn28_core::charge::intake::IntakeError;
 use evc04_cn28_core::charge::status::{charge_state, status_json, Status};
@@ -34,9 +34,8 @@ use log::warn;
 const MAX_BOX_AMPERE: f32 = 16.0;
 const MIN_CHARGE_AMPERE: f32 = 6.0;
 const PAUSE_MARGIN_AMPERE: f32 = 4.0;
-const RAMP_RATE_AMPERE_PER_S: f32 = 0.5;
-const MEASURED_TIMEOUT: Duration = Duration::from_secs(15);
-const MEASURED_FAILSAFE: FailsafeMode = FailsafeMode::Pause;
+/// The grid heartbeat (#136) arrives every ~5 s; three missed publishes → pause.
+const GRID_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// NVS namespace + keys for the persisted setpoint. The `target` topic is
 /// non-retained and evcc publishes the current on-change (then holds it), so without
@@ -48,21 +47,11 @@ const NVS_NAMESPACE: &str = "charge";
 const NVS_KEY_TARGET: &str = "target";
 const NVS_KEY_ENABLE: &str = "enable";
 
-/// #119 layered integral trim: pushes the box below its natural ~9–15 A floor by
-/// integrating the CN28-reported actual charge current against the target.
-/// 🤔 `TRIM_KI` and `TRIM_MAX_AMPERE` are first guesses that need live tuning on the
-/// box (the box may not drop below ~9 A at all — the trim is built to *reveal* the
-/// real minimum via saturation, not to assume it).
-const TRIM_KI: f32 = 0.5;
-const TRIM_MAX_AMPERE: f32 = 8.0;
-/// Per stale-sample decay back toward 0 (#119): when CN28 feedback ages out we relax
-/// the correction to the hardware-proven `offset + measured` loop rather than hold a
-/// value the loop can no longer see.
-const TRIM_DECAY_AMPERE: f32 = 1.0;
-/// Advance the trim at the box's metering cadence (~5 s), **not** per 1 s tick —
-/// integrating stale data each tick would over-correct ~5× and oscillate (#119).
-const CN28_FEEDBACK_PERIOD: Duration = Duration::from_secs(5);
-/// CN28 feedback older than this is stale → the trim decays instead of integrating.
+/// V4 (#135): cap on the over-report — the strongest *measured* shed rate
+/// (−2 A/eval) while staying clearly below the box's cut threshold (>2, ≤4).
+const LB_TRACKING_MAX_OVER_AMPERE: f32 = 2.0;
+/// CN28 feedback (the box's ~5 s `lb_current` metering) older than this is stale —
+/// the V4 regulation is blind, so the controller pauses the box.
 const CN28_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Per-phase value that pauses the box: above the ceiling so an active charge is
@@ -95,19 +84,16 @@ pub struct Tick {
 /// computes for the slave crosses via [`Handoff`], not this struct.
 pub struct Controller {
     target: Option<f32>,
-    measured: f32,
-    measured_at: Instant,
+    /// The raw signed grid power (#136) and when it last arrived. The value is a
+    /// pass-through diagnostic; its *age* is the HA/evcc liveness failsafe.
+    grid_w: f32,
+    grid_at: Instant,
     enabled: bool,
-    offset: f32,
-    ramping: bool,
-    last_tick: Instant,
     last_error: Option<String>,
-    /// #119: latest CN28-reported actual per-phase charge current and when it landed,
-    /// the integral `trim`, and when the trim was last advanced (its ~5 s cadence).
-    cn28_actual: f32,
+    /// V4 feedback: the box's latest grant (`lb_current` from the CN28 LOG, A) and
+    /// when it landed.
+    cn28_lb: f32,
     cn28_at: Instant,
-    trim: f32,
-    last_trim_at: Instant,
     /// #135 step 6: active measurement-probe lift (A over the ceiling) and when it
     /// was last commanded; expires after [`PROBE_TIMEOUT`]. Deliberately *not*
     /// persisted to NVS — a probe is a manual measurement, never a reboot survivor.
@@ -124,21 +110,15 @@ impl Controller {
         let now = Instant::now();
         let mut controller = Self {
             target: None,
-            // Start with a fresh "measured 0" (like the daemon) so the loop isn't
-            // instantly in the measurement failsafe; it ages out if nothing arrives.
-            measured: 0.0,
-            measured_at: now,
+            // Both freshness clocks start "just fed" so boot gets one grace window
+            // (15 s) to receive the real heartbeat/telemetry before the failsafes
+            // pause; the values themselves are neutral zeros until then.
+            grid_w: 0.0,
+            grid_at: now,
             enabled: true,
-            offset: MAX_BOX_AMPERE,
-            ramping: false,
-            last_tick: now,
             last_error: None,
-            // Start with the trim idle and a fresh (zero) feedback reading, so the
-            // loop behaves exactly like pre-#119 until real CN28 current arrives.
-            cn28_actual: 0.0,
+            cn28_lb: 0.0,
             cn28_at: now,
-            trim: 0.0,
-            last_trim_at: now,
             probe_over: 0.0,
             probe_at: None,
             nvs: None,
@@ -156,17 +136,13 @@ impl Controller {
         controller
     }
 
-    /// Seed `target`/`enable`/`offset` from the persisted setpoint. Only a value the
+    /// Seed `target`/`enable` from the persisted setpoint. Only a value the
     /// controller actually commanded before is restored — a first-ever boot with no
     /// stored key still starts `target = None` → cold-start pause, never a default
     /// charge (#59).
     fn restore_from(&mut self, nvs: &EspDefaultNvs) {
         if let Ok(Some(bits)) = nvs.get_u32(NVS_KEY_TARGET) {
-            let target = f32::from_bits(bits);
-            self.target = Some(target);
-            // Resume at the setpoint's offset so `reported` lands on the loop value
-            // immediately instead of blipping through the cold-start pause on boot.
-            self.offset = MAX_BOX_AMPERE - target;
+            self.target = Some(f32::from_bits(bits));
         }
         if let Ok(Some(b)) = nvs.get_u8(NVS_KEY_ENABLE) {
             self.enabled = b != 0;
@@ -191,12 +167,11 @@ impl Controller {
         }
     }
 
-    /// Feed the latest CN28-reported actual per-phase charge current (#119). Called by
-    /// the prober whenever a telemetry window decodes a phase reading; it only stamps
-    /// the value and its arrival time — the trim itself advances in [`tick`] on the
-    /// ~5 s cadence, so repeated identical readings between refreshes don't over-integrate.
-    pub fn apply_cn28_feedback(&mut self, actual_ampere: f32, now: Instant) {
-        self.cn28_actual = actual_ampere;
+    /// Feed the box's latest grant (`lb_current` from the CN28 LOG) — the V4
+    /// feedback variable. Called by the prober whenever a telemetry window decodes
+    /// one; stamping the arrival time keeps the staleness failsafe honest.
+    pub fn apply_cn28_feedback(&mut self, lb_ampere: f32, now: Instant) {
+        self.cn28_lb = lb_ampere;
         self.cn28_at = now;
     }
 
@@ -219,14 +194,15 @@ impl Controller {
         }
     }
 
-    pub fn apply_measured(&mut self, parsed: Result<f32, IntakeError>, now: Instant) {
+    /// Apply a grid_power heartbeat (#136): the raw signed watts, stored untouched.
+    pub fn apply_grid_power(&mut self, parsed: Result<f32, IntakeError>, now: Instant) {
         match parsed {
             Ok(v) => {
-                self.measured = v;
-                self.measured_at = now;
+                self.grid_w = v;
+                self.grid_at = now;
                 self.last_error = None;
             }
-            Err(e) => self.last_error = Some(format!("bad measured: {e:?}")),
+            Err(e) => self.last_error = Some(format!("bad grid_power: {e:?}")),
         }
     }
 
@@ -260,64 +236,30 @@ impl Controller {
         }
     }
 
-    /// Advance the loop one tick: soft-ramp the offset toward `MAX_BOX − target`,
-    /// compute the reported current via `core`, and return it alongside the retained
-    /// status JSON. `last_poll_age_s` (the slave-stamped RS485 liveness) is supplied
-    /// by the caller from the [`Handoff`], since this struct no longer sees the poll.
+    /// Advance the loop one tick: compute the V4 reported current via `core` and
+    /// return it alongside the retained status JSON. `last_poll_age_s` (the
+    /// slave-stamped RS485 liveness) is supplied by the caller from the [`Handoff`],
+    /// since this struct no longer sees the poll.
     pub fn tick(&mut self, now: Instant, last_poll_age_s: f32) -> Tick {
-        let dt = now.saturating_duration_since(self.last_tick).as_secs_f32();
-        self.last_tick = now;
-
-        // Ramp only once a target has landed; before that the cold-start pause in
-        // `reported_current` governs regardless of the offset.
-        if let Some(target) = self.target {
-            let setpoint = Ampere(MAX_BOX_AMPERE - target);
-            let max_step = Ampere(RAMP_RATE_AMPERE_PER_S * dt);
-            let next = ramp_step(Ampere(self.offset), setpoint, max_step);
-            self.ramping = next.0 != setpoint.0;
-            self.offset = next.0;
-        }
-
-        // #119: advance the integral trim at the box's ~5 s metering cadence, not per
-        // 1 s tick. Fresh feedback with a target → integrate toward the floor; stale
-        // feedback (or no target to seek) → decay back toward the proven base loop.
+        let grid_stale = now.saturating_duration_since(self.grid_at) > GRID_TIMEOUT;
         let cn28_stale = now.saturating_duration_since(self.cn28_at) > CN28_TIMEOUT;
-        if now.saturating_duration_since(self.last_trim_at) >= CN28_FEEDBACK_PERIOD {
-            self.last_trim_at = now;
-            self.trim = match self.target {
-                Some(target) if !cn28_stale => trim_step(
-                    Ampere(self.trim),
-                    Ampere(self.cn28_actual),
-                    Ampere(target),
-                    TRIM_KI,
-                    Ampere(TRIM_MAX_AMPERE),
-                ),
-                _ => trim_decay(Ampere(self.trim), Ampere(TRIM_DECAY_AMPERE)),
-            }
-            .0;
-        }
 
-        let measured_stale = now.saturating_duration_since(self.measured_at) > MEASURED_TIMEOUT;
-
-        let inputs = ControlInputs {
+        // The target is a latched setpoint with no staleness of its own: evcc's MQTT
+        // charger sets the current on-change and holds it, so a target timeout would
+        // deadlock (box forgets → pauses → evcc never re-sends). The grid heartbeat
+        // carries the "controller is alive" failsafe instead (#136).
+        let reported = grant_tracking_current(&GrantControlInputs {
             max: Ampere(MAX_BOX_AMPERE),
             min_charge: Ampere(MIN_CHARGE_AMPERE),
             pause_margin: Ampere(PAUSE_MARGIN_AMPERE),
+            max_over: Ampere(LB_TRACKING_MAX_OVER_AMPERE),
             target: self.target.map(Ampere),
-            offset: Ampere(self.offset),
-            trim: Ampere(self.trim),
-            measured: Ampere(self.measured),
+            lb: Ampere(self.cn28_lb),
+            lb_stale: cn28_stale,
+            grid_stale,
             enabled: self.enabled,
-            // Target is a latched setpoint, never stale: evcc's MQTT charger sets the
-            // current on-change and holds it, so a target timeout would deadlock (box
-            // forgets → pauses → evcc never re-sends). The cold-start pause (target
-            // `None`) and the `measured`/`enable` failsafes below still gate charging.
-            target_stale: false,
-            measured_stale,
-            target_failsafe: FailsafeMode::Pause,
-            measured_failsafe: MEASURED_FAILSAFE,
-        };
-        let reported = reported_current(&inputs).0;
+        })
+        .0;
 
         // Expire a stale probe before applying it (#135 step 6).
         if self
@@ -343,23 +285,16 @@ impl Controller {
         let status = Status {
             online: true,
             target_ampere: self.target.unwrap_or(0.0),
-            measured_ampere: self.measured,
-            offset_ampere: self.offset,
+            grid_power_w: self.grid_w,
             // The status shows what the slave actually serves — probe included.
             reported_ampere: served,
             last_poll_age_s,
-            measurement_age_s: now
-                .saturating_duration_since(self.measured_at)
-                .as_secs_f32(),
-            ramping: self.ramping,
-            // The target never ages out (latched), so no target-staleness failsafe.
-            failsafe: false,
-            measurement_failsafe: measured_stale,
+            grid_age_s: now.saturating_duration_since(self.grid_at).as_secs_f32(),
+            grid_failsafe: grid_stale,
             charge_state: charge_state_letter,
             enabled: self.enabled,
             last_error: self.last_error.as_deref(),
-            trim_ampere: self.trim,
-            cn28_actual_ampere: self.cn28_actual,
+            lb_current_ampere: self.cn28_lb,
             cn28_feedback_stale: cn28_stale,
             probe_over_ampere: if self.probe_at.is_some() {
                 self.probe_over
