@@ -312,11 +312,13 @@ fn probe(
 /// Push the box's freshest grant (`lb_current` from the CN28 LOG) into the
 /// controller — the V4 feedback variable (#135). Called only after a window that
 /// decoded something, so it stamps feedback freshness only when the box is actually
-/// still reporting.
+/// still reporting. An idle box prints no `LB current` line at all (observed live:
+/// only phase metering flows in state B), so an absent grant reads as 0 — the V4
+/// start path — instead of wedging the controller in the stale-feedback pause.
+/// Staleness then means "CN28 tap silent", the failure that must pause.
 fn feed_cn28_feedback(controller: &mut Controller, telemetry: &Cn28Snapshot) {
-    if let Some(lb) = telemetry.lb_current_a {
-        controller.apply_cn28_feedback(lb as f32, Instant::now());
-    }
+    let lb = telemetry.lb_current_a.unwrap_or(0);
+    controller.apply_cn28_feedback(lb as f32, Instant::now());
 }
 
 /// Re-tune the UART rate live for the baud sweep (#79). The result is echoed on
