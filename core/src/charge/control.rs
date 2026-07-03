@@ -176,6 +176,9 @@ pub struct GrantControlInputs {
     pub target: Option<Ampere>,
     /// The box's current grant (`lb_current` from the CN28 LOG, ~5 s cadence).
     pub lb: Ampere,
+    /// The car's live draw (max phase current from the box's MID metering, same
+    /// ~5 s cadence). Gates the start posture — see [`CAR_DRAW_FLOOR`].
+    pub car: Ampere,
     /// CN28 feedback older than its window: the regulation is blind → pause.
     pub lb_stale: bool,
     /// The grid_power heartbeat (#136) stopped: the outside controller (HA/evcc)
@@ -185,9 +188,19 @@ pub struct GrantControlInputs {
     pub enabled: bool,
 }
 
+/// Car draw below which the report keeps the start posture (the `lb = 0` deficit
+/// report, `MAX − target`): the box withdraws the PWM one eval after seeing the
+/// meter at the ceiling with an idle car — the dead-zone hold only exists while
+/// the car draws (flag-day capture 2026-07-03) — and a real car needs 10–30 s
+/// before it draws anything.
+pub const CAR_DRAW_FLOOR: f32 = 1.0;
+
 /// The V4 per-tick decision: gate on enable, both staleness failsafes, the cold
 /// start and the min-charge floor — all of which pause — then regulate the grant
-/// via [`lb_tracking_report`].
+/// via [`lb_tracking_report`]. While the car draws less than [`CAR_DRAW_FLOOR`]
+/// the grant feedback is overridden to 0: the deficit report keeps the meter
+/// below the ceiling, the box's grant law pins `lb = target`, and the PWM offer
+/// survives until the car actually starts (or resumes after napping full).
 pub fn grant_tracking_current(inputs: &GrantControlInputs) -> Ampere {
     let pause = pause_report(inputs.max, inputs.pause_margin);
     if !inputs.enabled || inputs.grid_stale || inputs.lb_stale {
@@ -199,7 +212,12 @@ pub fn grant_tracking_current(inputs: &GrantControlInputs) -> Ampere {
     if target.clamp(Ampere(0.0), inputs.max).0 < inputs.min_charge.0 {
         return pause;
     }
-    lb_tracking_report(inputs.max, target, inputs.lb, inputs.max_over)
+    let lb = if inputs.car.0 < CAR_DRAW_FLOOR {
+        Ampere(0.0)
+    } else {
+        inputs.lb
+    };
+    lb_tracking_report(inputs.max, target, lb, inputs.max_over)
 }
 
 /// Everything the per-poll decision needs, supplied by the firmware. Holding the last
@@ -367,7 +385,8 @@ mod tests {
 
     // --- V4 per-tick decision (grant tracking + failsafes) ---
 
-    /// A healthy V4 snapshot: enabled, fresh inputs, grant at the 20 A target.
+    /// A healthy V4 snapshot: enabled, fresh inputs, car drawing, grant at the
+    /// 20 A target.
     fn grant_base() -> GrantControlInputs {
         GrantControlInputs {
             max: MAX,
@@ -376,10 +395,32 @@ mod tests {
             max_over: Ampere(2.0),
             target: Some(Ampere(20.0)),
             lb: Ampere(20.0),
+            car: Ampere(20.0),
             lb_stale: false,
             grid_stale: false,
             enabled: true,
         }
+    }
+
+    #[test]
+    fn grant_tracking_holds_the_start_posture_while_the_car_is_idle() {
+        // Flag-day capture 2026-07-03: the box granted, V4 snapped to the ceiling
+        // hold, the box cut one eval later because the car (still in its 10–30 s
+        // contactor lag) drew nothing. An idle car must keep the deficit report.
+        let i = GrantControlInputs {
+            car: Ampere(0.0),
+            ..grant_base()
+        };
+        assert_eq!(grant_tracking_current(&i), Ampere(MAX.0 - 20.0));
+    }
+
+    #[test]
+    fn grant_tracking_leaves_the_start_posture_once_the_car_draws() {
+        let i = GrantControlInputs {
+            car: Ampere(1.5),
+            ..grant_base()
+        };
+        assert_eq!(grant_tracking_current(&i), MAX);
     }
 
     #[test]

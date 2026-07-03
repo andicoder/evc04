@@ -10,8 +10,8 @@
 
 use evc04_cn28_core::charge::boxsim::{BoxSim, BoxSimParams};
 use evc04_cn28_core::charge::control::{
-    lb_tracking_report, ramp_step, reported_current, trim_decay, trim_step, Ampere, ControlInputs,
-    FailsafeMode,
+    grant_tracking_current, ramp_step, reported_current, trim_decay, trim_step, Ampere,
+    ControlInputs, FailsafeMode, GrantControlInputs,
 };
 
 // Mirrors of the firmware constants (firmware/src/charge.rs) — the replay must run
@@ -37,14 +37,33 @@ const LB_TRACKING_MAX_OVER: f32 = 2.0;
 /// ramp-down on a cut).
 struct Ev {
     amps: f32,
+    /// Contactor lag: how long a ≥6 A offer must stand before the car draws.
+    /// The flag-day capture (2026-07-03) showed the real car needs 10–30 s; the
+    /// fixture-fitted scenarios predate that measurement and run with 0.
+    start_lag_s: f32,
+    offered_s: f32,
 }
 
 impl Ev {
-    fn new() -> Self {
-        Ev { amps: 0.0 }
+    fn new(start_lag_s: f32) -> Self {
+        Ev {
+            amps: 0.0,
+            start_lag_s,
+            offered_s: 0.0,
+        }
     }
     fn tick(&mut self, dt: f32, lb: f32) {
-        let target = if lb >= MIN_CHARGE { lb.min(16.0) } else { 0.0 };
+        if lb >= MIN_CHARGE {
+            self.offered_s += dt;
+        } else {
+            self.offered_s = 0.0;
+        }
+        let ready = self.offered_s >= self.start_lag_s;
+        let target = if lb >= MIN_CHARGE && ready {
+            lb.min(16.0)
+        } else {
+            0.0
+        };
         let rate = if target >= self.amps { 0.5 } else { 2.5 };
         let step = rate * dt;
         if (target - self.amps).abs() <= step {
@@ -81,6 +100,7 @@ struct Scenario {
     duration_s: u32,
     reporting: Reporting,
     box_params: BoxSimParams,
+    ev_start_lag_s: f32,
 }
 
 #[derive(Debug)]
@@ -95,13 +115,14 @@ struct Sample {
 /// Run the full loop at 1 s ticks and record one sample per second.
 fn run(sc: &Scenario) -> Vec<Sample> {
     let mut boxsim = BoxSim::new(sc.box_params);
-    let mut ev = Ev::new();
+    let mut ev = Ev::new(sc.ev_start_lag_s);
     let mut target: Option<f32> = None;
     let mut enabled = true;
     let mut offset = MAX_BOX; // firmware cold-start
     let mut trim = 0.0_f32;
     let mut measured = 0.0_f32;
     let mut cn28_lb = 0.0_f32;
+    let mut cn28_car = 0.0_f32;
     let mut out = Vec::new();
 
     for t in 0..sc.duration_s {
@@ -149,6 +170,7 @@ fn run(sc: &Scenario) -> Vec<Sample> {
         // 5 s, so the V4 feedback lags the true grant by up to one period.
         if t % CN28_PERIOD_S == 0 {
             cn28_lb = boxsim.lb().0;
+            cn28_car = ev.amps;
         }
 
         let reported = match sc.reporting {
@@ -176,18 +198,21 @@ fn run(sc: &Scenario) -> Vec<Sample> {
                     (offset + measured).clamp(0.0, cap)
                 }
             }
-            Reporting::LbTracking => match target {
-                Some(tgt) if enabled && tgt >= MIN_CHARGE => {
-                    lb_tracking_report(
-                        Ampere(MAX_BOX),
-                        Ampere(tgt),
-                        Ampere(cn28_lb),
-                        Ampere(LB_TRACKING_MAX_OVER),
-                    )
-                    .0
-                }
-                _ => MAX_BOX + PAUSE_MARGIN,
-            },
+            Reporting::LbTracking => {
+                grant_tracking_current(&GrantControlInputs {
+                    max: Ampere(MAX_BOX),
+                    min_charge: Ampere(MIN_CHARGE),
+                    pause_margin: Ampere(PAUSE_MARGIN),
+                    max_over: Ampere(LB_TRACKING_MAX_OVER),
+                    target: target.map(Ampere),
+                    lb: Ampere(cn28_lb),
+                    car: Ampere(cn28_car),
+                    lb_stale: false,
+                    grid_stale: false,
+                    enabled,
+                })
+                .0
+            }
         };
 
         if enabled && !boxsim.charging() {
@@ -215,6 +240,8 @@ fn fitted_box() -> BoxSimParams {
         eval_period_s: 6.0,
         cut_margin: Ampere(PAUSE_MARGIN),
         down_dead_zone: Ampere(0.5),
+        // Measured on the flag-day capture 2026-07-03: cut → re-engage ~30 s.
+        restart_cooldown_s: 30.0,
     }
 }
 
@@ -236,6 +263,7 @@ fn scenario_2026_06_30() -> Scenario {
         duration_s: 900,
         reporting: Reporting::AsShipped,
         box_params: fitted_box(),
+        ev_start_lag_s: 0.0,
     }
 }
 
@@ -279,6 +307,7 @@ fn scenario_golden_window() -> Scenario {
         duration_s: 600,
         reporting: Reporting::AsShipped,
         box_params: fitted_box(),
+        ev_start_lag_s: 0.0,
     }
 }
 
@@ -340,44 +369,90 @@ fn lb_tracking_holds_every_target_across_the_band() {
         (720, 16.0),
     ];
     for eval_period_s in [5.0, 6.0, 7.0, 8.0, 9.0, 10.0] {
+        // Lag 0 = the fixture-fitted instant car; 15 s = the measured contactor
+        // lag of the real car (flag-day capture 2026-07-03).
+        for ev_start_lag_s in [0.0, 15.0] {
+            let sc = Scenario {
+                events: steps.iter().map(|&(t, a)| (t, Some(a), true)).collect(),
+                house_w: 300.0,
+                pv_w: 12_000.0, // deep export: the H2 scenario the old loop couldn't survive
+                duration_s: 840,
+                reporting: Reporting::LbTracking,
+                box_params: BoxSimParams {
+                    eval_period_s,
+                    ..fitted_box()
+                },
+                ev_start_lag_s,
+            };
+            let trace = run(&sc);
+
+            // The session must survive the whole staircase: once the car draws,
+            // the box never cuts (lb never returns to 0) and the car never
+            // stalls below 6 A.
+            let start = trace
+                .iter()
+                .find(|s| s.car >= 1.0)
+                .expect("charge starts");
+            for s in trace.iter().skip(start.t as usize + 30) {
+                assert!(
+                    s.lb > 0.0,
+                    "box cut the session (eval {eval_period_s}, lag {ev_start_lag_s}) at {s:?}"
+                );
+                assert!(
+                    s.car >= MIN_CHARGE,
+                    "car stalled (eval {eval_period_s}, lag {ev_start_lag_s}) at {s:?}"
+                );
+            }
+
+            // Each step has settled onto its target (±1 A, grants are whole amps)
+            // well before the next one — no pin at 15/16, no undershoot.
+            for &(at, tgt) in &steps {
+                let settled = &trace[(at + 110) as usize];
+                assert!(
+                    (settled.car - tgt).abs() <= 1.0,
+                    "target {tgt} not held 110 s after the step (eval {eval_period_s}, lag {ev_start_lag_s}), got {settled:?}"
+                );
+                assert!(
+                    (settled.lb - tgt).abs() <= 1.0,
+                    "grant off target {tgt} 110 s after the step (eval {eval_period_s}, lag {ev_start_lag_s}), got {settled:?}"
+                );
+            }
+        }
+    }
+}
+
+/// Flag-day regression (capture `2026-07-03-flagday-start-cut.log`): the real car
+/// needs 10–30 s before it draws. V4 as shipped snapped `reported` to MAX the
+/// moment the box granted; the box saw "meter at the limit, car idle" and withdrew
+/// the PWM one eval later — a ~40 s grant/cut cycle ("Ladegerät nicht bereit"),
+/// the charge never started.
+#[test]
+fn lb_tracking_starts_a_slow_starting_car() {
+    for eval_period_s in [5.0, 6.0, 7.0, 8.0, 9.0, 10.0] {
         let sc = Scenario {
-            events: steps.iter().map(|&(t, a)| (t, Some(a), true)).collect(),
+            events: vec![(0, Some(16.0), true)],
             house_w: 300.0,
-            pv_w: 12_000.0, // deep export: the H2 scenario the old loop couldn't survive
-            duration_s: 840,
+            pv_w: 12_000.0,
+            duration_s: 300,
             reporting: Reporting::LbTracking,
             box_params: BoxSimParams {
                 eval_period_s,
                 ..fitted_box()
             },
+            ev_start_lag_s: 15.0,
         };
         let trace = run(&sc);
-
-        // The session must survive the whole staircase: after the start-grant the
-        // box never cuts (lb never returns to 0) and the car never stalls below 6 A.
-        let start = trace.iter().find(|s| s.lb > 0.0).expect("charge starts");
-        for s in trace.iter().skip(start.t as usize + 30) {
+        let late = &trace[240];
+        assert!(
+            late.car >= MIN_CHARGE,
+            "car never started (eval {eval_period_s}): {late:?}"
+        );
+        // Once the car draws, the session must hold — no further grant/cut cycle.
+        let first_draw = trace.iter().find(|s| s.car >= 1.0).unwrap().t as usize;
+        for s in trace.iter().skip(first_draw) {
             assert!(
                 s.lb > 0.0,
-                "box cut the session (eval {eval_period_s}) at {s:?}"
-            );
-            assert!(
-                s.car >= MIN_CHARGE,
-                "car stalled (eval {eval_period_s}) at {s:?}"
-            );
-        }
-
-        // Each step has settled onto its target (±1 A, grants are whole amps) well
-        // before the next one — no pin at 15/16, no undershoot.
-        for &(at, tgt) in &steps {
-            let settled = &trace[(at + 110) as usize];
-            assert!(
-                (settled.car - tgt).abs() <= 1.0,
-                "target {tgt} not held 110 s after the step (eval {eval_period_s}), got {settled:?}"
-            );
-            assert!(
-                (settled.lb - tgt).abs() <= 1.0,
-                "grant off target {tgt} 110 s after the step (eval {eval_period_s}), got {settled:?}"
+                "cut after the car started (eval {eval_period_s}): {s:?}"
             );
         }
     }
@@ -398,7 +473,7 @@ fn replay_probe_measurement_reproduces_the_down_ride() {
     }
 
     let mut bx = BoxSim::new(fitted_box());
-    let mut ev = Ev::new();
+    let mut ev = Ev::new(0.0);
     assert!(bx.try_start(Ampere(0.0)));
 
     // Warm-up at reported 0: full grant, car reaches 16 A (21:33:54 baseline).

@@ -39,7 +39,15 @@ pub struct BoxSimParams {
     /// Excess over `max_dip` the box ignores before down-regulating (measured
     /// ≤0.5 A, #135 step 6). Above it the box sheds `floor(excess)` per eval.
     pub down_dead_zone: Ampere,
+    /// How long the box refuses a new session after a cut (measured ~30 s on the
+    /// flag-day capture 2026-07-03: cut → cp back to C after 28–32 s, every cycle).
+    pub restart_cooldown_s: f32,
 }
+
+/// Car draw below which the box treats the session as "not charging": at the
+/// ceiling it then withdraws the PWM instead of dead-zone-holding (flag-day
+/// capture 2026-07-03 — the hold was only ever measured with the car drawing).
+const IDLE_CAR_FLOOR: f32 = 1.0;
 
 /// The box's charge-limit state: the current grant (`lb_current` in the CN28 LOG)
 /// and whether a session is active.
@@ -49,6 +57,7 @@ pub struct BoxSim {
     lb: Ampere,
     charging: bool,
     since_eval_s: f32,
+    cooldown_s: f32,
 }
 
 impl BoxSim {
@@ -58,6 +67,7 @@ impl BoxSim {
             lb: Ampere(0.0),
             charging: false,
             since_eval_s: 0.0,
+            cooldown_s: 0.0,
         }
     }
 
@@ -75,6 +85,9 @@ impl BoxSim {
     /// start-grant `lb=7` at `reported≈9.5` in both fixture sessions. No grant, no
     /// session (returns `false`).
     pub fn try_start(&mut self, reported: Ampere) -> bool {
+        if self.cooldown_s > 0.0 {
+            return false;
+        }
         let grant = round_amp(self.params.max_dip.0 - reported.0);
         if grant <= 0.0 {
             return false;
@@ -89,6 +102,7 @@ impl BoxSim {
     /// (`reported`) and the car's actual draw. Grant changes only on the eval
     /// cadence; a cut ends the session immediately.
     pub fn tick(&mut self, dt_s: f32, reported: Ampere, car_draw: Ampere) {
+        self.cooldown_s = (self.cooldown_s - dt_s).max(0.0);
         if !self.charging {
             return;
         }
@@ -106,9 +120,12 @@ impl BoxSim {
     /// zone) it holds (#57).
     fn eval(&mut self, reported: Ampere, car_draw: Ampere) {
         let p = self.params;
-        if reported.0 >= p.max_dip.0 + p.cut_margin.0 {
+        if reported.0 >= p.max_dip.0 + p.cut_margin.0
+            || (reported.0 >= p.max_dip.0 && car_draw.0 < IDLE_CAR_FLOOR)
+        {
             self.lb = Ampere(0.0);
             self.charging = false;
+            self.cooldown_s = p.restart_cooldown_s;
         } else if reported.0 < p.max_dip.0 {
             let headroom = p.max_dip.0 - reported.0;
             self.lb = Ampere(round_amp(car_draw.0 + headroom)).clamp(Ampere(0.0), p.max_dip);
@@ -137,6 +154,7 @@ mod tests {
             eval_period_s: 10.0,
             cut_margin: Ampere(4.0),
             down_dead_zone: Ampere(0.5),
+            restart_cooldown_s: 30.0,
         }
     }
 
@@ -256,10 +274,45 @@ mod tests {
         let mut b = box_at_full_grant();
         for _ in 0..20 {
             let lb = b.lb();
-            b.tick(10.0, Ampere(18.0), lb);
+            // Keep the car drawing at the grant (min 1 A) so the ride is the
+            // proportional shed, not the idle-at-ceiling cut.
+            b.tick(10.0, Ampere(18.0), Ampere(lb.0.max(1.0)));
         }
         assert_eq!(b.lb(), Ampere(0.0));
+    }
+
+    #[test]
+    fn an_idle_car_at_the_ceiling_cuts_within_one_eval() {
+        // Flag-day capture 2026-07-03 (2026-07-03-flagday-start-cut.log): grant 16,
+        // meter jumps to 16 while the car still draws 0 → PWM withdrawn one eval
+        // (~4–6 s) later, repeated every cycle.
+        let mut b = box_at_full_grant();
+        b.tick(10.0, Ampere(16.0), Ampere(0.0));
+        assert!(!b.charging());
+        assert_eq!(b.lb(), Ampere(0.0));
+    }
+
+    #[test]
+    fn an_idle_car_below_the_ceiling_keeps_the_grant() {
+        // Same capture: reported 0/4 with the car at 0 never cut — the box waits
+        // with the offer standing as long as the meter shows headroom.
+        let mut b = box_at_full_grant();
+        b.tick(10.0, Ampere(4.0), Ampere(0.0));
         assert!(b.charging());
+        assert_eq!(b.lb(), Ampere(12.0));
+    }
+
+    #[test]
+    fn restart_is_refused_during_the_post_cut_cooldown() {
+        // Capture: cut → cp back to C ~30 s later, every cycle (144→174, 188→218,
+        // 272→305, 441→472).
+        let mut b = box_at_full_grant();
+        b.tick(10.0, Ampere(16.0), Ampere(0.0)); // idle-at-ceiling cut
+        assert!(!b.try_start(Ampere(0.0)));
+        b.tick(20.0, Ampere(0.0), Ampere(0.0)); // 20 s of cooldown left
+        assert!(!b.try_start(Ampere(0.0)));
+        b.tick(15.0, Ampere(0.0), Ampere(0.0)); // past the ~30 s
+        assert!(b.try_start(Ampere(0.0)));
     }
 
     #[test]
