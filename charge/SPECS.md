@@ -403,6 +403,11 @@ delivered current tracks `MAX_BOX_AMPERE − offset = target`. Proven on hardwar
 - With home-automation-speed measurement (~3–6 s round-trip) the stable range is
   ~**9–15 A**; the bottom (6–8 A) hunts and would need a faster (~1 s) measurement
   source (publishable over the same topic, no service change).
+  > **Superseded (#134/#135).** The "needs a ~1 s source" conclusion was wrong: the
+  > 6–8 A bottom was unreachable because the upper clamp at `MAX_BOX_AMPERE` never
+  > let the box see "over the limit" (H1), not because the measurement was too slow.
+  > The box ramps *itself* once told it is over — see *The box's grant loop,
+  > measured* below (live ride-down to 6 A on ~5 s feedback).
 - **3-phase floor ≈ 6 A ≈ 4.1 kW.** Below that the box can't hold a stable
   current, so a **minimum-charge cutoff** applies: `target < MIN_CHARGE_AMPERE` (~6 A)
   → serve a hard pause (`reported = MAX_BOX_AMPERE + PAUSE_MARGIN_AMPERE`, **above** the
@@ -469,6 +474,38 @@ and oscillate. When the feedback goes stale the trim **decays toward 0** (`TRIM_
 per sample), relaxing back to the proven `offset + measured` loop rather than holding
 a value it can no longer see. `trim = 0` is byte-identical to the pre-#119 path, so
 the hardware-proven 9–15 A behaviour is unchanged whenever the trim is idle.
+
+> **Superseded by the measured grant loop below (#134/#135).** The trim can only
+> lift `reported` *to* the ceiling, never over it (H1), so it pins at the edge and
+> saturates instead of pushing the box down. It stays documented as the shipped
+> state until the V4 controller replaces it.
+
+### The box's grant loop, measured (#134/#135)
+
+The dynamics behind all of the above, measured on hardware 2026-07-02 (fixtures
+`core/tests/fixtures/sessions/`, model `core/src/charge/boxsim.rs`). On a **~6 s
+eval cadence** (observed 5–10 s) the box recomputes its grant to the car
+(`lb_current` in the CN28 LOG) from the meter value it polls:
+
+| meter reads (vs. DIP limit `MAX`) | box response per eval |
+|---|---|
+| below `MAX` | `lb ← min(car_draw + (MAX − reported), MAX)` — headroom is added **on top of the live draw** (the fast-up ratchet) |
+| at `MAX` … `MAX + 0.5` | hold (dead zone; #57's "at the ceiling holds") |
+| `MAX + 0.5` … cut | shed `floor(excess)` A — **proportional**: +1.0/+1.5 → −1 A per ~6 s, +2.0 → −2 A per ~6 s, ridden live from 16 A down to 6 A with no cut |
+| above the cut threshold (> +2, ≤ +4) | hard cut (session drop; pause reports `MAX + PAUSE_MARGIN_AMPERE` = +4) |
+
+Session start grants the apparent headroom outright: `lb ← MAX − reported`.
+
+**Consequence — the V4 controller** (`lb_tracking_report`, `core`): regulate the
+grant directly on the ~5 s CN28 `lb_current` feedback and stop stacking
+offset/measured/trim. Grant above target → report `MAX + clamp(err, 1, 2)` (the box
+sheds it proportionally); at target (±1 A) → report exactly `MAX` (holds); below
+target → report the deficit as headroom (`MAX − (target − lb)`), which also covers
+the start-grant (`lb = 0` → grant = target). Proven in the simulator across the
+full 6–16 A staircase, under deep PV export, for eval periods 5–10 s
+(`core/tests/replay.rs`); the single planned live test (#135 step 6) confirmed the
+box side. Grid `measured` is no longer part of the modulation math — which also
+retires the H2 export-clamp failure mode by construction (#136).
 
 ---
 
