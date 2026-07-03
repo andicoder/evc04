@@ -526,9 +526,12 @@ settles at 7 A (inside the ±1 A acceptance) instead of risking the ≥2 A-step
 cut. Proven in the simulator across the full 6–16 A staircase, under deep PV
 export, for eval periods 5–10 s and car start lags 0/15 s
 (`core/tests/replay.rs`); the box-side dynamics are pinned by the 2026-07-02
-probe and the 2026-07-03 flag-day captures. Grid `measured` is no longer part of
-the modulation math — which also retires the H2 export-clamp failure mode by
-construction (#136).
+probe and the 2026-07-03 flag-day captures. **Live-proven 2026-07-03**
+(`2026-07-03-flagday-staircase-pass.log`): the full staircase passed on hardware
+— every stage settled within ±1 A (16→15, 12→11, 10→9, 8→7, 6→7, 8→7, 16→15,
+grants are whole amps and land one below on down-steps), zero session cuts after
+charge start. Grid `measured` is no longer part of the modulation math — which
+also retires the H2 export-clamp failure mode by construction (#136).
 
 ---
 
