@@ -227,7 +227,13 @@ pub fn grant_tracking_current(inputs: &GrantControlInputs) -> Ampere {
     if inputs.car.0 < inputs.min_charge.0 {
         return Ampere(inputs.max.0 - target.0 + inputs.car.0).clamp(Ampere(0.0), inputs.max);
     }
-    lb_tracking_report(inputs.max, target, inputs.lb, inputs.max_over, inputs.min_charge)
+    lb_tracking_report(
+        inputs.max,
+        target,
+        inputs.lb,
+        inputs.max_over,
+        inputs.min_charge,
+    )
 }
 
 /// Everything the per-poll decision needs, supplied by the firmware. Holding the last

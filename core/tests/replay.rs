@@ -389,10 +389,7 @@ fn lb_tracking_holds_every_target_across_the_band() {
             // The session must survive the whole staircase: once the car draws,
             // the box never cuts (lb never returns to 0) and the car never
             // stalls below 6 A.
-            let start = trace
-                .iter()
-                .find(|s| s.car >= 1.0)
-                .expect("charge starts");
+            let start = trace.iter().find(|s| s.car >= 1.0).expect("charge starts");
             for s in trace.iter().skip(start.t as usize + 30) {
                 assert!(
                     s.lb > 0.0,
