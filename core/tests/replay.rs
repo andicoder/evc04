@@ -181,9 +181,11 @@ fn run(sc: &Scenario) -> Vec<Sample> {
 fn fitted_box() -> BoxSimParams {
     BoxSimParams {
         max_dip: Ampere(MAX_BOX),
-        eval_period_s: 10.0,
+        // Measured on hardware (#135 step 6, 2026-07-02-probe-measurement.log):
+        // −1 A per ~6 s at +1.0/+1.5 over, −2 A per ~6 s at +2.0, dead zone ≤0.5.
+        eval_period_s: 6.0,
         cut_margin: Ampere(PAUSE_MARGIN),
-        down_step: Ampere(0.0), // never observed below the cut (H1 masked it)
+        down_dead_zone: Ampere(0.5),
     }
 }
 
@@ -274,27 +276,54 @@ fn replay_golden_window_reproduces_ratchet_to_full() {
 }
 
 /// Bridge to #135 step 5 (variant V1): open the upper clamp so the box can see
-/// "slightly over the limit" (below its cut threshold). Whether that helps depends
-/// entirely on an unmeasured box property — a gentle down-step in that region.
+/// "slightly over the limit" (below its cut threshold). With the *measured* down
+/// response in the box model, the open clamp alone already converges.
 #[test]
-fn open_clamp_with_box_down_step_converges_to_target() {
+fn open_clamp_converges_to_target() {
     let mut sc = scenario_2026_06_30();
     sc.reporting = Reporting::OpenClamp { cap: 19.0 };
-    sc.box_params.down_step = Ampere(1.0);
     let end = &run(&sc)[850];
     assert!(
         (end.car - 13.0).abs() <= 1.5,
-        "with a real down-step the loop should settle near the 13 A target, got {end:?}"
+        "with the measured down response the loop should settle near the 13 A target, got {end:?}"
     );
 }
 
+/// Replay of the #135 step-6 probe measurement (`2026-07-02-probe-measurement.log`):
+/// the staged over-limit reports are fed verbatim; the fitted model must reproduce
+/// the measured lb ride within one eval step. This is the fixture that pins the
+/// down-regulation parameters.
 #[test]
-fn open_clamp_without_box_down_step_stays_pinned() {
-    let mut sc = scenario_2026_06_30();
-    sc.reporting = Reporting::OpenClamp { cap: 19.0 };
-    let end = &run(&sc)[850];
-    assert!(
-        end.car >= 14.0,
-        "with no box down response even the open clamp cannot lower the charge, got {end:?}"
-    );
+fn replay_probe_measurement_reproduces_the_down_ride() {
+    fn stage(boxsim: &mut BoxSim, ev: &mut Ev, secs: u32, reported: f32) -> f32 {
+        for _ in 0..secs {
+            boxsim.tick(1.0, Ampere(reported), Ampere(ev.amps));
+            ev.tick(1.0, boxsim.lb().0);
+        }
+        boxsim.lb().0
+    }
+
+    let mut bx = BoxSim::new(fitted_box());
+    let mut ev = Ev::new();
+    assert!(bx.try_start(Ampere(0.0)));
+
+    // Warm-up at reported 0: full grant, car reaches 16 A (21:33:54 baseline).
+    assert_eq!(stage(&mut bx, &mut ev, 60, 0.0), 16.0);
+    // Stage +0.5 (60 s): dead zone — lb held at 16.
+    assert_eq!(stage(&mut bx, &mut ev, 60, 16.5), 16.0);
+    assert_eq!(stage(&mut bx, &mut ev, 50, 0.0), 16.0);
+    // Stage +1.0 (60 s): measured ride 16→6, −1 A per ~6 s, no cut.
+    assert_eq!(stage(&mut bx, &mut ev, 30, 17.0), 11.0);
+    assert_eq!(stage(&mut bx, &mut ev, 30, 17.0), 6.0);
+    assert!(bx.charging());
+    // Probe off: the box re-grants (log: back at 16 within ~40 s).
+    assert_eq!(stage(&mut bx, &mut ev, 40, 0.0), 16.0);
+    // Stage +1.5 (24 s): measured 16→12 — the same −1 A/eval as +1.0.
+    assert_eq!(stage(&mut bx, &mut ev, 24, 17.5), 12.0);
+    assert_eq!(stage(&mut bx, &mut ev, 40, 0.0), 16.0);
+    // Stage +2.0 (15 s): −2 A per eval, still no cut (log: 16→12→10; the model's
+    // 12 after two evals is within the one-sample slack of the 5 s telemetry).
+    let lb = stage(&mut bx, &mut ev, 15, 18.0);
+    assert!((10.0..=12.0).contains(&lb), "expected ~−2 A/eval, got {lb}");
+    assert!(bx.charging());
 }
