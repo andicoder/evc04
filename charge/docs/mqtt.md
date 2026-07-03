@@ -20,6 +20,24 @@ Topics, all configured via env vars ([`SPECS.md`](../SPECS.md) §7):
 All payloads are UTF-8 JSON. Connection uses `MQTT_USER` / `MQTT_PASS`; QoS (1) and
 retention are fixed by this contract, not configurable.
 
+> **V4 firmware delta (#135/#136).** The on-box firmware (device-scoped
+> `evc04/charge/*` topics) supersedes two parts of this contract; the sections
+> below still describe the retiring k3s daemon unchanged.
+>
+> - **`evc04/charge/grid_power` replaces the measured topic.** Payload
+>   `{ "watt": N }` — the **raw, signed** grid power (negative = export), forwarded
+>   by the publisher untouched: no W→A math, no `≥0` clamp outside (that clamp was
+>   #134's H2). The V4 controller regulates on the box's own CN28 grant
+>   (`lb_current`) and consumes only this topic's **cadence** as the controller
+>   liveness heartbeat — >15 s of silence pauses the box. The watts are passed
+>   through to the status as a diagnostic.
+> - **Status fields (`evc04/charge/status`):** `measured_ampere`, `offset_ampere`,
+>   `measurement_age_s`, `ramping`, `failsafe`, `measurement_failsafe`,
+>   `trim_ampere` and `cn28_actual_ampere` are gone. New: `grid_power_w` (raw
+>   watts), `grid_age_s`, `grid_failsafe`, and `lb_current_ampere` (the box's
+>   grant — the V4 feedback). `cn28_feedback_stale: true` now implies the box is
+>   paused (blind regulation never charges).
+
 ---
 
 ## Inbound — target charge current

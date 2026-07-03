@@ -580,6 +580,13 @@ payloads are UTF-8 JSON; QoS 1; target/measured/status retained. Summary:
 - **Inbound — measured** (`MQTT_TOPIC_MEASURED`): `{ "ampere": N }`, the live
   per-phase current that closes the loop (§6). Source-agnostic; same
   hold-last-good / staleness discipline as the target.
+  > **V4 firmware delta (#135/#136):** on the on-box firmware this topic is
+  > replaced by **`evc04/charge/grid_power`** — `{ "watt": N }`, the raw *signed*
+  > grid power forwarded untouched (no formulas outside evc). V4 regulates on the
+  > box's own grant (§6, the measured grant loop) and consumes only the topic's
+  > cadence as the controller liveness heartbeat (>15 s → pause); the watts are a
+  > status diagnostic. The status object drops the offset/ramp/trim fields and
+  > gains `grid_power_w`, `grid_age_s`, `grid_failsafe`, `lb_current_ampere`.
 - **Outbound — status** (`MQTT_TOPIC_STATUS`, retained, + offline LWT): `online`,
   `target_ampere`, `reported_ampere`, `last_poll_age_s`, `gateway`, `mqtt`, `last_error`,
   plus the closed-loop fields `measured_ampere`, `offset_ampere`, `measurement_age_s`,
