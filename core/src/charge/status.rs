@@ -22,31 +22,27 @@ pub fn charge_state(reported: Ampere, max: Ampere) -> char {
     }
 }
 
-/// The live status snapshot the firmware hands in each publish. Amperes are plain
-/// `f32` here — this is the wire boundary.
+/// The live status snapshot the firmware hands in each publish (V4, #135/#136).
+/// Amperes/watts are plain `f32` here — this is the wire boundary.
 pub struct Status<'a> {
     pub online: bool,
     pub target_ampere: f32,
-    pub measured_ampere: f32,
-    pub offset_ampere: f32,
+    /// The raw signed grid power heartbeat (#136), passed through untouched —
+    /// negative = export. Diagnostic only; V4 regulates on the grant, not on this.
+    pub grid_power_w: f32,
     pub reported_ampere: f32,
     pub last_poll_age_s: f32,
-    pub measurement_age_s: f32,
-    pub ramping: bool,
-    pub failsafe: bool,
-    pub measurement_failsafe: bool,
+    pub grid_age_s: f32,
+    /// The grid heartbeat aged out → the controller is pausing the box.
+    pub grid_failsafe: bool,
     pub charge_state: char,
     pub enabled: bool,
     /// Reason for the most recent rejected input, or `None` when healthy. Internal
     /// fixed strings (never raw payload), so they need no JSON escaping.
     pub last_error: Option<&'a str>,
-    /// #119: the integral trim currently applied on top of the closed loop (A). It
-    /// saturating at `TRIM_MAX` is the signal that the box's real minimum has been
-    /// found — the achievable-min diagnostic (#119 Goal 2).
-    pub trim_ampere: f32,
-    /// Latest CN28-reported actual per-phase charge current feeding the trim (A).
-    pub cn28_actual_ampere: f32,
-    /// Whether the CN28 feedback is stale — the trim is decaying, not integrating.
+    /// The box's current grant (`lb_current` from the CN28 LOG) — the V4 feedback.
+    pub lb_current_ampere: f32,
+    /// The CN28 feedback aged out → the regulation is blind, the box is paused.
     pub cn28_feedback_stale: bool,
     /// #135 step 6: active measurement-probe lift over the ceiling (A), 0 when off.
     /// While set, `reported_ampere` sits above the ceiling *on purpose*.
@@ -61,27 +57,22 @@ pub fn status_json(s: &Status) -> String {
         None => String::from("null"),
     };
     format!(
-        "{{\"online\":{},\"target_ampere\":{},\"measured_ampere\":{},\
-         \"offset_ampere\":{},\"reported_ampere\":{},\"last_poll_age_s\":{},\
-         \"measurement_age_s\":{},\"ramping\":{},\"failsafe\":{},\
-         \"measurement_failsafe\":{},\"charge_state\":\"{}\",\"enabled\":{},\
-         \"last_error\":{},\"trim_ampere\":{},\"cn28_actual_ampere\":{},\
+        "{{\"online\":{},\"target_ampere\":{},\"grid_power_w\":{},\
+         \"reported_ampere\":{},\"last_poll_age_s\":{},\"grid_age_s\":{},\
+         \"grid_failsafe\":{},\"charge_state\":\"{}\",\"enabled\":{},\
+         \"last_error\":{},\"lb_current_ampere\":{},\
          \"cn28_feedback_stale\":{},\"probe_over_ampere\":{}}}",
         s.online,
         s.target_ampere,
-        s.measured_ampere,
-        s.offset_ampere,
+        s.grid_power_w,
         s.reported_ampere,
         s.last_poll_age_s,
-        s.measurement_age_s,
-        s.ramping,
-        s.failsafe,
-        s.measurement_failsafe,
+        s.grid_age_s,
+        s.grid_failsafe,
         s.charge_state,
         s.enabled,
         last_error,
-        s.trim_ampere,
-        s.cn28_actual_ampere,
+        s.lb_current_ampere,
         s.cn28_feedback_stale,
         s.probe_over_ampere,
     )
@@ -116,25 +107,21 @@ mod tests {
         let s = Status {
             online: true,
             target_ampere: 6.5,
-            measured_ampere: 5.0,
-            offset_ampere: 1.5,
-            reported_ampere: 6.5,
+            grid_power_w: -3200.0,
+            reported_ampere: 16.0,
             last_poll_age_s: 0.4,
-            measurement_age_s: 1.1,
-            ramping: false,
-            failsafe: false,
-            measurement_failsafe: false,
+            grid_age_s: 1.1,
+            grid_failsafe: false,
             charge_state: 'C',
             enabled: true,
             last_error: None,
-            trim_ampere: 0.0,
-            cn28_actual_ampere: 0.0,
+            lb_current_ampere: 7.0,
             cn28_feedback_stale: false,
             probe_over_ampere: 0.0,
         };
         assert_eq!(
             status_json(&s),
-            r#"{"online":true,"target_ampere":6.5,"measured_ampere":5,"offset_ampere":1.5,"reported_ampere":6.5,"last_poll_age_s":0.4,"measurement_age_s":1.1,"ramping":false,"failsafe":false,"measurement_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"trim_ampere":0,"cn28_actual_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}"#
+            r#"{"online":true,"target_ampere":6.5,"grid_power_w":-3200,"reported_ampere":16,"last_poll_age_s":0.4,"grid_age_s":1.1,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":7,"cn28_feedback_stale":false,"probe_over_ampere":0}"#
         );
     }
 
@@ -143,28 +130,23 @@ mod tests {
         let s = Status {
             online: true,
             target_ampere: 6.0,
-            measured_ampere: 0.0,
-            offset_ampere: 10.0,
-            reported_ampere: 10.0,
+            grid_power_w: 450.0,
+            reported_ampere: 20.0,
             last_poll_age_s: 0.2,
-            measurement_age_s: 0.3,
-            ramping: true,
-            failsafe: false,
-            measurement_failsafe: true,
-            charge_state: 'C',
+            grid_age_s: 17.3,
+            grid_failsafe: true,
+            charge_state: 'B',
             enabled: false,
             last_error: Some("bad target"),
-            trim_ampere: 2.5,
-            cn28_actual_ampere: 9.0,
+            lb_current_ampere: 9.0,
             cn28_feedback_stale: true,
             probe_over_ampere: 1.5,
         };
         let json = status_json(&s);
         assert!(json.contains(r#""last_error":"bad target""#), "{json}");
-        assert!(json.contains(r#""measurement_failsafe":true"#), "{json}");
+        assert!(json.contains(r#""grid_failsafe":true"#), "{json}");
         assert!(json.contains(r#""enabled":false"#), "{json}");
-        assert!(json.contains(r#""trim_ampere":2.5"#), "{json}");
-        assert!(json.contains(r#""cn28_actual_ampere":9"#), "{json}");
+        assert!(json.contains(r#""lb_current_ampere":9"#), "{json}");
         assert!(json.contains(r#""cn28_feedback_stale":true"#), "{json}");
         assert!(json.contains(r#""probe_over_ampere":1.5"#), "{json}");
     }

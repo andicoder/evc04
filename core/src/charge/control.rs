@@ -154,6 +154,54 @@ pub fn trim_decay(trim: Ampere, step: Ampere) -> Ampere {
     Ampere(trim.0 - step.0).clamp(Ampere(0.0), trim)
 }
 
+/// Everything the V4 per-tick decision needs, supplied by the firmware (which owns
+/// the clock and judges staleness). Unlike [`ControlInputs`] there are no failsafe
+/// *modes*: every failure direction under V4 is a fixed **pause**. A `FullCharge`
+/// fallback (report 0) would make the box ratchet to its DIP maximum on the very
+/// input failures that blind the controller — and the meterless unmanaged-box
+/// baseline the mode existed for has no target publisher, so V4's cold-start pause
+/// blocks it anyway (SPECS §9, #51/#52).
+#[derive(Clone, Copy, Debug)]
+pub struct GrantControlInputs {
+    /// The box's DIP-set ceiling (`MAX_BOX_AMPERE`).
+    pub max: Ampere,
+    /// Below this target the car can't hold a charge, so we hard-pause (#23).
+    pub min_charge: Ampere,
+    /// Amps above the ceiling a pause reports so the box actually cuts (#57).
+    pub pause_margin: Ampere,
+    /// Cap on the over-report (see [`lb_tracking_report`]): the strongest measured
+    /// shed rate while staying clearly below the box's cut threshold (#135 step 6).
+    pub max_over: Ampere,
+    /// Last commanded target — latched, `None` only before the first command (#59).
+    pub target: Option<Ampere>,
+    /// The box's current grant (`lb_current` from the CN28 LOG, ~5 s cadence).
+    pub lb: Ampere,
+    /// CN28 feedback older than its window: the regulation is blind → pause.
+    pub lb_stale: bool,
+    /// The grid_power heartbeat (#136) stopped: the outside controller (HA/evcc)
+    /// is gone and the latched target would charge forever → pause.
+    pub grid_stale: bool,
+    /// The enable gate (#60): `false` hard-pauses regardless of the target.
+    pub enabled: bool,
+}
+
+/// The V4 per-tick decision: gate on enable, both staleness failsafes, the cold
+/// start and the min-charge floor — all of which pause — then regulate the grant
+/// via [`lb_tracking_report`].
+pub fn grant_tracking_current(inputs: &GrantControlInputs) -> Ampere {
+    let pause = pause_report(inputs.max, inputs.pause_margin);
+    if !inputs.enabled || inputs.grid_stale || inputs.lb_stale {
+        return pause;
+    }
+    let Some(target) = inputs.target else {
+        return pause;
+    };
+    if target.clamp(Ampere(0.0), inputs.max).0 < inputs.min_charge.0 {
+        return pause;
+    }
+    lb_tracking_report(inputs.max, target, inputs.lb, inputs.max_over)
+}
+
 /// Everything the per-poll decision needs, supplied by the firmware. Holding the last
 /// good `target`/`measured`/`offset` and judging staleness is the firmware's job (it
 /// owns the clock); this struct is the snapshot it hands in each poll.
@@ -315,6 +363,78 @@ mod tests {
             probe_report(MAX, Ampere(0.5), MAX, Ampere(3.5)),
             Ampere(32.5)
         );
+    }
+
+    // --- V4 per-tick decision (grant tracking + failsafes) ---
+
+    /// A healthy V4 snapshot: enabled, fresh inputs, grant at the 20 A target.
+    fn grant_base() -> GrantControlInputs {
+        GrantControlInputs {
+            max: MAX,
+            min_charge: MIN,
+            pause_margin: MARGIN,
+            max_over: Ampere(2.0),
+            target: Some(Ampere(20.0)),
+            lb: Ampere(20.0),
+            lb_stale: false,
+            grid_stale: false,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn grant_tracking_delegates_to_the_lb_report() {
+        assert_eq!(grant_tracking_current(&grant_base()), MAX);
+        let over = GrantControlInputs {
+            lb: Ampere(26.0),
+            ..grant_base()
+        };
+        assert_eq!(grant_tracking_current(&over), Ampere(34.0));
+    }
+
+    #[test]
+    fn grant_tracking_enable_false_pauses() {
+        let i = GrantControlInputs {
+            enabled: false,
+            ..grant_base()
+        };
+        assert_eq!(grant_tracking_current(&i), PAUSE);
+    }
+
+    #[test]
+    fn grant_tracking_stale_grid_heartbeat_pauses() {
+        let i = GrantControlInputs {
+            grid_stale: true,
+            ..grant_base()
+        };
+        assert_eq!(grant_tracking_current(&i), PAUSE);
+    }
+
+    #[test]
+    fn grant_tracking_stale_lb_feedback_pauses() {
+        let i = GrantControlInputs {
+            lb_stale: true,
+            ..grant_base()
+        };
+        assert_eq!(grant_tracking_current(&i), PAUSE);
+    }
+
+    #[test]
+    fn grant_tracking_cold_start_pauses() {
+        let i = GrantControlInputs {
+            target: None,
+            ..grant_base()
+        };
+        assert_eq!(grant_tracking_current(&i), PAUSE);
+    }
+
+    #[test]
+    fn grant_tracking_target_below_min_charge_pauses() {
+        let i = GrantControlInputs {
+            target: Some(Ampere(4.0)),
+            ..grant_base()
+        };
+        assert_eq!(grant_tracking_current(&i), PAUSE);
     }
 
     // --- V4 direct grant tracking (#135 step 5) ---

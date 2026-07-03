@@ -32,6 +32,18 @@ pub fn parse_ampere(payload: &str) -> Result<f32, IntakeError> {
     Ok(n)
 }
 
+/// Parse a `{"watt": N}` payload (grid_power topic, #136): the raw grid power the
+/// outside world forwards untouched. **Signed** — export arrives negative; the old
+/// HA-side `≥0` clamp was #134's H2 and must never come back at this boundary.
+pub fn parse_watt(payload: &str) -> Result<f32, IntakeError> {
+    let raw = field_value(payload, "watt").ok_or(IntakeError::MissingField)?;
+    let n: f32 = raw.parse().map_err(|_| IntakeError::BadType)?;
+    if !n.is_finite() {
+        return Err(IntakeError::NotFinite);
+    }
+    Ok(n)
+}
+
 /// Parse a `{"enable": bool}` payload (enable gate, #60).
 pub fn parse_enable(payload: &str) -> Result<bool, IntakeError> {
     match field_value(payload, "enable").ok_or(IntakeError::MissingField)? {
@@ -104,6 +116,36 @@ mod tests {
     #[test]
     fn malformed_payload_is_missing_field() {
         assert_eq!(parse_ampere("not json"), Err(IntakeError::MissingField));
+    }
+
+    #[test]
+    fn parses_grid_power_watt() {
+        assert_eq!(parse_watt(r#"{"watt": 1200}"#), Ok(1200.0));
+    }
+
+    #[test]
+    fn grid_power_keeps_the_export_sign() {
+        // #136: the raw grid value is signed — export must arrive negative, the
+        // ≥0 clamp died with the HA formula (#134 H2).
+        assert_eq!(parse_watt(r#"{"watt": -3200}"#), Ok(-3200.0));
+    }
+
+    #[test]
+    fn missing_watt_field_is_error() {
+        assert_eq!(
+            parse_watt(r#"{"ampere": 5}"#),
+            Err(IntakeError::MissingField)
+        );
+    }
+
+    #[test]
+    fn non_numeric_watt_is_bad_type() {
+        assert_eq!(parse_watt(r#"{"watt": "x"}"#), Err(IntakeError::BadType));
+    }
+
+    #[test]
+    fn non_finite_watt_is_rejected() {
+        assert_eq!(parse_watt(r#"{"watt": 1e40}"#), Err(IntakeError::NotFinite));
     }
 
     #[test]
