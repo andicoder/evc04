@@ -490,22 +490,36 @@ eval cadence** (observed 5–10 s) the box recomputes its grant to the car
 | meter reads (vs. DIP limit `MAX`) | box response per eval |
 |---|---|
 | below `MAX` | `lb ← min(car_draw + (MAX − reported), MAX)` — headroom is added **on top of the live draw** (the fast-up ratchet) |
-| at `MAX` … `MAX + 0.5` | hold (dead zone; #57's "at the ceiling holds") |
+| at `MAX` … `MAX + 0.5` | hold (dead zone; #57's "at the ceiling holds") — **only while the car draws** (see below) |
 | `MAX + 0.5` … cut | shed `floor(excess)` A — **proportional**: +1.0/+1.5 → −1 A per ~6 s, +2.0 → −2 A per ~6 s, ridden live from 16 A down to 6 A with no cut |
 | above the cut threshold (> +2, ≤ +4) | hard cut (session drop; pause reports `MAX + PAUSE_MARGIN_AMPERE` = +4) |
 
 Session start grants the apparent headroom outright: `lb ← MAX − reported`.
+
+Two more rules, measured on the flag-day cutover 2026-07-03
+(`2026-07-03-flagday-start-cut.log`): **at/over the ceiling with an idle car
+(< ~1 A) the box withdraws the PWM within one eval** — the dead-zone hold only
+exists while the car draws — and **after any cut it refuses a new session for
+~30 s**. A real car needs 10–30 s of standing offer before it draws anything
+("contactor lag"), so a controller that reports the ceiling the moment the box
+grants produces an endless ~40 s grant/cut cycle and the car shows "Ladegerät
+nicht bereit".
 
 **Consequence — the V4 controller** (`lb_tracking_report`, `core`): regulate the
 grant directly on the ~5 s CN28 `lb_current` feedback and stop stacking
 offset/measured/trim. Grant above target → report `MAX + clamp(err, 1, 2)` (the box
 sheds it proportionally); at target (±1 A) → report exactly `MAX` (holds); below
 target → report the deficit as headroom (`MAX − (target − lb)`), which also covers
-the start-grant (`lb = 0` → grant = target). Proven in the simulator across the
-full 6–16 A staircase, under deep PV export, for eval periods 5–10 s
-(`core/tests/replay.rs`); the single planned live test (#135 step 6) confirmed the
-box side. Grid `measured` is no longer part of the modulation math — which also
-retires the H2 export-clamp failure mode by construction (#136).
+the start-grant (`lb = 0` → grant = target). **Start-posture gate**: while the car
+draws less than `CAR_DRAW_FLOOR` (1 A, max phase current from the CN28 metering)
+the grant feedback is overridden to 0, so the report stays at the deficit
+(`MAX − target`), the box's grant law pins `lb = target`, and the PWM offer
+survives the car's contactor lag — snapping to the ceiling hold before the car
+draws triggers the idle-car cut above. Proven in the simulator across the full
+6–16 A staircase, under deep PV export, for eval periods 5–10 s and car start
+lags 0/15 s (`core/tests/replay.rs`); the single planned live test (#135 step 6)
+confirmed the box side. Grid `measured` is no longer part of the modulation math —
+which also retires the H2 export-clamp failure mode by construction (#136).
 
 ---
 

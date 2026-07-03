@@ -91,8 +91,10 @@ pub struct Controller {
     enabled: bool,
     last_error: Option<String>,
     /// V4 feedback: the box's latest grant (`lb_current` from the CN28 LOG, A) and
-    /// when it landed.
+    /// when it landed, plus the car's live draw (max phase current from the MID
+    /// metering) that gates the start posture.
     cn28_lb: f32,
+    cn28_car: f32,
     cn28_at: Instant,
     /// #135 step 6: active measurement-probe lift (A over the ceiling) and when it
     /// was last commanded; expires after [`PROBE_TIMEOUT`]. Deliberately *not*
@@ -118,6 +120,7 @@ impl Controller {
             enabled: true,
             last_error: None,
             cn28_lb: 0.0,
+            cn28_car: 0.0,
             cn28_at: now,
             probe_over: 0.0,
             probe_at: None,
@@ -167,11 +170,13 @@ impl Controller {
         }
     }
 
-    /// Feed the box's latest grant (`lb_current` from the CN28 LOG) — the V4
-    /// feedback variable. Called by the prober whenever a telemetry window decodes
-    /// one; stamping the arrival time keeps the staleness failsafe honest.
-    pub fn apply_cn28_feedback(&mut self, lb_ampere: f32, now: Instant) {
+    /// Feed the box's latest grant (`lb_current` from the CN28 LOG) and the car's
+    /// live draw — the V4 feedback variables. Called by the prober whenever a
+    /// telemetry window decodes one; stamping the arrival time keeps the staleness
+    /// failsafe honest.
+    pub fn apply_cn28_feedback(&mut self, lb_ampere: f32, car_ampere: f32, now: Instant) {
         self.cn28_lb = lb_ampere;
+        self.cn28_car = car_ampere;
         self.cn28_at = now;
     }
 
@@ -255,6 +260,7 @@ impl Controller {
             max_over: Ampere(LB_TRACKING_MAX_OVER_AMPERE),
             target: self.target.map(Ampere),
             lb: Ampere(self.cn28_lb),
+            car: Ampere(self.cn28_car),
             lb_stale: cn28_stale,
             grid_stale,
             enabled: self.enabled,
