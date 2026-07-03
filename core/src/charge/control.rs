@@ -121,6 +121,30 @@ pub fn probe_report(base: Ampere, over: Ampere, max: Ampere, max_over: Ampere) -
     Ampere(max.0 + over.0)
 }
 
+/// V4 (#135 step 5): regulate the box's *grant* (`lb_current` from the CN28 LOG)
+/// directly, instead of stacking offset/measured/trim. Built on the measured box
+/// response (#135 step 6): the box sheds `floor(excess)` amps per ~6 s eval once the
+/// meter reads >0.5 A over its limit, and ratchets up by the reported headroom.
+///
+/// - grant above target → report `max + err` (at least `max + 1` to clear the dead
+///   zone, capped at `max + max_over` to stay clearly below the cut threshold),
+/// - grant at target (±1 A — grants are whole amps) → report exactly `max` (holds,
+///   #57),
+/// - grant below target → report the deficit as headroom (`max − (target − lb)`),
+///   which also serves the start-grant: `lb = 0` reports `max − target`, so the box
+///   opens at exactly the target.
+pub fn lb_tracking_report(max: Ampere, target: Ampere, lb: Ampere, max_over: Ampere) -> Ampere {
+    let err = lb.0 - target.0;
+    if err >= 1.0 {
+        let over = if err > max_over.0 { max_over.0 } else { err };
+        Ampere(max.0 + over)
+    } else if err <= -1.0 {
+        Ampere(max.0 + err).clamp(Ampere(0.0), max)
+    } else {
+        max
+    }
+}
+
 /// Relax the trim toward zero by `step` while CN28 feedback is stale (#119): a lost
 /// feedback sample decays the correction back to the hardware-proven `offset + measured`
 /// loop instead of holding a value the loop can no longer see. Never crosses zero.
@@ -290,6 +314,75 @@ mod tests {
         assert_eq!(
             probe_report(MAX, Ampere(0.5), MAX, Ampere(3.5)),
             Ampere(32.5)
+        );
+    }
+
+    // --- V4 direct grant tracking (#135 step 5) ---
+
+    #[test]
+    fn lb_tracking_holds_at_the_ceiling_when_the_grant_matches_the_target() {
+        assert_eq!(
+            lb_tracking_report(MAX, Ampere(20.0), Ampere(20.0), Ampere(2.0)),
+            MAX
+        );
+    }
+
+    #[test]
+    fn lb_tracking_reports_the_excess_above_the_ceiling() {
+        // Grant 6 A over → the box sheds proportionally, but the report is capped
+        // at max_over so it can never approach the cut threshold.
+        assert_eq!(
+            lb_tracking_report(MAX, Ampere(20.0), Ampere(26.0), Ampere(2.0)),
+            Ampere(34.0)
+        );
+    }
+
+    #[test]
+    fn lb_tracking_one_amp_over_clears_the_dead_zone() {
+        // The box ignores ≤0.5 over (#135 step 6); a 1 A error must land at
+        // max+1, inside the measured shed region.
+        assert_eq!(
+            lb_tracking_report(MAX, Ampere(20.0), Ampere(21.0), Ampere(2.0)),
+            Ampere(33.0)
+        );
+    }
+
+    #[test]
+    fn lb_tracking_sub_amp_error_holds() {
+        // CN28 grants are whole amps; anything below 1 A error is "at target".
+        assert_eq!(
+            lb_tracking_report(MAX, Ampere(20.0), Ampere(20.5), Ampere(2.0)),
+            MAX
+        );
+        assert_eq!(
+            lb_tracking_report(MAX, Ampere(20.0), Ampere(19.5), Ampere(2.0)),
+            MAX
+        );
+    }
+
+    #[test]
+    fn lb_tracking_reports_the_deficit_as_headroom() {
+        // Grant 6 A short → headroom 6, the box ratchets up to the target.
+        assert_eq!(
+            lb_tracking_report(MAX, Ampere(20.0), Ampere(14.0), Ampere(2.0)),
+            Ampere(26.0)
+        );
+    }
+
+    #[test]
+    fn lb_tracking_start_headroom_equals_the_target() {
+        // No grant yet: report max − target, so the start-grant is the target.
+        assert_eq!(
+            lb_tracking_report(MAX, Ampere(20.0), Ampere(0.0), Ampere(2.0)),
+            Ampere(12.0)
+        );
+    }
+
+    #[test]
+    fn lb_tracking_deficit_report_floors_at_zero() {
+        assert_eq!(
+            lb_tracking_report(MAX, Ampere(32.0), Ampere(0.0), Ampere(2.0)),
+            Ampere(0.0)
         );
     }
 

@@ -10,7 +10,8 @@
 
 use evc04_cn28_core::charge::boxsim::{BoxSim, BoxSimParams};
 use evc04_cn28_core::charge::control::{
-    ramp_step, reported_current, trim_decay, trim_step, Ampere, ControlInputs, FailsafeMode,
+    lb_tracking_report, ramp_step, reported_current, trim_decay, trim_step, Ampere, ControlInputs,
+    FailsafeMode,
 };
 
 // Mirrors of the firmware constants (firmware/src/charge.rs) — the replay must run
@@ -24,6 +25,12 @@ const TRIM_MAX: f32 = 8.0;
 const TRIM_PERIOD_S: u32 = 5;
 /// Today's HA automation publishes `max(grid_w/690, 0)` every 5 s (#134 H2).
 const MEASURED_PERIOD_S: u32 = 5;
+/// The box recomputes the CN28 LOG metering fields (incl. `lb_current`) only ~every
+/// 5 s (#119) — the V4 feedback is that stale.
+const CN28_PERIOD_S: u32 = 5;
+/// V4 caps the over-report at +2: the strongest *measured* shed rate (−2 A/eval)
+/// while staying clearly below the cut threshold (>2, ≤4).
+const LB_TRACKING_MAX_OVER: f32 = 2.0;
 
 /// The car: follows the box's grant with a finite ramp; below the IEC 6 A pilot
 /// minimum it draws nothing. Rates fitted from the fixtures (~0.5 A/s up, fast
@@ -58,6 +65,9 @@ enum Reporting {
     /// below the box's cut threshold, so the box can see "over limit" without
     /// dropping the session. `trim` disabled — the open clamp replaces its job.
     OpenClamp { cap: f32 },
+    /// Variant V4 (#135 step 5): regulate the box's grant directly on the ~5 s
+    /// CN28 `lb_current` feedback — no offset ramp, no measured, no trim.
+    LbTracking,
 }
 
 struct Scenario {
@@ -91,6 +101,7 @@ fn run(sc: &Scenario) -> Vec<Sample> {
     let mut offset = MAX_BOX; // firmware cold-start
     let mut trim = 0.0_f32;
     let mut measured = 0.0_f32;
+    let mut cn28_lb = 0.0_f32;
     let mut out = Vec::new();
 
     for t in 0..sc.duration_s {
@@ -130,8 +141,14 @@ fn run(sc: &Scenario) -> Vec<Sample> {
                     .0
                 }
                 (Reporting::AsShipped, None) => trim_decay(Ampere(trim), Ampere(1.0)).0,
-                (Reporting::OpenClamp { .. }, _) => 0.0,
+                (Reporting::OpenClamp { .. } | Reporting::LbTracking, _) => 0.0,
             };
+        }
+
+        // CN28 telemetry: the box refreshes the LOG metering fields only ~every
+        // 5 s, so the V4 feedback lags the true grant by up to one period.
+        if t % CN28_PERIOD_S == 0 {
+            cn28_lb = boxsim.lb().0;
         }
 
         let reported = match sc.reporting {
@@ -159,6 +176,18 @@ fn run(sc: &Scenario) -> Vec<Sample> {
                     (offset + measured).clamp(0.0, cap)
                 }
             }
+            Reporting::LbTracking => match target {
+                Some(tgt) if enabled && tgt >= MIN_CHARGE => {
+                    lb_tracking_report(
+                        Ampere(MAX_BOX),
+                        Ampere(tgt),
+                        Ampere(cn28_lb),
+                        Ampere(LB_TRACKING_MAX_OVER),
+                    )
+                    .0
+                }
+                _ => MAX_BOX + PAUSE_MARGIN,
+            },
         };
 
         if enabled && !boxsim.charging() {
@@ -287,6 +316,71 @@ fn open_clamp_converges_to_target() {
         (end.car - 13.0).abs() <= 1.5,
         "with the measured down response the loop should settle near the 13 A target, got {end:?}"
     );
+}
+
+/// The #135 step-5 acceptance run for variant V4: the planned live-test staircase
+/// (16→12→10→8→6→8→16) under deep PV export — the exact scenario that broke the
+/// shipped controller (H2: measured clamped to 0, loop open). V4 never looks at
+/// `measured`, so the export can't hurt it; the box's measured down response
+/// (#135 step 6) does the actual shedding.
+///
+/// The eval period is only known as ~5–10 s (fitted: 6 s), and the ~5 s CN28
+/// feedback lag beats against it, so the proof must hold across the whole range —
+/// including the phase alignments where a stale grant makes V4 over-report one
+/// eval too long.
+#[test]
+fn lb_tracking_holds_every_target_across_the_band() {
+    let steps: [(u32, f32); 7] = [
+        (0, 16.0),
+        (120, 12.0),
+        (240, 10.0),
+        (360, 8.0),
+        (480, 6.0),
+        (600, 8.0),
+        (720, 16.0),
+    ];
+    for eval_period_s in [5.0, 6.0, 7.0, 8.0, 9.0, 10.0] {
+        let sc = Scenario {
+            events: steps.iter().map(|&(t, a)| (t, Some(a), true)).collect(),
+            house_w: 300.0,
+            pv_w: 12_000.0, // deep export: the H2 scenario the old loop couldn't survive
+            duration_s: 840,
+            reporting: Reporting::LbTracking,
+            box_params: BoxSimParams {
+                eval_period_s,
+                ..fitted_box()
+            },
+        };
+        let trace = run(&sc);
+
+        // The session must survive the whole staircase: after the start-grant the
+        // box never cuts (lb never returns to 0) and the car never stalls below 6 A.
+        let start = trace.iter().find(|s| s.lb > 0.0).expect("charge starts");
+        for s in trace.iter().skip(start.t as usize + 30) {
+            assert!(
+                s.lb > 0.0,
+                "box cut the session (eval {eval_period_s}) at {s:?}"
+            );
+            assert!(
+                s.car >= MIN_CHARGE,
+                "car stalled (eval {eval_period_s}) at {s:?}"
+            );
+        }
+
+        // Each step has settled onto its target (±1 A, grants are whole amps) well
+        // before the next one — no pin at 15/16, no undershoot.
+        for &(at, tgt) in &steps {
+            let settled = &trace[(at + 110) as usize];
+            assert!(
+                (settled.car - tgt).abs() <= 1.0,
+                "target {tgt} not held 110 s after the step (eval {eval_period_s}), got {settled:?}"
+            );
+            assert!(
+                (settled.lb - tgt).abs() <= 1.0,
+                "grant off target {tgt} 110 s after the step (eval {eval_period_s}), got {settled:?}"
+            );
+        }
+    }
 }
 
 /// Replay of the #135 step-6 probe measurement (`2026-07-02-probe-measurement.log`):
