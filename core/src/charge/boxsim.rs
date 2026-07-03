@@ -49,6 +49,12 @@ pub struct BoxSimParams {
 /// capture 2026-07-03 — the hold was only ever measured with the car drawing).
 const IDLE_CAR_FLOOR: f32 = 1.0;
 
+/// The IEC 61851 6 A pilot minimum. A shed step of ≥2 A that would land the grant
+/// at/below it drops the session instead (flag-day staircase 2026-07-03: lb 8 at
+/// reported 18 → cut, car still drawing); the measured −1 A ride down *to* 6
+/// (probe +1.0 stage, 2026-07-02) did not cut — the rule is fitted to both.
+const PILOT_MIN_A: f32 = 6.0;
+
 /// The box's charge-limit state: the current grant (`lb_current` in the CN28 LOG)
 /// and whether a session is active.
 #[derive(Debug)]
@@ -139,7 +145,13 @@ impl BoxSim {
             } else {
                 excess as i32 as f32
             };
-            self.lb = Ampere(self.lb.0 - step).clamp(Ampere(0.0), p.max_dip);
+            if step >= 2.0 && self.lb.0 - step <= PILOT_MIN_A {
+                self.lb = Ampere(0.0);
+                self.charging = false;
+                self.cooldown_s = p.restart_cooldown_s;
+            } else {
+                self.lb = Ampere(self.lb.0 - step).clamp(Ampere(0.0), p.max_dip);
+            }
         }
     }
 }
@@ -267,6 +279,21 @@ mod tests {
         b.tick(10.0, Ampere(18.0), Ampere(16.0));
         assert_eq!(b.lb(), Ampere(14.0));
         assert!(b.charging());
+    }
+
+    #[test]
+    fn a_two_amp_shed_landing_at_the_pilot_floor_cuts() {
+        // Flag-day staircase (2026-07-03-flagday-staircase.log, t=522–527): lb 8,
+        // car ~6, reported 18 → the box dropped the session instead of 8 → 6. The
+        // measured −1 A ride down TO 6 (probe +1.0 stage) did NOT cut, so the rule
+        // is fitted to both data points: a ≥2 A step that lands at/below the 6 A
+        // pilot minimum cuts.
+        let mut b = BoxSim::new(params());
+        assert!(b.try_start(Ampere(8.0)));
+        assert_eq!(b.lb(), Ampere(8.0));
+        b.tick(10.0, Ampere(18.0), Ampere(8.0));
+        assert!(!b.charging());
+        assert_eq!(b.lb(), Ampere(0.0));
     }
 
     #[test]
