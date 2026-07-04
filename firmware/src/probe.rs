@@ -81,7 +81,7 @@ pub fn run(
 
     // Reconnect forever. A WiFi/MQTT drop must NEVER bubble out of `run`: `main` reboots
     // the chip when this returns, which kills the RS485 slave thread and lets the box
-    // see a silent meter → solid-red hard-fault (SPECS §9, #87). Instead we drop the
+    // see a silent meter → solid-red hard-fault (SPECS §7, #87). Instead we drop the
     // dead session and reconnect, while `worker_loop`/`offline_tick` keep the control
     // tick running (so the measured-failsafe still engages) and the slave keeps
     // answering the box's ~1 Hz poll throughout.

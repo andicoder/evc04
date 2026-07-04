@@ -1,4 +1,4 @@
-//! Pure closed-loop control math for the meter emulation (SPECS.md §6/§9).
+//! Pure closed-loop control math for the meter emulation (SPECS.md §6/§7).
 //!
 //! Ported `no_std` from the `charge` daemon's `control.rs`/`lib.rs` so the on-box
 //! firmware (evc04#86) serves the **same** hardware-proven value instead of a
@@ -28,7 +28,7 @@ impl core::ops::Sub for Ampere {
     }
 }
 
-/// Direction a staleness failsafe takes when an input ages out (SPECS §9, #51).
+/// Direction a staleness failsafe takes when an input ages out (SPECS §7, #51).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailsafeMode {
     /// Serve `reported = 0` — the meterless-box default, "never worse than no tool".
@@ -175,7 +175,7 @@ pub fn trim_decay(trim: Ampere, step: Ampere) -> Ampere {
 /// fallback (report 0) would make the box ratchet to its DIP maximum on the very
 /// input failures that blind the controller — and the meterless unmanaged-box
 /// baseline the mode existed for has no target publisher, so V4's cold-start pause
-/// blocks it anyway (SPECS §9, #51/#52).
+/// blocks it anyway (SPECS §7, #51/#52).
 #[derive(Clone, Copy, Debug)]
 pub struct GrantControlInputs {
     /// The box's DIP-set ceiling (`MAX_BOX_AMPERE`).
@@ -280,7 +280,7 @@ fn safest(a: Option<Ampere>, b: Option<Ampere>) -> Option<Ampere> {
     }
 }
 
-/// The per-phase household current to report this poll (SPECS §6/§9). Mirrors the
+/// The per-phase household current to report this poll (SPECS §6/§7). Mirrors the
 /// daemon's `Controller::reported_frame`, reduced to a pure function:
 ///
 /// 1. The enable gate (#60), when off, forces a pause.

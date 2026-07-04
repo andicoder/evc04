@@ -39,7 +39,7 @@ The general rules live in the global skills (`tdd`, `clean-code`, `commit-conven
   docs, packaging/CI config, pure renames. The pure logic in `core/` (Modbus/Inepro
   framing, the `reported = MAX_BOX − target` control math, the CN28 LOG decode) is
   unit-tested against the verified hex frames in [`docs/SPECS.md`](docs/SPECS.md)
-  §5/§10, using those exact fixtures.
+  §5/§9, using those exact fixtures.
 - **Options first.** More than one reasonable approach → list 2–3 numbered options with
   tradeoffs and stop; let the human pick before you build.
 - **No speculative abstraction; validate at boundaries only** (`clean-code` skill). Build
@@ -72,7 +72,7 @@ The control loop drives a **3-phase 11 kW charger**.
   **hard-faults the box (solid red, no charge)** — it does **not** fall back to full
   charge. So the device must keep answering the box's ~1 Hz RS485 poll: auto-restart /
   reboot to recover, overlap rollouts (the new instance answers before the old stops), and
-  never let a worker wedge the slave. See [`docs/SPECS.md`](docs/SPECS.md) §9.
+  never let a worker wedge the slave. See [`docs/SPECS.md`](docs/SPECS.md) §7.
 - Before changing anything on the physical box (DIP switches, wiring), photograph the
   current state for a clean revert.
 
