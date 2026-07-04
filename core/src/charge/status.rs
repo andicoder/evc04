@@ -8,17 +8,37 @@ use alloc::format;
 use alloc::string::String;
 
 use super::control::Ampere;
+use crate::probe::cn28::CpState;
 
-/// Approximate evcc charge status (#28): `B` (connected, not charging) when the
-/// emulation pauses the box — reporting **above** the ceiling so the box actually
-/// cuts (#57) — otherwise `C` (charging allowed / current may flow). Reporting
-/// exactly the ceiling holds an active charge, so `== max` is still `C`. `A` (no
-/// vehicle) is never asserted: a meter emulation has no control-pilot line.
-pub fn charge_state(reported: Ampere, max: Ampere) -> char {
-    if reported.0 > max.0 {
-        'B'
-    } else {
-        'C'
+/// evcc charge status (#148): mirror the box's real control-pilot state (CN28 LOG
+/// `S:` line) instead of approximating from our command. `""` when the pilot is
+/// unknown — post-reboot blind window (`cp_state` is transition-only, #117), a
+/// stale CN28 feed, or a fault — because evcc's `ChargeStatusString("")` errors
+/// and the loadpoint then *retains* its last status: never a phantom unplug or
+/// connect. Our pause (reporting **above** the ceiling so the box cuts, #57)
+/// still forces `B` while the pilot reads `C`, so evcc's power estimate drops to
+/// 0 during the ramp-down. Reporting exactly the ceiling holds an active charge,
+/// so `== max` is still `C`.
+pub fn charge_state(
+    reported: Ampere,
+    max: Ampere,
+    cp_state: Option<CpState>,
+    cn28_stale: bool,
+) -> &'static str {
+    if cn28_stale {
+        return "";
+    }
+    match cp_state {
+        None | Some(CpState::Fault) => "",
+        Some(CpState::NoVehicle) => "A",
+        Some(CpState::Connected) => "B",
+        Some(CpState::Charging) => {
+            if reported.0 > max.0 {
+                "B"
+            } else {
+                "C"
+            }
+        }
     }
 }
 
@@ -35,7 +55,7 @@ pub struct Status<'a> {
     pub grid_age_s: f32,
     /// The grid heartbeat aged out → the controller is pausing the box.
     pub grid_failsafe: bool,
-    pub charge_state: char,
+    pub charge_state: &'a str,
     pub enabled: bool,
     /// Reason for the most recent rejected input, or `None` when healthy. Internal
     /// fixed strings (never raw payload), so they need no JSON escaping.
@@ -82,24 +102,77 @@ pub fn status_json(s: &Status) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn charges_when_reported_below_ceiling() {
-        assert_eq!(charge_state(Ampere(6.0), Ampere(16.0)), 'C');
+    fn fresh(cp: CpState) -> Option<CpState> {
+        Some(cp)
     }
 
     #[test]
-    fn charges_when_reported_zero() {
-        assert_eq!(charge_state(Ampere(0.0), Ampere(16.0)), 'C');
+    fn no_vehicle_reports_a() {
+        assert_eq!(
+            charge_state(Ampere(6.0), Ampere(16.0), fresh(CpState::NoVehicle), false),
+            "A"
+        );
     }
 
     #[test]
-    fn charges_at_exactly_the_ceiling() {
-        assert_eq!(charge_state(Ampere(16.0), Ampere(16.0)), 'C');
+    fn no_vehicle_wins_even_when_pausing() {
+        assert_eq!(
+            charge_state(Ampere(16.5), Ampere(16.0), fresh(CpState::NoVehicle), false),
+            "A"
+        );
     }
 
     #[test]
-    fn not_charging_when_paused_above_ceiling() {
-        assert_eq!(charge_state(Ampere(16.5), Ampere(16.0)), 'B');
+    fn connected_idle_reports_b() {
+        assert_eq!(
+            charge_state(Ampere(6.0), Ampere(16.0), fresh(CpState::Connected), false),
+            "B"
+        );
+    }
+
+    #[test]
+    fn charging_reports_c() {
+        assert_eq!(
+            charge_state(Ampere(6.0), Ampere(16.0), fresh(CpState::Charging), false),
+            "C"
+        );
+    }
+
+    #[test]
+    fn charging_at_exactly_the_ceiling_reports_c() {
+        assert_eq!(
+            charge_state(Ampere(16.0), Ampere(16.0), fresh(CpState::Charging), false),
+            "C"
+        );
+    }
+
+    #[test]
+    fn our_pause_reports_b_even_if_pilot_charging() {
+        assert_eq!(
+            charge_state(Ampere(16.5), Ampere(16.0), fresh(CpState::Charging), false),
+            "B"
+        );
+    }
+
+    #[test]
+    fn unknown_pilot_reports_empty() {
+        assert_eq!(charge_state(Ampere(6.0), Ampere(16.0), None, false), "");
+    }
+
+    #[test]
+    fn stale_feed_reports_empty() {
+        assert_eq!(
+            charge_state(Ampere(6.0), Ampere(16.0), fresh(CpState::Charging), true),
+            ""
+        );
+    }
+
+    #[test]
+    fn fault_reports_empty() {
+        assert_eq!(
+            charge_state(Ampere(6.0), Ampere(16.0), fresh(CpState::Fault), false),
+            ""
+        );
     }
 
     #[test]
@@ -112,7 +185,7 @@ mod tests {
             last_poll_age_s: 0.4,
             grid_age_s: 1.1,
             grid_failsafe: false,
-            charge_state: 'C',
+            charge_state: "C",
             enabled: true,
             last_error: None,
             lb_current_ampere: 7.0,
@@ -135,7 +208,7 @@ mod tests {
             last_poll_age_s: 0.2,
             grid_age_s: 17.3,
             grid_failsafe: true,
-            charge_state: 'B',
+            charge_state: "B",
             enabled: false,
             last_error: Some("bad target"),
             lb_current_ampere: 9.0,
@@ -149,5 +222,26 @@ mod tests {
         assert!(json.contains(r#""lb_current_ampere":9"#), "{json}");
         assert!(json.contains(r#""cn28_feedback_stale":true"#), "{json}");
         assert!(json.contains(r#""probe_over_ampere":1.5"#), "{json}");
+    }
+
+    #[test]
+    fn json_emits_empty_charge_state() {
+        let s = Status {
+            online: true,
+            target_ampere: 6.0,
+            grid_power_w: 0.0,
+            reported_ampere: 16.5,
+            last_poll_age_s: 0.2,
+            grid_age_s: 1.0,
+            grid_failsafe: false,
+            charge_state: "",
+            enabled: true,
+            last_error: None,
+            lb_current_ampere: 0.0,
+            cn28_feedback_stale: false,
+            probe_over_ampere: 0.0,
+        };
+        let json = status_json(&s);
+        assert!(json.contains(r#""charge_state":"""#), "{json}");
     }
 }
