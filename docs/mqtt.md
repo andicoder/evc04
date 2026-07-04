@@ -195,31 +195,27 @@ reads it via one MQTT sensor using `json_attributes_topic` + value templates.
 | `last_poll_age_s`     | number         | Seconds since the EVC04 last polled us (~1 Hz; a growing value signals a dead RS485 link). |
 | `grid_age_s`          | number         | Seconds since the last grid-power heartbeat; drives `grid_failsafe`. |
 | `grid_failsafe`       | bool           | `true` while paused because the heartbeat went stale (> 15 s → the controller is gone). |
-| `charge_state`        | string         | Approximated evcc charge status (#28): `C` while charge is allowed and current flows, else `B` (connected, not charging). `A` (no vehicle) is never asserted — a meter emulation has no control-pilot line. evcc's custom-charger `status` reads this. |
+| `charge_state`        | string         | evcc charge status mirroring the box's **real** control-pilot state (#148): `A` (no vehicle), `B` (connected, not charging — also forced while we pause), `C` (charging), or `""` when the pilot is unknown (post-reboot blind window, stale CN28 feed, or an `F` fault). evcc's custom-charger `status` reads this. |
 | `enabled`             | bool           | The enable gate (#60): `false` while charging is hard-paused regardless of the target. `true` by default. evcc's `enabled` read maps here. |
 | `last_error`          | string or null | Reason for the most recent rejected input; `null` when healthy. |
 | `lb_current_ampere`   | number         | The box's own per-car grant (`lb_current`) read from the CN28 LOG — the V4 control feedback. |
 | `cn28_feedback_stale` | bool           | `true` when the grant feed is > 15 s old; the firmware then pauses (blind regulation never charges). |
 | `probe_over_ampere`   | number         | Active measurement-probe lift over the ceiling, ampere (0 when no probe is running). |
 
-> **`charge_state` is a command, not the car's real pilot state — don't confuse it with
-> `cp_state`.** `charge_state` (this control-plane `status` topic) is what the emulation
-> *commands*: derived purely from `reported_ampere` (`> max` → `B`, else `C`), only ever
-> `B`/`C`, and read by evcc as its charger `status`. With no control-pilot line it can
-> never assert `A` (no vehicle) — so through this field evcc **cannot** tell an unplugged
-> car from a connected-but-idle one, and it can even read `C` spuriously when grid import
-> alone trips the charging floor.
+> **`charge_state` mirrors the box's real pilot, guarded for evcc.** Since #148 it is
+> derived from the CN28 LOG `S:` line (`cp_state`), not approximated from our command:
+> `A`/`B`/`C` follow the pilot, except that our pause (reporting above the ceiling)
+> forces `B` even while the box still reads `C` mid-ramp-down — so evcc's charge-power
+> estimate drops to 0 as soon as we cut. Because `cp_state` is transition-only and
+> nullable (#117), an unknown pilot — the post-reboot blind window, a stale CN28 feed,
+> or an `F` fault — yields `""`: evcc's status parser errors on an empty string and the
+> loadpoint **retains its previous status**, so the blind window can never
+> phantom-unplug or phantom-connect.
 >
-> The box's **real** IEC-61851 pilot state (`A`/`B`/`C`/`F`) is `cp_state`, decoded from
-> the CN28 LOG on the telemetry plane (`evc04/cn28/telemetry`, see
-> [`cn28-log-protocol.md`](cn28-log-protocol.md)). It is the genuine
-> plug/charge observation, but it is nullable/unreliable — `null` until the next
-> plug/unplug/charge event (#117) — so HA treats it as *unavailable* when null and it
-> must stay an observation/diagnostic signal, **not** an automation or control input.
->
-> The two look alike (both use `A`/`B`/`C`) but answer different questions:
-> `charge_state` = our *intent*, `cp_state` = the box's *reality*. Keep the roles
-> separate; never feed the unreliable `cp_state` into the control path.
+> The raw observation stays available as `cp_state` on the telemetry plane
+> (`evc04/cn28/telemetry`, see [`cn28-log-protocol.md`](cn28-log-protocol.md)),
+> `null` while unknown. It feeds only this status derivation — never the V4 control
+> path, which regulates on the grant feedback alone.
 
 ### Last Will and Testament
 
@@ -239,8 +235,8 @@ The charging brain is **evcc** (#28); the firmware is its **custom charger**:
 - evcc `maxcurrent` → the **target** topic (ampere); evcc `enable` → the **enable**
   topic (`{"enable": true|false}`). Separate topics so on/off and the current setpoint
   never race on one write path (#60).
-- evcc reads the **status** topic: `charge_state` (`B`/`C`), `target_ampere`, and
-  `enabled`.
+- evcc reads the **status** topic: `charge_state` (`A`/`B`/`C`, or `""` = pilot
+  unknown → evcc retains its last status), `target_ampere`, and `enabled`.
 - The **grid-power** topic is the liveness heartbeat — HA/evcc republishes the live
   grid power there every ~5 s (`{"watt": N}`); the firmware does not modulate on it,
   it only watches its cadence.
