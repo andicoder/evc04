@@ -2,8 +2,8 @@ name: core
 
 # Host tests for the pure no_std core crate (evc04-cn28-core). Built/tested on the
 # stable toolchain — no esp toolchain, no device — so unlike firmware/ it runs in
-# CI. Scoped to core/** (a separate workflow because GitHub path filters are
-# per-workflow and ci.yml is locked to charge/**).
+# CI. Scoped to core/** with its own path filter (GitHub path filters are
+# per-workflow); firmware/ has no CI — it needs the esp toolchain and a device.
 on:
   push:
     branches: [main]

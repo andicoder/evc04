@@ -1,8 +1,9 @@
 # evc04 — architecture overview
 
-This repo collects two independent workstreams against the same wallbox, the
-**Vestel EVC04-AC11-T2P**. They touch different ports of the box and have separate
-failure domains.
+This repo collects the two paths into the same wallbox, the
+**Vestel EVC04-AC11-T2P** — control (RS485 meter emulation) and read-only telemetry
+(the CN28 LOG port). They use different ports of the box, and both now run on the
+ESP32 inside it.
 
 ## The wallbox, briefly
 
@@ -15,15 +16,16 @@ Modbus-TCP or OCPP. But it does two things we can exploit:
 - It exposes an internal **CN28 "LOG" header** — a 3.3 V TTL UART that responds
   with per-phase metering and state when prompted.
 
-## `charge/` — control via meter emulation (RS485)
+## Control via meter emulation (RS485)
 
-`charge/` emulates the PRO380 the Power Optimizer polls. By feeding a fabricated
+The firmware emulates the PRO380 the Power Optimizer polls. By feeding a fabricated
 current it closes the optimizer's feedback loop, so the box **modulates** (or gates
 on/off) charging. An external brain — Home Assistant or evcc — sets the target over
-MQTT; this daemon only translates that into the meter value the box reads. The
-charging logic (price, PV surplus, departure) lives in the controller, never here.
-See [`../charge/SPECS.md`](../charge/SPECS.md) and
-[`../charge/docs/mqtt.md`](../charge/docs/mqtt.md).
+MQTT; the box only translates that into the meter value it reads. The charging logic
+(price, PV surplus, departure) lives in the controller, never here. The control math
+and RS485 framing are pure in [`../core/`](../core/); the ESP32 in
+[`../firmware/`](../firmware/) runs the loop and answers the poll. See
+[`SPECS.md`](SPECS.md) and [`mqtt.md`](mqtt.md).
 
 ## `core/` + `firmware/` — telemetry via the CN28 LOG port (UART)
 

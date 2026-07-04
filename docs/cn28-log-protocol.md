@@ -235,7 +235,7 @@ on hardware.
 
 That is the **same speed class as a home-automation grid measurement (~3–6 s)** and
 **slower** than the ~1 s source the 6–8 A bottom of the control band would need
-(`charge/SPECS.md` §6). It is why the on-box floor-seek (#119) advances its integral
+(`SPECS.md` §6). It is why the on-box floor-seek (#119) advances its integral
 trim **once per fresh ~5 s sample, not per 1 s control tick** (integrating stale data
 each tick would over-correct ~5× and oscillate), and why a stable 6 A may be
 physically unreachable at this feedback rate — the trim is built to *reveal* the real

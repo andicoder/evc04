@@ -1,6 +1,6 @@
 //! Parse the MQTT control-intake payloads (evc04#86): `{"ampere": N}` for the
 //! target and measured topics, `{"enable": bool}` for the enable gate. Mirrors
-//! `charge/docs/mqtt.md` — a malformed or wrong-shaped payload is **rejected** so
+//! `docs/mqtt.md` — a malformed or wrong-shaped payload is **rejected** so
 //! the firmware holds its last good value and surfaces the reason, never silently
 //! pushing the charger to an unintended current.
 //!

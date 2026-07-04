@@ -2,9 +2,9 @@
 --
 -- The /firmware crate cross-compiles to xtensa-esp32-espidf with Espressif's
 -- `esp` toolchain and needs the esp build env; analysing it with the host target
--- fills the buffer with bogus errors. core/ and the charge/ daemon are plain host
--- crates and keep their normal (global) rustaceanvim settings — rustaceanvim
--- roots a separate rust-analyzer per crate, so we only override the firmware one.
+-- fills the buffer with bogus errors. core/ is a plain host crate and keeps its
+-- normal (global) rustaceanvim settings — rustaceanvim roots a separate
+-- rust-analyzer per crate, so we only override the firmware one.
 
 local repo = vim.fs.normalize(vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h"))
 local firmware_root = repo .. "/firmware"

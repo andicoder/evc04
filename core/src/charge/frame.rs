@@ -3,7 +3,7 @@
 //! The RS485 *slave* counterpart to `command`/`dump`: the EVC04 (master) polls us
 //! for three per-phase currents as `3× Float32` big-endian (ABCD byte order)
 //! starting at register `0x500C`. We build the FC03 response by hand so the exact
-//! bytes are verifiable against the frames captured in SPECS.md §5/§11.
+//! bytes are verifiable against the frames captured in SPECS.md §5/§10.
 //!
 //! Pure and `no_std` so the on-box ESP32 firmware (evc04#85) reuses the same
 //! verified logic the daemon proved on real hardware — no second implementation to
@@ -190,7 +190,7 @@ mod tests {
         assert_eq!(encode_currents(63.0, 63.0, 63.0), expected);
     }
 
-    // SPECS.md §5/§11: CRC is transmitted low byte first, hence `.to_le_bytes()`.
+    // SPECS.md §5/§10: CRC is transmitted low byte first, hence `.to_le_bytes()`.
     #[test]
     fn crc16_of_poll_frame_matches_spec() {
         // 01 03 50 0c 00 06 → 14 cb

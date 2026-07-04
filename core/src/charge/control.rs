@@ -704,7 +704,7 @@ mod tests {
         assert_eq!(trim_decay(Ampere(0.0), Ampere(1.0)), Ampere(0.0));
     }
 
-    // --- the decision (mirrors charge/tests/control.rs, pure) ---
+    // --- the decision (pure) ---
 
     #[test]
     fn closed_loop_reports_offset_plus_measured() {

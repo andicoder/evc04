@@ -1,6 +1,6 @@
 //! Serialize the retained MQTT status object (evc04#86), mirroring
-//! `charge/docs/mqtt.md` so an external controller (evcc / Home Assistant) reads
-//! the on-box firmware exactly like the k3s daemon. Pure: the firmware gathers the
+//! `docs/mqtt.md` so an external controller (evcc / Home Assistant) reads the
+//! on-box firmware in the documented contract shape. Pure: the firmware gathers the
 //! live values and hands them in; this module only derives `charge_state` and
 //! formats the JSON. `no_std` + `alloc`, no serde — the object is flat and fixed.
 

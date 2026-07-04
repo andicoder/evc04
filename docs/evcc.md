@@ -1,15 +1,16 @@
-# Driving evc04-charge from evcc
+# Driving the evc04 firmware from evcc
 
 [evcc](https://evcc.io) is the charging **brain** (PV surplus, dynamic price,
-target-by-departure). This service is its **actuator**: a mode-agnostic
+target-by-departure). The on-box firmware is its **actuator**: a mode-agnostic
 [custom charger](https://docs.evcc.io/en/docs/devices/chargers) reached over the
-[MQTT contract](mqtt.md). evcc decides *how much* to charge; we translate that into
-the fabricated meter current the EVC04 reads (closed loop, [`SPECS.md`](../SPECS.md)
-§6). No price/PV logic lives here.
+[MQTT contract](mqtt.md). evcc decides *how much* to charge; the firmware regulates
+the box's own grant toward that current (the V4 loop, [`SPECS.md`](SPECS.md) §6).
+No price/PV logic lives here.
 
 There is **exactly one commander** for the target at a time — evcc **or** a plain
-Home Assistant automation, never both. The `measured` topic is independent feedback
-(HA/evcc publishes the live grid current there) and is *not* a control surface.
+Home Assistant automation, never both. The `grid_power` topic is an independent
+liveness heartbeat (HA/evcc publishes the live grid power there) and is *not* a
+control surface.
 
 ## Mapping evcc ↔ our contract
 
@@ -28,8 +29,8 @@ Home Assistant automation, never both. The `measured` topic is independent feedb
 
 > **No `A` (no vehicle) state.** A meter emulation has no control-pilot line, so we
 > can't tell an unplugged car from a connected-but-idle one — `charge_state` is only
-> ever `B` or `C`. evcc relies on its own vehicle/SoC detection for unplug, and the
-> failsafe direction is full charge regardless ([`SPECS.md`](../SPECS.md) §9).
+> ever `B` or `C`. evcc relies on its own vehicle/SoC detection for unplug, and any
+> control-layer failure **pauses**, never charges on ([`SPECS.md`](SPECS.md) §9).
 
 ## Charger template
 
@@ -40,33 +41,33 @@ install. `${enable}` renders the boolean as `true`/`false`, so the payload is va
 chargers:
   - name: evc04
     type: custom
-    # Charging state: our service publishes charge_state = "B" | "C".
+    # Charging state: the firmware publishes charge_state = "B" | "C".
     status:
       source: mqtt
-      topic: evc04/status
+      topic: evc04/charge/status
       jq: .charge_state
-      timeout: 90s        # > the service's 2 s status republish; flags a dead service
+      timeout: 90s        # > the firmware's status republish; flags a dead device
     # Charging enabled? Read the dedicated gate the enable plugin writes (#60).
     enabled:
       source: mqtt
-      topic: evc04/status
+      topic: evc04/charge/status
       jq: .enabled
       timeout: 90s
     # On/off gate — its own topic, independent of the throttle (#60).
     enable:
       source: mqtt
-      topic: evc04/enable
+      topic: evc04/charge/enable
       payload: '{"enable": ${enable}}'
     # The actual throttle.
     maxcurrent:
       source: mqtt
-      topic: evc04/target
+      topic: evc04/charge/target
       payload: '{"ampere": ${maxcurrent}}'
 ```
 
 ## Loadpoint: min/max current
 
-Honour the inner loop's stable band ([`SPECS.md`](../SPECS.md) §6) so evcc never
+Honour the inner loop's stable band ([`SPECS.md`](SPECS.md) §6) so evcc never
 commands a current the meter emulation can't hold:
 
 ```yaml
@@ -77,20 +78,19 @@ loadpoints:
     maxcurrent: 16    # = MAX_BOX_AMPERE / the DIP setting (SPECS §2/§9)
 ```
 
-- The **stable modulation band is ~9–15 A** with home-automation-speed measurement;
-  6–8 A hunts. If evcc's PV surplus drops toward the floor, expect on/off rather
-  than smooth modulation there — that is the hardware, not evcc.
+- The V4 grant loop was proven across the full **6–16 A staircase** on hardware;
+  near the 6 A floor the box settles ~1 A high (a target of 6 holds at 7). Below
+  6 A it is on/off only — that is the 3φ hardware floor, not evcc.
 - `maxcurrent` must not exceed `MAX_BOX_AMPERE` (the physical DIP 4-5-6 setting):
-  above the ceiling the offset math saturates and the box just runs full.
+  at or above the ceiling there is no headroom left to hand out and the box runs full.
 
 ## Nested-loop timing — the important part
 
 Two feedback loops are stacked:
 
-1. **Inner** (this service ↔ EVC04): settles in **~30–60 s** after a target change
-   — the offset soft-rampere and the box's own optimizer re-converges.
-2. **Outer** (evcc ↔ this service): evcc reads its meters and re-commands
-   `maxcurrent`.
+1. **Inner** (firmware ↔ EVC04): the box re-evaluates its grant every ~5 s and the
+   firmware nudges it a step at a time, so a target change settles over **~30–60 s**.
+2. **Outer** (evcc ↔ firmware): evcc reads its meters and re-commands `maxcurrent`.
 
 If the **outer interval is shorter than the inner settle time, the two loops
 hunt** (evcc keeps correcting before the box has settled). So:
@@ -111,37 +111,31 @@ hunt** (evcc keeps correcting before the box has settled). So:
 - Keep evcc's current steps coarse (it already steps in whole ampere); avoid
   sub-amp chasing it can't observe through the inner loop anyway.
 
-## Failsafe direction — `pause` (default; why it matters)
+## Failsafe — the firmware always pauses (why it matters)
 
-evcc only writes `target` on a control *decision*; it does **not** heartbeat. When
-idle (e.g. PV mode with no surplus) it can stay quiet for minutes, and its idle
-cadence is unbounded — so the target will routinely age out past
-`TARGET_TIMEOUT_SECONDS`. Likewise any control-path blip (e.g. a **nightly router
-reconnect**) can age out `measured`.
+evcc only writes `target` on a control *decision*; it does **not** heartbeat the
+target. When idle (e.g. PV mode with no surplus) it can stay quiet for minutes, and
+because the target is a **latched** setpoint the firmware never ages it out — aging it
+would deadlock (the box forgets → pauses → evcc never re-sends).
 
-The service therefore defaults both failsafes to **`pause`** (#52), so any such fault
-**stops** charging instead of starting it at the worst time: a stale evcc pause stays
-a pause, a stale measurement stops the loop. **No env needed** — it's the default.
-
-```
-# defaults (shown for clarity; you don't need to set these for evcc)
-TARGET_FAILSAFE=pause
-MEASURED_FAILSAFE=pause
-```
-
-Only switch to `full_charge` for a Home-Assistant-automation-only / unmanaged box
-where charging-on-fault is the desired baseline. See [`SPECS.md`](../SPECS.md) §9.
+Liveness is carried instead by the **grid-power heartbeat**: HA/evcc republishes the
+live grid power to `evc04/charge/grid_power` every ~5 s, and more than 15 s of silence
+**pauses** the box (#136). A stale CN28 grant feed and an explicit `enable=false` also
+pause. So any control-path fault (a **nightly router reconnect**, a dead broker, evcc
+crashing) **stops** charging instead of starting it at the worst time — the safe
+direction for a managed box (#52). This is unconditional; unlike the retired daemon
+there is no `full_charge` opt-out. See [`SPECS.md`](SPECS.md) §9.
 
 ## Sanity check
 
-With the service running and the broker reachable:
+With the firmware running and the broker reachable:
 
 - evcc UI shows the loadpoint as **connected**; toggling the loadpoint on/off
-  flips `evc04/enable` between `{"enable": true}` and `{"enable": false}` (and
-  `evc04/status` `enabled` follows), while `evc04/target` carries the throttle.
-- `evc04/status` `charge_state` reads `C` once current flows, `B` when paused.
-- Commanding a PV-surplus current in the 9–15 A band modulates; near 6 A it
-  reverts to on/off.
+  flips `evc04/charge/enable` between `{"enable": true}` and `{"enable": false}` (and
+  `evc04/charge/status` `enabled` follows), while `evc04/charge/target` carries the throttle.
+- `evc04/charge/status` `charge_state` reads `C` once current flows, `B` when paused.
+- Commanding a PV-surplus current modulates across the proven 6–16 A staircase
+  (settling ~1 A high near the floor); below 6 A it is on/off.
 
 A plain Home-Assistant-only setup (number entity → `target`, sensor ← `status`)
 also works for manual current + on/off; see [mqtt.md](mqtt.md).

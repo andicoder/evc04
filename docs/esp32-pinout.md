@@ -1,6 +1,6 @@
 # ESP32 pinout — CN28 read + RS485 meter emulation
 
-Pin assignment for the **single-MCU in-box bridge** (SPECS §12, #65): one classic
+Pin assignment for the **single-MCU in-box bridge** (SPECS §7, #65): one classic
 ESP32 (AZ-Delivery **DevKit C V4**, 38-pin WROOM-32) doing **both** jobs —
 
 - **read** the CN28 LOG console over a TTL UART (already shipping, #66/#70), and
@@ -135,8 +135,8 @@ controllers.
 | GPIO6–11          | wired to the WROOM SPI flash — using them crashes the chip  |
 | GPIO0, 2, 5, 12, 15 | strapping pins — their level at boot selects boot mode/flash voltage |
 | GPIO34–39         | input-only — no output driver, so no TX                     |
-| GPIO1, 3          | UART0 USB console / first-flash path (SPECS §12)            |
-| GPIO16, 17        | UART1 CN28 read (SPECS §12)                                 |
+| GPIO1, 3          | UART0 USB console / first-flash path (SPECS §7)             |
+| GPIO16, 17        | UART1 CN28 read (SPECS §7)                                  |
 
 ## Full device wiring at a glance
 
@@ -154,6 +154,6 @@ controllers.
                 └───────────────────────────────────────────────────┘
 ```
 
-See [`../charge/SPECS.md`](../charge/SPECS.md) for the wire protocol, register
+See [`SPECS.md`](SPECS.md) for the wire protocol, register
 map, and control math, and [`overview.md`](overview.md) for how the read and
 control paths fit together.

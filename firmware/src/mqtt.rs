@@ -43,10 +43,9 @@ const TOPIC_STATUS: &str = "evc04/cn28/status";
 /// operator can read which image is live without inferring it from the schema.
 const TOPIC_VERSION: &str = "evc04/cn28/version";
 
-// Meter-emulation control plane (#86). Device-scoped `evc04/charge/*` so it does
-// not collide with the k3s daemon's `evc04/*` topics while both run in parallel
-// (the daemon stays production until this port is proven, milestone #65/§12);
-// evcc/HA repoint here when the daemon is retired. Mirrors charge/docs/mqtt.md.
+// Meter-emulation control plane (#86). Device-scoped `evc04/charge/*` topics —
+// they superseded the retired k3s daemon's `evc04/*` topics (milestone #65, §7) and
+// are what evcc/HA now target. Mirrors docs/mqtt.md.
 const TOPIC_CTRL_TARGET: &str = "evc04/charge/target";
 /// Raw signed grid power (#136): `{"watt": N}`, negative = export, forwarded by HA
 /// untouched. V4 uses only its cadence (liveness failsafe) — never the value.
