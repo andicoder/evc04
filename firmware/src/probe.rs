@@ -326,7 +326,12 @@ fn feed_cn28_feedback(controller: &mut Controller, telemetry: &Cn28Snapshot) {
         .map(|p| p.a_ma)
         .max()
         .unwrap_or(0);
-    controller.apply_cn28_feedback(lb as f32, car_ma as f32 / 1000.0, Instant::now());
+    controller.apply_cn28_feedback(
+        lb as f32,
+        car_ma as f32 / 1000.0,
+        telemetry.cp_state,
+        Instant::now(),
+    );
 }
 
 /// Re-tune the UART rate live for the baud sweep (#79). The result is echoed on
