@@ -54,10 +54,13 @@ chargers:
       timeout: 90s        # > the firmware's status republish; flags a dead device
     # Real measured charge power (optional): the box's own per-phase metering from
     # the telemetry plane. Without this, evcc estimates current × phases × 230 V.
+    # The box's electronics draw a few watts on L1 even while idle — floor that to
+    # 0 so long idle periods don't leak into evcc's session energy (charging is
+    # never below ~1.4 kW, so 10 W cleanly separates standby from a real draw).
     power:
       source: mqtt
       topic: evc04/cn28/telemetry
-      jq: (.p1.w // 0) + (.p2.w // 0) + (.p3.w // 0)
+      jq: ((.p1.w // 0) + (.p2.w // 0) + (.p3.w // 0)) as $p | if $p < 10 then 0 else $p end
     # Charging enabled? Read the dedicated gate the enable plugin writes (#60).
     enabled:
       source: mqtt
