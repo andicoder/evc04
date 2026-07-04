@@ -29,6 +29,7 @@ use evc04_cn28_core::charge::control::{
 };
 use evc04_cn28_core::charge::intake::IntakeError;
 use evc04_cn28_core::charge::status::{charge_state, status_json, Status};
+use evc04_cn28_core::probe::cn28::CpState;
 use log::warn;
 
 const MAX_BOX_AMPERE: f32 = 16.0;
@@ -72,7 +73,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 pub struct Tick {
     pub reported: f32,
     pub status_json: String,
-    /// Charge allowed and current flowing (`charge_state == 'C'`).
+    /// Charge allowed and current flowing (`charge_state == "C"`).
     pub charging: bool,
     /// A rejected control input is in effect (a genuine fault worth surfacing on the
     /// LED). Routine target/measurement staleness is *not* an error here — with the
@@ -95,6 +96,9 @@ pub struct Controller {
     /// metering) that gates the start posture.
     cn28_lb: f32,
     cn28_car: f32,
+    /// The box's real control-pilot state from the CN28 LOG `S:` line (#148) —
+    /// transition-only, so `None` from boot until the first plug/charge event.
+    cn28_cp_state: Option<CpState>,
     cn28_at: Instant,
     /// #135 step 6: active measurement-probe lift (A over the ceiling) and when it
     /// was last commanded; expires after [`PROBE_TIMEOUT`]. Deliberately *not*
@@ -121,6 +125,7 @@ impl Controller {
             last_error: None,
             cn28_lb: 0.0,
             cn28_car: 0.0,
+            cn28_cp_state: None,
             cn28_at: now,
             probe_over: 0.0,
             probe_at: None,
@@ -170,13 +175,21 @@ impl Controller {
         }
     }
 
-    /// Feed the box's latest grant (`lb_current` from the CN28 LOG) and the car's
-    /// live draw — the V4 feedback variables. Called by the prober whenever a
-    /// telemetry window decodes one; stamping the arrival time keeps the staleness
-    /// failsafe honest.
-    pub fn apply_cn28_feedback(&mut self, lb_ampere: f32, car_ampere: f32, now: Instant) {
+    /// Feed the box's latest grant (`lb_current` from the CN28 LOG), the car's
+    /// live draw and the control-pilot state — the V4 feedback variables plus the
+    /// evcc-facing pilot mirror (#148). Called by the prober whenever a telemetry
+    /// window decodes one; stamping the arrival time keeps the staleness failsafe
+    /// honest.
+    pub fn apply_cn28_feedback(
+        &mut self,
+        lb_ampere: f32,
+        car_ampere: f32,
+        cp_state: Option<CpState>,
+        now: Instant,
+    ) {
         self.cn28_lb = lb_ampere;
         self.cn28_car = car_ampere;
+        self.cn28_cp_state = cp_state;
         self.cn28_at = now;
     }
 
@@ -280,7 +293,12 @@ impl Controller {
         // probe perturbs only what the meter tells the box, not our command state —
         // evcc reads charge_state as its charger status, and a probe flipping it to
         // 'B' would make evcc believe the charge stopped.
-        let charge_state_letter = charge_state(Ampere(reported), Ampere(MAX_BOX_AMPERE));
+        let charge_state_letter = charge_state(
+            Ampere(reported),
+            Ampere(MAX_BOX_AMPERE),
+            self.cn28_cp_state,
+            cn28_stale,
+        );
         let served = probe_report(
             Ampere(reported),
             Ampere(self.probe_over),
@@ -311,7 +329,7 @@ impl Controller {
         Tick {
             reported: served,
             status_json: status_json(&status),
-            charging: charge_state_letter == 'C',
+            charging: charge_state_letter == "C",
             error: self.last_error.is_some(),
         }
     }
