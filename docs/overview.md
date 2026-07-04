@@ -39,6 +39,13 @@ interface — is documented in [`cn28-log-protocol.md`](cn28-log-protocol.md); t
 ESP32 pin assignment (CN28 read + the RS485 meter-emulation port that would replace
 the gateway) is in [`esp32-pinout.md`](esp32-pinout.md).
 
+## Hardware reference
+
+The vendor documentation and reverse-engineering photos behind all of the above —
+service manual, Modbus RTU register map, annotated board layouts and real-board
+silkscreen shots (CN20 meter bus, CN28 LOG socket, CN25 VESLINK) — live in
+[`hardware-reference/`](hardware-reference/).
+
 ## Why one repo
 
 Both workstreams share the same hardware facts (mainboard layout, connectors, the
