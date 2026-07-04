@@ -18,7 +18,7 @@
 //! charger publishes the current on-change and then holds it). The failsafes all
 //! pause: a stale grid heartbeat (#136 — HA/evcc gone while the latched target
 //! would charge forever), stale CN28 feedback (the regulation is blind) and
-//! `enable=false` each STOP an evcc/HA-managed box, never start it (SPECS §9, #52).
+//! `enable=false` each STOP an evcc/HA-managed box, never start it (SPECS §7, #52).
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};

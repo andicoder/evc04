@@ -30,7 +30,7 @@ control surface.
 > **No `A` (no vehicle) state.** A meter emulation has no control-pilot line, so we
 > can't tell an unplugged car from a connected-but-idle one — `charge_state` is only
 > ever `B` or `C`. evcc relies on its own vehicle/SoC detection for unplug, and any
-> control-layer failure **pauses**, never charges on ([`SPECS.md`](SPECS.md) §9).
+> control-layer failure **pauses**, never charges on ([`SPECS.md`](SPECS.md) §7).
 
 ## Charger template
 
@@ -75,7 +75,7 @@ loadpoints:
   - title: Garage
     charger: evc04
     mincurrent: 6     # 3φ floor ≈ 6 A ≈ 4.1 kW; below it the box only does on/off
-    maxcurrent: 16    # = MAX_BOX_AMPERE / the DIP setting (SPECS §2/§9)
+    maxcurrent: 16    # = MAX_BOX_AMPERE / the DIP setting (SPECS §2)
 ```
 
 - The V4 grant loop was proven across the full **6–16 A staircase** on hardware;
@@ -124,7 +124,7 @@ live grid power to `evc04/charge/grid_power` every ~5 s, and more than 15 s of s
 pause. So any control-path fault (a **nightly router reconnect**, a dead broker, evcc
 crashing) **stops** charging instead of starting it at the worst time — the safe
 direction for a managed box (#52). This is unconditional; unlike the retired daemon
-there is no `full_charge` opt-out. See [`SPECS.md`](SPECS.md) §9.
+there is no `full_charge` opt-out. See [`SPECS.md`](SPECS.md) §7.
 
 ## Sanity check
 

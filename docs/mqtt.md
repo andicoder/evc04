@@ -96,7 +96,7 @@ The raw grid power, forwarded to the firmware untouched:
 - **Its cadence is the controller's liveness.** The publisher republishes every ~5 s;
   more than **15 s** of silence means HA/evcc is gone while a latched target would
   otherwise charge forever, so the firmware **pauses** (`grid_failsafe: true`,
-  [`SPECS.md`](SPECS.md) §9).
+  [`SPECS.md`](SPECS.md) §7).
 - **Non-retained**, invalid payloads ignored / last good held / surfaced in
   `last_error`.
 
@@ -280,7 +280,7 @@ mqtt:
 ```
 
 `max` must match the `MAX_BOX_AMPERE` / DIP setting for the box
-([`SPECS.md`](SPECS.md) §2/§9).
+([`SPECS.md`](SPECS.md) §2).
 
 ---
 

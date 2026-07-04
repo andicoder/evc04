@@ -10,7 +10,7 @@ behaviour, and the open hardware questions are below.
 
 The whole system in one picture — the closed control/data loop and the physical
 wiring. Labels are the real MQTT topics (§8) so the diagram doubles as a map into
-the rest of this spec. No new claims here; details and evidence live in §2–§9.
+the rest of this spec. No new claims here; details and evidence live in §2–§8.
 
 ```
                    CONTROL / DATA FLOW  —  the closed loop
@@ -114,7 +114,7 @@ the rest of this spec. No new claims here; details and evidence live in §2–§
 
   `main()` owns the WiFi guard and a 60 s task watchdog; if the prober loop ever
   returns it reboots to re-run bring-up. The RS485 slave keeps answering even
-  while the prober is busy — a silent meter hard-faults the box (§9).
+  while the prober is busy — a silent meter hard-faults the box (§7).
 ```
 
 ---
@@ -142,7 +142,7 @@ Power Optimizer disabled — is **full charge (11 kW)**. We emulate the meter *o
 to charge less* than that baseline, for PV surplus / price optimisation / load
 distribution. **Protecting the building fuse is explicitly out of scope** — that is
 the job of the installation and the DIP-set limit. On any control-layer failure the
-firmware **pauses** (§9): for an evcc/HA-managed box a control-path blip must *stop*
+firmware **pauses** (§7): for an evcc/HA-managed box a control-path blip must *stop*
 charging, not start it at the worst time (#52). The controller's liveness is carried
 by the **grid-power heartbeat** — more than 15 s of silence pauses the box (#136).
 
@@ -201,8 +201,8 @@ Never flip DIPs while the box is powered.
 ```
 
 The DIP-set limit must equal `MAX_BOX_AMPERE` so the §6 control math lands the edge
-where expected. The DIP value trades full-charge headroom against modulation range
-(§9): a **low** limit (16 A, tested) maps the closed loop onto the car's real
+where expected. The DIP value trades full-charge headroom against modulation range:
+a **low** limit (16 A, tested) maps the closed loop onto the car's real
 6–16 A envelope for PV modulation; a **high** limit guarantees unthrottled full
 charge under household load. **16 A is the current recommended operating DIP.**
 
@@ -349,7 +349,7 @@ publishes:
   a stable current below) → hard pause.
 
 `MAX_BOX_AMPERE` must match the DIP setting (§2) for the math to land where expected;
-the DIP value itself trades full-charge headroom against modulation range (§9).
+the DIP value itself trades full-charge headroom against modulation range (§2).
 
 ### The V4 grant loop (shipped) — regulate the box's own grant (#134/#135)
 
@@ -458,7 +458,7 @@ derived from the un-probed value.
 ### Failsafes — everything pauses
 
 Unlike the retired daemon's configurable direction, the firmware's failsafes are
-**pause-only** — the safe direction for an evcc/HA-managed box (§9, #52):
+**pause-only** — the safe direction for an evcc/HA-managed box (#52):
 
 - **Grid heartbeat stale** (`grid_power` silent > 15 s) → pause. The controller's
   liveness is the heartbeat's *cadence*, not its watts (#136).
@@ -489,7 +489,7 @@ compile-time constant. The build is per-install, not a generic image.
 ### Continuous availability
 
 A **silent meter is dangerous**: with the Power Optimizer enabled the box
-**hard-faults to a solid red LED** when the meter stops answering (§9) — it does
+**hard-faults to a solid red LED** when the meter stops answering — it does
 *not* fall back to full charge. So the RS485 slave must never wedge: it runs on its
 own thread, the task watchdog reboots a hung chip, and an OTA rollout must **overlap**
 (the new image answers polls before the old stops).
@@ -533,7 +533,7 @@ TCP↔RS485 gateway; retired) and then ported `no_std` into `core/` so the firmw
 could link it unchanged. The `core` + `firmware` split itself was bootstrapped by
 the **CN28 remote-prober Vorprojekt** (#66) — a read-only protocol-discovery tool
 that established the native ESP32 Rust footing while resolving the CN28 LOG format.
-The verified frames in §5/§10 keep the wire protocol a fixed target.
+The verified frames in §5/§9 keep the wire protocol a fixed target.
 
 ---
 
@@ -572,102 +572,7 @@ entity → target, sensor ← status) also works for simple on/off + manual curr
 
 ---
 
-## 9. Open items — must be resolved on real hardware (car plugged in)
-
-These are **not** answerable from the bus alone; they need an observable
-(delivered charge current with a car connected):
-
-- [x] **DIP 4-5-6 current limit = 65 A** (DIP on-on-off). Confirmed empirically: the
-      charge cliffs to pause near `reported = 65 A` (see §6).
-- [x] **Pause must exceed the limit, not just reach it (#57).** At `reported =
-      MAX_BOX_AMPERE` the box holds an active charge; only `reported >
-      MAX_BOX_AMPERE` cuts it. Hard pause / `pause` failsafe now report
-      `MAX_BOX_AMPERE + PAUSE_MARGIN_AMPERE` (default +4 A); `charge_state` treats
-      only `reported > MAX_BOX_AMPERE` as paused (see §6/§7).
-- **Failsafe behaviour — partially confirmed on real hardware (no car):**
-  - **Meter goes silent** (Power Optimizer enabled): the box raises a
-    **meter-communication fault → solid red LED**. It keeps polling at ~1 Hz the
-    whole time (it never gives up, just waits for the meter to return).
-  - **Meter returns:** after a few consecutive good readings the box clears the
-    fault and goes **green/ready** again — a **soft** clear, no power-cycle needed
-    (observed once, idle/no car). Whether a fault taken *mid-charge* latches and
-    needs a physical power-cycle is **still open** (needs a car).
-  - **Meter reports 0 A** with no car: box is simply **ready/idle** — 0 A does
-    **not** start a phantom session, so it is the safe startup/unknown-state value.
-    With a car, `reported = 0` is **full charge** — so "full charge" and "safe
-    default" are the *same* served frame.
-  - **Design consequence — two failsafe layers; the firmware always pauses:**
-    1. **Control input stale, slave still answering** (broker down, controller
-       offline, cold start past the grace window): keep answering, but **pause**
-       (report `MAX_BOX_AMPERE + PAUSE_MARGIN_AMPERE` → box stops, #57) — the safe
-       direction for an **evcc/HA-managed** box, where a control-path blip (e.g. a
-       nightly router reconnect) must **not** flip an intended pause into charging
-       overnight. The target is a **latched** setpoint (evcc's idle cadence is
-       decision-driven and unbounded, so a target timeout would deadlock); liveness
-       is carried by the **grid-power heartbeat** instead — > 15 s silent pauses, as
-       does a stale CN28 grant feed (> 15 s, blind regulation) or `enable = false`
-       (#52/#136). The retired daemon made this direction configurable
-       (`full_charge`/`hold_last` for an unmanaged box); the firmware is pause-only
-       by design.
-    2. **Process dead, slave silent** (crash): with the Power Optimizer enabled the
-       box **hard-faults to red — it does *not* fall back to full charge**. This
-       layer is unreachable from inside the process, so the firmware **auto-reboots**
-       (60 s task watchdog) and OTA rollouts must **overlap** (§7). The box's own
-       **Failsafe Current** (control-interface reg `2000`, SW variants only) or the
-       **External Enable** input (DIP pin 2 + relay) is an optional independent
-       backstop against total loss.
-  - [ ] **Still open (needs a car):** exact meter-timeout window (how many missed
-        polls before red?), and whether a fault taken mid-charge latches vs. clears
-        soft like the idle case.
-- [x] **Validate end-to-end with a car — done.** Reported all-zeros → full-current
-      charge (~11–12 kW). Ascending sweep showed the box charges full until
-      `reported ≈ 63 A` and cliffs to pause at `reported = 65 A` (= `MAX_BOX_AMPERE`),
-      with only a 1–2 A transition zone — **not** a wide linear region (see §6).
-      This is the static-feed on/off behaviour the hardware gives at this DIP, and
-      the evidence that motivated the closed-loop model (§6).
-      Caveat: HA's house meter (`sensor.smartmeter_*`) does **not** see the
-      wallbox; the usable observable was the Tibber Pulse grid sensor
-      (`sensor.net_power`). Cars also ramp up slowly (~1–2 min) after plug-in, so
-      measure throttling by sweeping reported current **upward** (charge down =
-      fast response), never downward (charge up = slow ramp confound).
-- [x] **Closed-loop modulation at a lower current limit — proven.** At DIP 16 A,
-      feeding `offset + live_measured_current` makes the box modulate: offset 0 →
-      15 A, offset 4 → 12 A; soft-ramping the offset holds the loop stable down to
-      ~9 A (~9–15 A with HA-speed measurement; the 6–8 A bottom hunts). Static feed
-      still cliffs on/off at any DIP. This is what replaced the open-loop model
-      (§6).
-- [x] **Operating DIP current limit decided = 16 A (#27).** The DIP couples two
-      opposed goals: **modulation** wants a low limit (16 A maps onto the car's
-      6–16 A envelope, tested) while **guaranteed full charge** wants a high limit
-      (offset 0 holds the *total* at the limit, so at 16 A a loaded household
-      throttles the car). The installation is set to **DIP 16 A**, trading some
-      full-charge headroom for the proven stable modulation band — so `MAX_BOX_AMPERE`
-      = 16 must match the physical DIP 4-5-6 setting. Open sub-question (only if more
-      full-charge headroom is later needed): **does closed-loop modulation stay stable
-      at a higher DIP (e.g. 32 A)?** Untested; re-run the offset/soft-ramp sweep at
-      DIP 32 A with simulated household load before changing it. Photograph DIP state
-      first (revert safety).
-- [x] **Input-staleness failsafe (#25) — done.** The V4 firmware pauses on any stale
-      input: a silent **grid-power heartbeat** (> 15 s) means the controller is gone
-      and the latched target would otherwise charge forever, and a stale **CN28 grant
-      feed** (> 15 s) means the regulation is blind — both pause (report above the
-      ceiling), never charge on. (The retired daemon instead fell back to full charge
-      on a stale *measured* input; the pause-only firmware is the safer default for an
-      evcc/HA-managed box, §1.)
-- [ ] **Mid-charge meter-loss latch:** confirm whether a meter dropout *during an
-      active charge* latches the red fault (needs power-cycle) or clears soft like
-      the idle case (§7 / failsafe above).
-- [ ] **Permanent install:** ESP32 sealed inside the enclosure with a stable power
-      feed, WiFi provisioned (SSID/creds baked at build, §7), and strain-relieved
-      CN20 (RS485) and CN28 (LOG) taps. No external gateway.
-
-**Fallback if emulation proves unreliable:** **External Enable Input** (DIP pin 2)
-+ a Shelly/relay → pure on/off time-scheduling from HA, no Modbus at all. Coarser
-but bulletproof.
-
----
-
-## 10. Quick reference
+## 9. Quick reference
 
 ```
 Bus:        9600 8E1, ESP32 UART2 → TTL485 v2 → CN20 (direct, no gateway)

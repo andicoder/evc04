@@ -1,4 +1,4 @@
-//! Meter-emulation control plane (SPECS §4–§9): the safety-relevant current path.
+//! Meter-emulation control plane (SPECS §4–§8): the safety-relevant current path.
 //!
 //! The closed-loop control math, the MQTT control-input parsing, the retained
 //! charge status, and the Modbus PRO380 framing the RS485 slave answers with —
