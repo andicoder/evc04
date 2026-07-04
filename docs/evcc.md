@@ -19,7 +19,8 @@ control surface.
 | `maxcurrent` (write) | `target` | `{"ampere": <A>}` — the throttle. evcc never sends below its own `mincurrent`. |
 | `enable` (write) | `enable` | `{"enable": <bool>}` — the on/off gate, **independent** of the throttle (#60). `false` hard-pauses; `true` honors the current `maxcurrent`. |
 | `enabled` (read) | `status` | our `enabled` field — reflects the gate directly. |
-| `status` (read) | `status` | our `charge_state` field: `B` (connected, not charging) / `C` (charging). |
+| `status` (read) | `status` | our `charge_state` field: `A` (no vehicle) / `B` (connected, not charging) / `C` (charging) / `""` (pilot unknown → evcc retains its last status). |
+| `power` (read, optional) | `evc04/cn28/telemetry` | sum of the box's own per-phase active power — real measured watts instead of evcc's `current × phases × 230 V` estimate. |
 
 > **On/off and the current setpoint use separate topics.** Earlier the single `target`
 > topic carried both, so `enable` and `maxcurrent` raced: an `enable(true)` (≈ a tiny
@@ -27,10 +28,13 @@ control surface.
 > `enable` topic removes the collision (#60) — `enable` only opens/closes the gate,
 > `maxcurrent` only sets the current.
 
-> **No `A` (no vehicle) state.** A meter emulation has no control-pilot line, so we
-> can't tell an unplugged car from a connected-but-idle one — `charge_state` is only
-> ever `B` or `C`. evcc relies on its own vehicle/SoC detection for unplug, and any
-> control-layer failure **pauses**, never charges on ([`SPECS.md`](SPECS.md) §7).
+> **`status` mirrors the box's real control-pilot state (#148).** The firmware decodes
+> the CN28 LOG `S:` line, so `A` is a real unplug (session ends, charge power reads 0)
+> and `C` means the car actually draws. Two guards: our pause forces `B` even while the
+> box is still ramping down at pilot `C`, and an unknown pilot (post-reboot blind
+> window, stale CN28 feed, fault) is published as `""` — evcc errors on an empty status
+> and **retains its last state**, never mapping it to `A`. Any control-layer failure
+> still **pauses**, never charges on ([`SPECS.md`](SPECS.md) §7).
 
 ## Charger template
 
@@ -41,12 +45,19 @@ install. `${enable}` renders the boolean as `true`/`false`, so the payload is va
 chargers:
   - name: evc04
     type: custom
-    # Charging state: the firmware publishes charge_state = "B" | "C".
+    # Charging state: the firmware publishes charge_state = "A" | "B" | "C", or ""
+    # while the pilot is unknown (evcc then keeps its previous status).
     status:
       source: mqtt
       topic: evc04/charge/status
       jq: .charge_state
       timeout: 90s        # > the firmware's status republish; flags a dead device
+    # Real measured charge power (optional): the box's own per-phase metering from
+    # the telemetry plane. Without this, evcc estimates current × phases × 230 V.
+    power:
+      source: mqtt
+      topic: evc04/cn28/telemetry
+      jq: (.p1.w // 0) + (.p2.w // 0) + (.p3.w // 0)
     # Charging enabled? Read the dedicated gate the enable plugin writes (#60).
     enabled:
       source: mqtt
@@ -133,7 +144,10 @@ With the firmware running and the broker reachable:
 - evcc UI shows the loadpoint as **connected**; toggling the loadpoint on/off
   flips `evc04/charge/enable` between `{"enable": true}` and `{"enable": false}` (and
   `evc04/charge/status` `enabled` follows), while `evc04/charge/target` carries the throttle.
-- `evc04/charge/status` `charge_state` reads `C` once current flows, `B` when paused.
+- `evc04/charge/status` `charge_state` reads `C` once current flows, `B` when paused
+  or connected-idle, `A` after an unplug (evcc marks the loadpoint disconnected), and
+  `""` right after a reboot until the first pilot transition (evcc keeps its last
+  status through that window).
 - Commanding a PV-surplus current modulates across the proven 6–16 A staircase
   (settling ~1 A high near the floor); below 6 A it is on/off.
 

@@ -187,8 +187,9 @@ read-out or OCPP needed.
 > holds no `cp_state` (it reports `null`) until the next plug/unplug/charge event.
 > `null` is the honest, safe reading: the HA `cp_state` sensor keys its
 > availability on that field, so it shows **unavailable** rather than a frozen
-> `B`/`C` while unknown, and evcc maps unavailable → `A` (not connected). See
-> evc04 #117.
+> `B`/`C` while unknown, and the evcc-facing `charge_state` mirror (#148)
+> publishes `""` — which evcc treats as an error and **retains its previous
+> status** (it does *not* map an unknown pilot to `A`). See evc04 #117.
 
 ### Related control events
 
@@ -251,7 +252,8 @@ staircase at this feedback rate (settling ~1 A high near the 6 A floor).
 - `meter_detected` (`true` on `… DETECTED`, `false` on `Any … NOT detected!`)
 - `last_error` (set by `ERROR:`, cleared by `CLEAR:`)
 
-The CP `S:` state line is captured raw today; structured decoding (→ plug/charge
-state for Home Assistant / evcc) is the next step.
+The CP `S:` state line is decoded into `cp_state` (`null` until the first
+transition) and, since #148, mirrored — guarded — into the control-plane
+`charge_state` evcc reads (see [`mqtt.md`](mqtt.md)).
 
 Anything unrecognised passes through untouched — it never breaks the snapshot.
