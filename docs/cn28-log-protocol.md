@@ -233,13 +233,11 @@ wake (the firmware auto-wakes every 2 s), yet only recomputes the per-phase `P{n
 polling faster than ~5 s returns **repeated** values, not fresher ones. Observed live
 on hardware.
 
-That is the **same speed class as a home-automation grid measurement (~3–6 s)** and
-**slower** than the ~1 s source the 6–8 A bottom of the control band would need
-(`SPECS.md` §6). It is why the on-box floor-seek (#119) advances its integral
-trim **once per fresh ~5 s sample, not per 1 s control tick** (integrating stale data
-each tick would over-correct ~5× and oscillate), and why a stable 6 A may be
-physically unreachable at this feedback rate — the trim is built to *reveal* the real
-achievable minimum, not assume it.
+That ~5 s metering cadence is what the **V4 control loop regulates on**: it tracks the
+box's own grant (`lb_current`) from this feed, advancing **once per fresh ~5 s sample,
+not per 1 s poll** (`SPECS.md` §6) — reacting on every poll would integrate stale,
+repeated values and oscillate. The V4 loop was proven to ride the full 6–16 A
+staircase at this feedback rate (settling ~1 A high near the 6 A floor).
 
 ---
 

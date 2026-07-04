@@ -200,7 +200,7 @@ Never flip DIPs while the box is powered.
    . # #   25 A             # # #   80 A
 ```
 
-The DIP-set limit must equal `MAX_BOX_AMPERE` so the §6 offset math lands the edge
+The DIP-set limit must equal `MAX_BOX_AMPERE` so the §6 control math lands the edge
 where expected. The DIP value trades full-charge headroom against modulation range
 (§9): a **low** limit (16 A, tested) maps the closed loop onto the car's real
 6–16 A envelope for PV modulation; a **high** limit guarantees unthrottled full
@@ -318,136 +318,42 @@ measures the **total main-line current including the charger's own draw** and ru
 a **closed feedback loop**, ramping the charge current until the *measured total*
 sits at `MAX_BOX_AMPERE`. This single fact drives the whole control design.
 
-### A static feed gives on/off only (measured, with a car)
+### A static feed is on/off only
 
-Because a fabricated static value never rises as the car charges, a **static**
-`reported = MAX_BOX_AMPERE − target` cannot land the loop anywhere in between — the box
-always rampere to full (`reported < MAX_BOX_AMPERE`) or cuts off
-(`reported ≥ MAX_BOX_AMPERE`). Bench tested with a car at `MAX_BOX_AMPERE = 65 A`
-(DIP on-on-off):
+A **static** meter value can't land the box anywhere in between: a fabricated constant
+never rises as the car draws, so the box ramps to full while `reported <
+MAX_BOX_AMPERE` and cuts off once `reported ≥ MAX_BOX_AMPERE`, with only a 1–2 A
+transition zone at the edge — **not** a usable proportional band (confirmed on a car
+at both DIP 65 A and DIP 16 A). Proportional control therefore has to ride the box's
+*own* grant loop, not a static feed (below).
 
-| reported (all 3φ) | `65 − reported` | delivered charge | state |
-|---|---|---|---|
-| 0 … 63 A | 65 … 2 | ~11–12 kW | **full** |
-| 64 A | 1 | ~7 kW, unstable (still ramping down) | transition |
-| 65 A | 0 | ~0 | **pause** |
-| ≥ 66 A | ≤ −1 | ~0 | pause |
-
-The pause edge sits **right at `reported = MAX_BOX_AMPERE`**, with only a 1–2 A
-transition zone — **not** a usable proportional band (the box's hardware max is far
-below 65 A, so `available` stays ≥ box-max until `reported` is within ~2 A of the
-limit). Re-tested at DIP 16 A: the **same** on/off cliff. So the earlier claim of
-"continuous modulation in between" was **wrong** for the static model.
-
-> **Refinement (#57).** To actually *cut* an active charge the report must **exceed**
-> the limit, not merely reach it: at `reported = MAX_BOX_AMPERE` the box holds the
-> charge; at `reported = MAX_BOX_AMPERE + 2..4 A` it cuts (grid flipped from import to
-> export on hardware). So a hard pause / `pause` failsafe reports
-> `MAX_BOX_AMPERE + PAUSE_MARGIN_AMPERE` (§7), and `charge_state` treats only
-> `reported > MAX_BOX_AMPERE` as paused (reporting *at* the ceiling is live modulation).
-
-### Closing the loop makes it modulate (proven)
-
-Feed a value that **rises with the actual draw**:
-
-```
-reported = clamp(offset + measured_current, 0, ..)        (per phase)
-offset   = MAX_BOX_AMPERE − target
-```
-
-`measured_current` is a **live** per-phase current published over MQTT (this was
-the original loop, since superseded by V4 below). Now the box sees its own draw
-climb, the loop settles, and the
-delivered current tracks `MAX_BOX_AMPERE − offset = target`. Proven on hardware:
-
-- offset 0 → settles **15 A**; offset 4 → settles **12 A** (stable equilibria).
-- **Soft-ramping** the offset toward its setpoint (rate-limited, not a step)
-  extends the stable range down to ~**9 A** — a hard offset jump shocks the box
-  into over-throttling below the car's 6 A floor and the session collapses.
-- With home-automation-speed measurement (~3–6 s round-trip) the stable range is
-  ~**9–15 A**; the bottom (6–8 A) hunts and would need a faster (~1 s) measurement
-  source (publishable over the same topic, no service change).
-  > **Superseded (#134/#135).** The "needs a ~1 s source" conclusion was wrong: the
-  > 6–8 A bottom was unreachable because the upper clamp at `MAX_BOX_AMPERE` never
-  > let the box see "over the limit" (H1), not because the measurement was too slow.
-  > The box ramps *itself* once told it is over — see *The box's grant loop,
-  > measured* below (live ride-down to 6 A on ~5 s feedback).
-- **3-phase floor ≈ 6 A ≈ 4.1 kW.** Below that the box can't hold a stable
-  current, so a **minimum-charge cutoff** applies: `target < MIN_CHARGE_AMPERE` (~6 A)
-  → serve a hard pause (`reported = MAX_BOX_AMPERE + PAUSE_MARGIN_AMPERE`, **above** the
-  ceiling so the box actually cuts — reporting exactly the ceiling holds an active charge,
-  #57), don't try to modulate the floor.
-
-### The measured input is source-agnostic
-
-The service does not care what `measured_current` represents — it just serves
-`offset + measured`. Today the home-automation side publishes **total/grid
-current** (giving load-management + PV-surplus semantics); a charger-side CT can be
-retrofitted later by publishing the **car** current to the **same topic**, for
-precise per-car control, with **no service change**.
+> **Pause must exceed the ceiling (#57).** To *cut* an active charge the report must
+> **exceed** the limit, not merely reach it: at `reported = MAX_BOX_AMPERE` the box
+> holds the charge; at `MAX_BOX_AMPERE + 2..4 A` it cuts (grid flipped import→export on
+> hardware). So a hard pause reports `MAX_BOX_AMPERE + PAUSE_MARGIN_AMPERE` (§7), and
+> `charge_state` treats only `reported > MAX_BOX_AMPERE` as paused (reporting *at* the
+> ceiling is live modulation).
 
 ### Mode selection lives in the controller, not here
 
-The service is **mode-agnostic**: it consumes `target` + `measured` and nothing
-else. The controller (Home Assistant / evcc, §8) picks behaviour purely by the
-target it publishes:
+The firmware is **mode-agnostic**: it consumes `target` and nothing else. The
+controller (Home Assistant / evcc, §8) picks behaviour purely by the target it
+publishes:
 
-- **full charge** (cheap price window) → `target ≥ MAX_BOX_AMPERE` → offset 0 → the
-  loop holds the *total* at `MAX_BOX_AMPERE` (effectively max; the box's own loop
-  keeps the total within that limit — fuse protection is the box's job, not ours, §1).
-- **modulate** (PV surplus) → `target` = surplus-derived → tracked within the
-  stable band.
-- **pause** → `target < MIN_CHARGE_AMPERE` → hard pause.
+- **full charge** (cheap price window) → `target ≥ MAX_BOX_AMPERE` → report the
+  ceiling → the box holds the *total* at `MAX_BOX_AMPERE` (fuse protection is the box's
+  job, not ours, §1).
+- **modulate** (PV surplus) → `target` = surplus-derived → tracked via the grant loop
+  below.
+- **pause** → `target < MIN_CHARGE_AMPERE` (~6 A, the 3-phase floor the box can't hold
+  a stable current below) → hard pause.
 
-`MAX_BOX_AMPERE` must match the DIP setting (§2) for the offset math to land where
-expected; the DIP value itself trades full-charge headroom against modulation
-range (§9).
+`MAX_BOX_AMPERE` must match the DIP setting (§2) for the math to land where expected;
+the DIP value itself trades full-charge headroom against modulation range (§9).
 
-> **Implementation status.** The closed-loop offset+measured model above was the
-> original control (`reported = clamp(soft_ramped_offset + measured)`, min-charge
-> cutoff, staleness failsafes; #22–#25). The on-box firmware has since **replaced it
-> with the V4 grant-tracking loop** below (#135), which regulates the box's own
-> `lb_current` directly and drops the grid feed from the modulation math. Both live
-> in `core`; the firmware links only V4. The status topic still exposes the
-> approximated evcc `charge_state` and there is an evcc charger template
-> ([`evcc.md`](evcc.md), #28).
+### The V4 grant loop (shipped) — regulate the box's own grant (#134/#135)
 
-### On-box floor-seek: layered integral trim (#119, core + firmware only)
-
-The `9–15 A` band above is set by the ~3–6 s measurement round-trip. Because the
-on-box firmware also reads the box's own delivered current from the CN28 LOG, an
-earlier iteration added a **layered integral trim** on top of the proven loop to
-push below that band toward the box's real minimum:
-
-```
-reported = clamp(offset + measured + trim, 0, MAX_BOX_AMPERE)     (per phase)
-# advanced once per FRESH CN28 sample (~5 s), NOT per 1 s tick:
-trim += TRIM_KI · (cn28_actual − target)        # anti-windup: clamp(trim, 0, TRIM_MAX)
-```
-
-`cn28_actual` is the box's own delivered per-phase current read from the CN28 LOG
-(the internal KLEFR meter, #108). The trim is a slow **floor-seeker**: while the box
-charges above target it grows, lifting `reported` so the box throttles further, until
-`cn28_actual = target` (equilibrium) or `trim` saturates at `TRIM_MAX` — and that
-**saturation is the achievable-minimum signal** (#119 Goal 2: the box may not reach
-6 A, so the trim *reveals* the real floor instead of assuming it).
-
-Key constraint — **CN28 feedback is ~5 s, not ~1 s.** The box answers every 2 s wake
-but only recomputes its metering ~every 5 s, so the trim integrates **per fresh
-sample**, not per tick — integrating stale data each 1 s tick would over-correct ~5×
-and oscillate. When the feedback goes stale the trim **decays toward 0** (`TRIM_DECAY`
-per sample), relaxing back to the proven `offset + measured` loop rather than holding
-a value it can no longer see. `trim = 0` is byte-identical to the pre-#119 path, so
-the hardware-proven 9–15 A behaviour is unchanged whenever the trim is idle.
-
-> **Superseded by the measured grant loop below (#134/#135).** The trim can only
-> lift `reported` *to* the ceiling, never over it (H1), so it pins at the edge and
-> saturates instead of pushing the box down. It stays documented as the shipped
-> state until the V4 controller replaces it.
-
-### The box's grant loop, measured (#134/#135)
-
-The dynamics behind all of the above, measured on hardware 2026-07-02 (fixtures
+The box's grant dynamics, measured on hardware 2026-07-02 (fixtures
 `core/tests/fixtures/sessions/`, model `core/src/charge/boxsim.rs`). On a **~6 s
 eval cadence** (observed 5–10 s) the box recomputes its grant to the car
 (`lb_current` in the CN28 LOG) from the meter value it polls:
