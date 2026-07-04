@@ -6,13 +6,6 @@ runs inside. It backs both paths: the RS485 meter emulation (control) and the CN
 LOG telemetry tap. Start at [`../overview.md`](../overview.md); the CN28 protocol is
 [`../cn28-log-protocol.md`](../cn28-log-protocol.md).
 
-Background issues (in the infra repo that used to host the retired k3s daemon):
-[andicoder/[private-repo]#83](https://github.com/andicoder/[private-repo]/issues/83)
-(meter-emulation control path),
-[#87](https://github.com/andicoder/[private-repo]/issues/87) (internal-header
-research), [#104](https://github.com/andicoder/[private-repo]/issues/104) (plug /
-charge-power detection).
-
 ## Files here
 
 | File | What it is |
@@ -30,7 +23,7 @@ charge-power detection).
 Sources (in case re-download is needed):
 - Service manual: `https://s3fs-sogedis.s3.eu-west-3.amazonaws.com/sogedis_pdf/codespanne/EVC04_SERVICE_MANUAL_2021.pdf`
 - Modbus spec: `https://api.library.loxone.com/downloader/file/722/EVC04_Modbus_RTU_Specification_v2_12.04.2021.pdf`
-- Our board photos live in issue [#87](https://github.com/andicoder/[private-repo]/issues/87) (comment with 7 images).
+- The `board-photo-real-*` and `IMG_7188.jpg` shots are of our own AC11 mainboard.
 
 ## Mainboard connector legend (Service Manual Table 2-1)
 
