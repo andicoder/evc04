@@ -22,6 +22,7 @@ use crate::probe::cn28::CpState;
 pub fn charge_state(
     reported: Ampere,
     max: Ampere,
+    pause_margin: Ampere,
     cp_state: Option<CpState>,
     cn28_stale: bool,
 ) -> &'static str {
@@ -33,7 +34,11 @@ pub fn charge_state(
         Some(CpState::NoVehicle) => "A",
         Some(CpState::Connected) => "B",
         Some(CpState::Charging) => {
-            if reported.0 > max.0 {
+            // Only a pause-level report (the ceiling plus the full margin, #57)
+            // forces `B`: a V4 shed report (max+1..max+2) still charges, and
+            // flashing `B` mid-shed zeroes evcc's charge-power estimate and
+            // rattles its PV loop (live 2026-07-05).
+            if reported.0 >= max.0 + pause_margin.0 {
                 "B"
             } else {
                 "C"
@@ -109,7 +114,13 @@ mod tests {
     #[test]
     fn no_vehicle_reports_a() {
         assert_eq!(
-            charge_state(Ampere(6.0), Ampere(16.0), fresh(CpState::NoVehicle), false),
+            charge_state(
+                Ampere(6.0),
+                Ampere(16.0),
+                Ampere(4.0),
+                fresh(CpState::NoVehicle),
+                false
+            ),
             "A"
         );
     }
@@ -117,7 +128,13 @@ mod tests {
     #[test]
     fn no_vehicle_wins_even_when_pausing() {
         assert_eq!(
-            charge_state(Ampere(16.5), Ampere(16.0), fresh(CpState::NoVehicle), false),
+            charge_state(
+                Ampere(16.5),
+                Ampere(16.0),
+                Ampere(4.0),
+                fresh(CpState::NoVehicle),
+                false
+            ),
             "A"
         );
     }
@@ -125,7 +142,13 @@ mod tests {
     #[test]
     fn connected_idle_reports_b() {
         assert_eq!(
-            charge_state(Ampere(6.0), Ampere(16.0), fresh(CpState::Connected), false),
+            charge_state(
+                Ampere(6.0),
+                Ampere(16.0),
+                Ampere(4.0),
+                fresh(CpState::Connected),
+                false
+            ),
             "B"
         );
     }
@@ -133,7 +156,13 @@ mod tests {
     #[test]
     fn charging_reports_c() {
         assert_eq!(
-            charge_state(Ampere(6.0), Ampere(16.0), fresh(CpState::Charging), false),
+            charge_state(
+                Ampere(6.0),
+                Ampere(16.0),
+                Ampere(4.0),
+                fresh(CpState::Charging),
+                false
+            ),
             "C"
         );
     }
@@ -141,28 +170,78 @@ mod tests {
     #[test]
     fn charging_at_exactly_the_ceiling_reports_c() {
         assert_eq!(
-            charge_state(Ampere(16.0), Ampere(16.0), fresh(CpState::Charging), false),
+            charge_state(
+                Ampere(16.0),
+                Ampere(16.0),
+                Ampere(4.0),
+                fresh(CpState::Charging),
+                false
+            ),
             "C"
         );
     }
 
     #[test]
     fn our_pause_reports_b_even_if_pilot_charging() {
+        // A pause report is the ceiling plus the full margin (#57).
         assert_eq!(
-            charge_state(Ampere(16.5), Ampere(16.0), fresh(CpState::Charging), false),
+            charge_state(
+                Ampere(20.0),
+                Ampere(16.0),
+                Ampere(4.0),
+                fresh(CpState::Charging),
+                false
+            ),
             "B"
         );
     }
 
     #[test]
+    fn shed_report_keeps_c_while_the_pilot_charges() {
+        // Live 2026-07-05: a 1 A shed report (max+1, V4 down-regulation — the car
+        // keeps charging) flashed `B` at evcc, dropping its charge-power estimate
+        // to 0 mid-charge and rattling the PV loop. Only a pause-level report
+        // (≥ max + margin) may force `B`; sheds stay `C`.
+        assert_eq!(
+            charge_state(
+                Ampere(17.0),
+                Ampere(16.0),
+                Ampere(4.0),
+                fresh(CpState::Charging),
+                false
+            ),
+            "C"
+        );
+        assert_eq!(
+            charge_state(
+                Ampere(18.0),
+                Ampere(16.0),
+                Ampere(4.0),
+                fresh(CpState::Charging),
+                false
+            ),
+            "C"
+        );
+    }
+
+    #[test]
     fn unknown_pilot_reports_empty() {
-        assert_eq!(charge_state(Ampere(6.0), Ampere(16.0), None, false), "");
+        assert_eq!(
+            charge_state(Ampere(6.0), Ampere(16.0), Ampere(4.0), None, false),
+            ""
+        );
     }
 
     #[test]
     fn stale_feed_reports_empty() {
         assert_eq!(
-            charge_state(Ampere(6.0), Ampere(16.0), fresh(CpState::Charging), true),
+            charge_state(
+                Ampere(6.0),
+                Ampere(16.0),
+                Ampere(4.0),
+                fresh(CpState::Charging),
+                true
+            ),
             ""
         );
     }
@@ -170,7 +249,13 @@ mod tests {
     #[test]
     fn fault_reports_empty() {
         assert_eq!(
-            charge_state(Ampere(6.0), Ampere(16.0), fresh(CpState::Fault), false),
+            charge_state(
+                Ampere(6.0),
+                Ampere(16.0),
+                Ampere(4.0),
+                fresh(CpState::Fault),
+                false
+            ),
             ""
         );
     }

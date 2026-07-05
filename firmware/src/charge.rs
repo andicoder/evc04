@@ -296,6 +296,7 @@ impl Controller {
         let charge_state_letter = charge_state(
             Ampere(reported),
             Ampere(MAX_BOX_AMPERE),
+            Ampere(PAUSE_MARGIN_AMPERE),
             self.cn28_cp_state,
             cn28_stale,
         );
