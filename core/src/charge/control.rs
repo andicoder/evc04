@@ -208,7 +208,7 @@ pub struct GrantControlInputs {
 /// start and the min-charge floor — all of which pause — then regulate the grant
 /// via [`lb_tracking_report`]. While a session exists (`lb > 0`) and the car draws
 /// less than `min_charge` (the 6 A pilot minimum) the report is pinned to
-/// `max − target + car` instead: per the box's grant law (`lb ← car + max −
+/// `max − target + floor(car)` instead: per the box's grant law (`lb ← car + max −
 /// reported`) that holds `lb = target` through the whole contactor lag *and* the
 /// 0→6 A ramp. Reporting the ceiling any earlier makes the box degrade or
 /// withdraw the grant — it only tolerates the meter at the ceiling once the car
@@ -233,7 +233,13 @@ pub fn grant_tracking_current(inputs: &GrantControlInputs) -> Ampere {
     // pilot floor and the box never opens (live 2026-07-05). Pre-session, fall
     // through to the deficit report, which is exactly `MAX − target`.
     if inputs.car.0 < inputs.min_charge.0 && inputs.lb.0 > 0.0 {
-        return Ampere(inputs.max.0 - target.0 + inputs.car.0).clamp(Ampere(0.0), inputs.max);
+        // Grants are whole amps and the box floors its eval (`lb ← live_car +
+        // headroom`): a fractional car term makes our estimate race the box's own
+        // sub-amp noise, flooring the grant one amp under target and sticking there
+        // (grant 5 at target 6, live 2026-07-05). Floor the term so it never
+        // exceeds the live draw; the cast is the no_std floor (car ≥ 0, measured).
+        let car_whole = (inputs.car.0 as i32) as f32;
+        return Ampere(inputs.max.0 - target.0 + car_whole).clamp(Ampere(0.0), inputs.max);
     }
     lb_tracking_report(
         inputs.max,
@@ -451,6 +457,28 @@ mod tests {
             ..grant_base()
         };
         assert_eq!(grant_tracking_current(&i), Ampere(MAX.0 - 20.0));
+    }
+
+    #[test]
+    fn grant_tracking_ramp_pin_floors_the_car_term_to_whole_amps() {
+        // Live 2026-07-05, second bite: with a session open (lb 5) the pin reported
+        // `MAX − target + 0.045`, the box re-evaluated `lb ← live_car + headroom ≈
+        // 5.98` and floored it to 5 — one amp below the pilot minimum, stuck, car
+        // never started. Grants are whole amps: the car term must be floored so our
+        // estimate never exceeds the box's live draw. Sub-amp noise → term 0; a real
+        // mid-ramp draw keeps only its whole amps.
+        let noise = GrantControlInputs {
+            lb: Ampere(5.0),
+            car: Ampere(0.045),
+            ..grant_base()
+        };
+        assert_eq!(grant_tracking_current(&noise), Ampere(MAX.0 - 20.0));
+        let ramping = GrantControlInputs {
+            lb: Ampere(5.0),
+            car: Ampere(3.7),
+            ..grant_base()
+        };
+        assert_eq!(grant_tracking_current(&ramping), Ampere(MAX.0 - 20.0 + 3.0));
     }
 
     #[test]

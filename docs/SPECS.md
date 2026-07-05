@@ -388,10 +388,14 @@ sheds it proportionally); at target (±1 A) → report exactly `MAX` (holds); be
 target → report the deficit as headroom (`MAX − (target − lb)`), which also covers
 the start-grant (`lb = 0` → grant = target). **Ramp pin**: once a session exists
 (`lb > 0`) and while the car draws less than the 6 A pilot minimum (max phase
-current from the CN28 metering) the report is `MAX − target + car` instead — per
-the box's grant law that holds `lb = target` through the contactor lag *and* the
-0→6 A ramp; any ceiling report before the car draws properly triggers the
-idle-car cut/degrade above. The pin must **not** apply before the session: the
+current from the CN28 metering) the report is `MAX − target + floor(car)`
+instead — per the box's grant law that holds `lb = target` through the contactor
+lag *and* the 0→6 A ramp; any ceiling report before the car draws properly
+triggers the idle-car cut/degrade above. The car term is floored to whole amps:
+grants are whole amps and the box floors its eval, so a fractional term races
+the box's own sub-amp noise and pins the grant one amp *under* target (grant
+stuck at 5 for target 6, observed live 2026-07-05, second bite). The pin must
+**not** apply before the session: the
 start law grants the bare headroom (no car term, above), so folding the MID
 standby noise (~45 mA) into the pre-session report lands the start grant just
 below the 6 A pilot floor and the box never opens (observed live 2026-07-05 —
