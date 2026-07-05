@@ -1,0 +1,718 @@
+# sweep2 rep 0 (campaign 2026-07-05, phase 2 drop mechanics), all-topic MQTT wire
+# excerpt 1783279240-1783279400 (raw/hex dropped). Timeline: enable+target 11 at
+# t=240.6; box opens Cmax 11 at t=260.6 (20 s start latency); enable flap 271-274
+# pause-cuts the offer; re-open at t=302.7; car draws by t=330; box up-grants 16 at
+# t=330.9, then sheds 13/12/11/10 as the firmware over-reports 18/17; target flip
+# ->6 at t=357.3: shed 8/7/6 within ~6 s, then HOLDS at 6 exactly on target for
+# 34 s (the down-shed WORKS); enable flap at t=391.3 (69 s outage) -> pause report
+# 20 -> box cuts. The "cut" recorded in sweep2.jsonl rep 0 is that flap, not a shed
+# failure. External enable=false publishes arrived minute-aligned all afternoon.
+1783279240.200 evc04/charge/grid_power {"watt": 597}
+1783279240.611 evc04/cn28/raw 
+1783279240.614 TEMP lb current: 0
+1783279240.617 ev current: 0
+1783279240.619 
+1783279240.622 max_offered_current: 16
+1783279240.624 lb current:0
+1783279240.626 
+1783279240.629 TEMP lb current: 0
+1783279240.635 evc04/cn28/raw/ascii .TEMP lb current: 0.ev current: 0..max_offered_current: 16.lb current:0..TEMP lb current: 0
+1783279240.639 evc04/cn28/telemetry {"p1":{"v_mv":234693,"a_ma":45,"w":3,"wh":15557},"p2":{"v_mv":236186,"a_ma":18,"w":0,"wh":15322},"p3":{"v_mv":236452,"a_ma":18,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279240.641 evc04/charge/status {"online":true,"target_ampere":0,"grid_power_w":597,"reported_ampere":20,"last_poll_age_s":0.041,"grid_age_s":0.120227,"grid_failsafe":false,"charge_state":"B","enabled":false,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279240.645 evc04/charge/enable {"enable": true}
+1783279241.035 evc04/charge/target {"ampere": 11}
+1783279241.446 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":0.041,"grid_age_s":1.130218,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279242.352 evc04/cn28/raw 
+1783279242.355 P1:	V: 234752	A: 40	W: 3	Wh: 15557
+1783279242.358 P2:	V: 236127	A: 18	W: 0	Wh: 15322
+1783279242.362 P3:	V: 236615	A: 18	W: 0	Wh: 15478
+1783279242.365 
+1783279242.368 
+1783279242.372 TEMP lb current: 0
+1783279242.375 TEMP lb current: 0
+1783279242.382 evc04/cn28/raw/ascii .P1:.V: 234752.A: 40.W: 3.Wh: 15557.P2:.V: 236127.A: 18.W: 0.Wh: 15322.P3:.V: 236615.A: 18.W: 0.Wh: 15478...TEMP lb current: 0.TEMP lb current: 0
+1783279242.386 evc04/cn28/telemetry {"p1":{"v_mv":234752,"a_ma":40,"w":3,"wh":15557},"p2":{"v_mv":236127,"a_ma":18,"w":0,"wh":15322},"p3":{"v_mv":236615,"a_ma":18,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279242.556 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":0.051,"grid_age_s":2.140251,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279243.477 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":0.05,"grid_age_s":3.150473,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279244.400 evc04/cn28/raw 
+1783279244.403 TEMP lb current: 0
+1783279244.410 evc04/cn28/raw/ascii .TEMP lb current: 0
+1783279244.501 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":0.061,"grid_age_s":4.170218,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279245.137 evc04/charge/grid_power {"watt": 597}
+1783279245.525 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":0.071,"grid_age_s":0.207997,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279246.445 evc04/cn28/raw 
+1783279246.449 ev current: 0
+1783279246.453 
+1783279246.456 max_offered_current: 16
+1783279246.460 lb current:0
+1783279246.464 
+1783279246.467 lb wait for time
+1783279246.471 TEMP lb current: 11
+1783279246.478 evc04/cn28/raw/ascii .ev current: 0..max_offered_current: 16.lb current:0..lb wait for time.TEMP lb current: 11
+1783279246.482 evc04/cn28/telemetry {"p1":{"v_mv":234752,"a_ma":40,"w":3,"wh":15557},"p2":{"v_mv":236127,"a_ma":18,"w":0,"wh":15322},"p3":{"v_mv":236615,"a_ma":18,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279246.558 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":0.071,"grid_age_s":1.218024,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279247.578 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":0.081,"grid_age_s":2.228041,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279250.131 evc04/cn28/raw (null)
+1783279250.139 evc04/cn28/raw/ascii (null)
+1783279250.143 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":0.637,"grid_age_s":4.805797,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279250.145 evc04/charge/grid_power {"watt": 597}
+1783279251.055 evc04/cn28/raw 
+1783279251.059 P1:	V: 234871	A: 40	W: 3	Wh: 15557
+1783279251.063 P2:	V: 236408	A: 18	W: 0	Wh: 15322
+1783279251.066 P3:	V: 236526	A: 18	W: 0	Wh: 15478
+1783279251.069 
+1783279251.073 
+1783279251.082 evc04/cn28/raw/ascii .P1:.V: 234871.A: 40.W: 3.Wh: 15557.P2:.V: 236408.A: 18.W: 0.Wh: 15322.P3:.V: 236526.A: 18.W: 0.Wh: 15478..
+1783279251.086 evc04/cn28/telemetry {"p1":{"v_mv":234871,"a_ma":40,"w":3,"wh":15557},"p2":{"v_mv":236408,"a_ma":18,"w":0,"wh":15322},"p3":{"v_mv":236526,"a_ma":18,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279251.155 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":0.651,"grid_age_s":0.035278,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279252.180 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":0.64,"grid_age_s":1.03539,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279253.204 evc04/cn28/raw 
+1783279253.207 ev current: 0
+1783279253.210 
+1783279253.214 max_offered_current: 16
+1783279253.217 lb current:0
+1783279253.220 
+1783279253.227 evc04/cn28/raw/ascii .ev current: 0..max_offered_current: 16.lb current:0.
+1783279253.231 evc04/cn28/telemetry {"p1":{"v_mv":234871,"a_ma":40,"w":3,"wh":15557},"p2":{"v_mv":236408,"a_ma":18,"w":0,"wh":15322},"p3":{"v_mv":236526,"a_ma":18,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279253.235 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":0.65,"grid_age_s":2.045403,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279254.125 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":0.641,"grid_age_s":3.045403,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279254.333 evc04/cn28/raw 
+1783279254.336 Temp: 28 C 
+1783279254.340 
+1783279254.347 evc04/cn28/raw/ascii .Temp: 28 C .
+1783279254.350 evc04/cn28/telemetry {"p1":{"v_mv":234871,"a_ma":40,"w":3,"wh":15557},"p2":{"v_mv":236408,"a_ma":18,"w":0,"wh":15322},"p3":{"v_mv":236526,"a_ma":18,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279255.254 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":0.641,"grid_age_s":4.055406,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279255.260 evc04/charge/grid_power {"watt": 597}
+1783279258.223 evc04/cn28/raw 
+1783279258.227 ev current: 0
+1783279258.231 
+1783279258.234 max_offered_current: 16
+1783279258.238 lb current:0
+1783279258.245 evc04/cn28/raw/ascii .ev current: 0..max_offered_current: 16.lb current:0
+1783279258.248 evc04/cn28/telemetry {"p1":{"v_mv":234871,"a_ma":40,"w":3,"wh":15557},"p2":{"v_mv":236408,"a_ma":18,"w":0,"wh":15322},"p3":{"v_mv":236526,"a_ma":18,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279258.251 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":0.694,"grid_age_s":2.970301,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279258.254 evc04/cn28/status online
+1783279258.429 evc04/cn28/raw 
+1783279258.432 
+1783279258.438 evc04/cn28/raw/ascii .
+1783279258.442 evc04/cn28/telemetry {"p1":{"v_mv":234871,"a_ma":40,"w":3,"wh":15557},"p2":{"v_mv":236408,"a_ma":18,"w":0,"wh":15322},"p3":{"v_mv":236526,"a_ma":18,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279259.245 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":0.711,"grid_age_s":3.986914,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279260.271 evc04/charge/grid_power {"watt": 597}
+1783279260.578 evc04/cn28/raw 
+1783279260.581 current_without_dlm_without_unplugged11
+1783279260.587 evc04/cn28/raw/ascii .current_without_dlm_without_unplugged11
+1783279260.591 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":0.981,"grid_age_s":0.000105,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279261.602 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":0.99,"grid_age_s":1.009804,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279262.524 evc04/cn28/raw 
+1783279262.527 P1:	V: 234752	A: 40	W: 3	Wh: 15557
+1783279262.530 P2:	V: 236334	A: 18	W: 0	Wh: 15322
+1783279262.532 P3:	V: 236689	A: 18	W: 0	Wh: 15478
+1783279262.536 
+1783279262.540 
+1783279262.542 S:B1 Auth:1 D:193 Cmax:11 Ph:3 Relay:7
+1783279262.546 
+1783279262.549 S:B2 Auth:1 D:193 Cmax:11 Ph:3 Relay:7
+1783279262.552 
+1783279262.555 Nref: 57
+1783279262.562 evc04/cn28/raw/ascii .P1:.V: 234752.A: 40.W: 3.Wh: 15557.P2:.V: 236334.A: 18.W: 0.Wh: 15322.P3:.V: 236689.A: 18.W: 0.Wh: 15478...S:B1 Auth:1 D:193 Cmax:11 Ph:3 Relay:7..S:B2 Auth:1 D:193 Cmax:11 Ph:3 Relay:7..Nref: 57
+1783279262.565 evc04/cn28/telemetry {"p1":{"v_mv":234752,"a_ma":40,"w":3,"wh":15557},"p2":{"v_mv":236334,"a_ma":18,"w":0,"wh":15322},"p3":{"v_mv":236689,"a_ma":18,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279262.569 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":0.991,"grid_age_s":2.019685,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279263.550 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":0.99,"grid_age_s":3.029804,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279264.468 evc04/cn28/raw 6
+1783279264.475 evc04/cn28/raw/ascii 6
+1783279264.571 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":1,"grid_age_s":4.039773,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279265.197 evc04/charge/grid_power {"watt": 597}
+1783279265.597 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":1.001,"grid_age_s":0.256394,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279266.516 evc04/cn28/raw 
+1783279266.519 S:C2 Auth:1 D:193 Cmax:11 Ph:3 Relay:7
+1783279266.522 
+1783279266.525 S:C2 Auth:1 D:193 Cmax:11 Ph:3 Relay:0
+1783279266.528 
+1783279266.534 evc04/cn28/raw/ascii .S:C2 Auth:1 D:193 Cmax:11 Ph:3 Relay:7..S:C2 Auth:1 D:193 Cmax:11 Ph:3 Relay:0.
+1783279266.538 evc04/cn28/telemetry {"p1":{"v_mv":234752,"a_ma":40,"w":3,"wh":15557},"p2":{"v_mv":236334,"a_ma":18,"w":0,"wh":15322},"p3":{"v_mv":236689,"a_ma":18,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279266.620 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":597,"reported_ampere":5,"last_poll_age_s":1.001,"grid_age_s":1.2664089,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279267.539 evc04/charge/grid_power {"watt": 590}
+1783279267.594 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":590,"reported_ampere":5,"last_poll_age_s":1.009,"grid_age_s":0.056906,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279268.564 evc04/cn28/raw 
+1783279268.567 Temp: 28 C 
+1783279268.573 evc04/cn28/raw/ascii .Temp: 28 C 
+1783279268.576 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":590,"reported_ampere":5,"last_poll_age_s":0.01,"grid_age_s":1.066969,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279269.589 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":590,"reported_ampere":5,"last_poll_age_s":0.011,"grid_age_s":2.0770879,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279270.206 evc04/charge/grid_power {"watt": 590}
+1783279270.511 evc04/cn28/raw 
+1783279270.514 
+1783279270.520 evc04/cn28/raw/ascii .
+1783279270.524 evc04/cn28/telemetry {"p1":{"v_mv":234752,"a_ma":40,"w":3,"wh":15557},"p2":{"v_mv":236334,"a_ma":18,"w":0,"wh":15322},"p3":{"v_mv":236689,"a_ma":18,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279270.612 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":590,"reported_ampere":5,"last_poll_age_s":0.021,"grid_age_s":0.127332,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279271.196 evc04/charge/enable {"enable": false}
+1783279271.637 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":590,"reported_ampere":20,"last_poll_age_s":0.021,"grid_age_s":1.1373351,"grid_failsafe":false,"charge_state":"B","enabled":false,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279272.559 evc04/cn28/raw 
+1783279272.562 P1:	V: 234930	A: 320	W: 12	Wh: 15557
+1783279272.566 P2:	V: 236482	A: 279	W: 0	Wh: 15322
+1783279272.569 P3:	V: 236718	A: 275	W: 0	Wh: 15478
+1783279272.572 
+1783279272.576 
+1783279272.583 evc04/cn28/raw/ascii .P1:.V: 234930.A: 320.W: 12.Wh: 15557.P2:.V: 236482.A: 279.W: 0.Wh: 15322.P3:.V: 236718.A: 275.W: 0.Wh: 15478..
+1783279272.587 evc04/cn28/telemetry {"p1":{"v_mv":234930,"a_ma":320,"w":12,"wh":15557},"p2":{"v_mv":236482,"a_ma":279,"w":0,"wh":15322},"p3":{"v_mv":236718,"a_ma":275,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279272.665 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":590,"reported_ampere":20,"last_poll_age_s":0.021,"grid_age_s":2.147396,"grid_failsafe":false,"charge_state":"B","enabled":false,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279273.683 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":590,"reported_ampere":20,"last_poll_age_s":0.031,"grid_age_s":3.157399,"grid_failsafe":false,"charge_state":"B","enabled":false,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279274.106 evc04/charge/enable {"enable": true}
+1783279274.504 evc04/cn28/raw 
+1783279274.508 ev current: 0
+1783279274.511 
+1783279274.514 max_offered_current: 16
+1783279274.518 lb current:11
+1783279274.521 
+1783279274.524 TEMP lb current: 00
+1783279274.527 Stop Pwm1
+1783279274.531 
+1783279274.535 current_without_dlm_without_unplugged0
+1783279274.542 evc04/cn28/raw/ascii .ev current: 0..max_offered_current: 16.lb current:11..TEMP lb current: 00.Stop Pwm1..current_without_dlm_without_unplugged0
+1783279274.545 evc04/cn28/telemetry {"p1":{"v_mv":234930,"a_ma":320,"w":12,"wh":15557},"p2":{"v_mv":236482,"a_ma":279,"w":0,"wh":15322},"p3":{"v_mv":236718,"a_ma":275,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279274.627 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":590,"reported_ampere":5,"last_poll_age_s":0.031,"grid_age_s":4.167336,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279275.160 evc04/charge/grid_power {"watt": 590}
+1783279275.646 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":590,"reported_ampere":5,"last_poll_age_s":0.041,"grid_age_s":0.35396,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279276.654 evc04/cn28/raw 
+1783279276.657 S:B1 Auth:1 D:193 Cmax:0 Ph:3 Relay:5
+1783279276.661 
+1783279276.664 TEMP lb current: 0
+1783279276.668 S:B1 Auth:1 D:193 Cmax:0 Ph:3 Relay:7
+1783279276.671 
+1783279276.675 TEMP lb current: 0
+1783279276.682 evc04/cn28/raw/ascii .S:B1 Auth:1 D:193 Cmax:0 Ph:3 Relay:5..TEMP lb current: 0.S:B1 Auth:1 D:193 Cmax:0 Ph:3 Relay:7..TEMP lb current: 0
+1783279276.686 evc04/cn28/telemetry {"p1":{"v_mv":234930,"a_ma":320,"w":12,"wh":15557},"p2":{"v_mv":236482,"a_ma":279,"w":0,"wh":15322},"p3":{"v_mv":236718,"a_ma":275,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279276.690 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":590,"reported_ampere":5,"last_poll_age_s":0.041,"grid_age_s":1.363945,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279277.679 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":590,"reported_ampere":5,"last_poll_age_s":0.041,"grid_age_s":2.374028,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279277.896 evc04/charge/grid_power {"watt": 632}
+1783279279.216 evc04/cn28/raw 
+1783279279.219 ev current: 0
+1783279279.223 
+1783279279.226 max_offered_current: 16
+1783279279.230 lb current:0
+1783279279.237 evc04/cn28/raw/ascii .ev current: 0..max_offered_current: 16.lb current:0
+1783279279.241 evc04/cn28/telemetry {"p1":{"v_mv":234930,"a_ma":320,"w":12,"wh":15557},"p2":{"v_mv":236482,"a_ma":279,"w":0,"wh":15322},"p3":{"v_mv":236718,"a_ma":275,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279279.244 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":632,"reported_ampere":5,"last_poll_age_s":0.555,"grid_age_s":1.223101,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279280.136 evc04/charge/grid_power {"watt": 632}
+1783279280.238 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":632,"reported_ampere":5,"last_poll_age_s":0.551,"grid_age_s":2.229263,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279280.545 evc04/cn28/raw 
+1783279280.548 
+1783279280.553 evc04/cn28/raw/ascii .
+1783279280.556 evc04/cn28/telemetry {"p1":{"v_mv":234930,"a_ma":320,"w":12,"wh":15557},"p2":{"v_mv":236482,"a_ma":279,"w":0,"wh":15322},"p3":{"v_mv":236718,"a_ma":275,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279281.263 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":632,"reported_ampere":5,"last_poll_age_s":0.551,"grid_age_s":0.990561,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279282.207 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":632,"reported_ampere":5,"last_poll_age_s":0.561,"grid_age_s":2.000568,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279282.593 evc04/cn28/raw 
+1783279282.597 P1:	V: 234915	A: 45	W: 3	Wh: 15557
+1783279282.601 P2:	V: 236334	A: 18	W: 0	Wh: 15322
+1783279282.604 P3:	V: 236674	A: 13	W: 0	Wh: 15478
+1783279282.608 
+1783279282.611 
+1783279282.618 evc04/cn28/raw/ascii .P1:.V: 234915.A: 45.W: 3.Wh: 15557.P2:.V: 236334.A: 18.W: 0.Wh: 15322.P3:.V: 236674.A: 13.W: 0.Wh: 15478..
+1783279282.622 evc04/cn28/telemetry {"p1":{"v_mv":234915,"a_ma":45,"w":3,"wh":15557},"p2":{"v_mv":236334,"a_ma":18,"w":0,"wh":15322},"p3":{"v_mv":236674,"a_ma":13,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279283.208 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":632,"reported_ampere":5,"last_poll_age_s":0.561,"grid_age_s":3.010716,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279284.224 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":632,"reported_ampere":5,"last_poll_age_s":0.571,"grid_age_s":4.020548,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279284.643 evc04/cn28/raw 
+1783279284.646 Temp: 28 C 
+1783279284.653 evc04/cn28/raw/ascii .Temp: 28 C 
+1783279285.156 evc04/charge/grid_power {"watt": 632}
+1783279285.461 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":632,"reported_ampere":5,"last_poll_age_s":0.563,"grid_age_s":0.000429,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279286.281 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":632,"reported_ampere":5,"last_poll_age_s":0.561,"grid_age_s":1.008098,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279286.589 evc04/cn28/raw 
+1783279286.592 
+1783279286.595 ev current: 0
+1783279286.598 
+1783279286.602 max_offered_current: 16
+1783279286.605 lb current:0
+1783279286.609 
+1783279286.616 evc04/cn28/raw/ascii ..ev current: 0..max_offered_current: 16.lb current:0.
+1783279286.619 evc04/cn28/telemetry {"p1":{"v_mv":234915,"a_ma":45,"w":3,"wh":15557},"p2":{"v_mv":236334,"a_ma":18,"w":0,"wh":15322},"p3":{"v_mv":236674,"a_ma":13,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279287.307 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":632,"reported_ampere":5,"last_poll_age_s":0.571,"grid_age_s":2.018105,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279287.920 evc04/charge/grid_power {"watt": 510}
+1783279288.227 evc04/cn28/status online
+1783279288.248 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.571,"grid_age_s":0.164083,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279288.550 evc04/cn28/raw 
+1783279288.553 lb wait for time
+1783279288.556 TEMP lb current: 11
+1783279288.564 evc04/cn28/raw/ascii .lb wait for time.TEMP lb current: 11
+1783279289.354 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.571,"grid_age_s":1.174229,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279290.180 evc04/charge/grid_power {"watt": 510}
+1783279290.379 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.581,"grid_age_s":2.184214,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279291.198 evc04/cn28/raw 
+1783279291.201 P1:	V: 234767	A: 45	W: 3	Wh: 15557
+1783279291.204 P2:	V: 236098	A: 18	W: 0	Wh: 15322
+1783279291.207 P3:	V: 236511	A: 18	W: 0	Wh: 15478
+1783279291.211 
+1783279291.218 evc04/cn28/raw/ascii .P1:.V: 234767.A: 45.W: 3.Wh: 15557.P2:.V: 236098.A: 18.W: 0.Wh: 15322.P3:.V: 236511.A: 18.W: 0.Wh: 15478.
+1783279291.222 evc04/cn28/telemetry {"p1":{"v_mv":234767,"a_ma":45,"w":3,"wh":15557},"p2":{"v_mv":236098,"a_ma":18,"w":0,"wh":15322},"p3":{"v_mv":236511,"a_ma":18,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279291.300 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.581,"grid_age_s":0.998077,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279292.325 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.591,"grid_age_s":2.008118,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279292.632 evc04/cn28/raw 
+1783279292.635 
+1783279292.638 ev current: 0
+1783279292.641 
+1783279292.645 max_offered_current: 16
+1783279292.649 lb current:0
+1783279292.652 
+1783279292.658 evc04/cn28/raw/ascii ..ev current: 0..max_offered_current: 16.lb current:0.
+1783279292.662 evc04/cn28/telemetry {"p1":{"v_mv":234767,"a_ma":45,"w":3,"wh":15557},"p2":{"v_mv":236098,"a_ma":18,"w":0,"wh":15322},"p3":{"v_mv":236511,"a_ma":18,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279293.350 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.59,"grid_age_s":3.018113,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279294.372 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.591,"grid_age_s":4.028114,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279295.191 evc04/charge/grid_power {"watt": 510}
+1783279296.420 evc04/cn28/raw (null)
+1783279296.431 evc04/cn28/raw/ascii (null)
+1783279296.434 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.658,"grid_age_s":0.000121,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279296.626 evc04/cn28/raw wc
+1783279296.635 evc04/cn28/raw/ascii wc
+1783279297.446 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.66,"grid_age_s":1.001391,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279298.467 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.661,"grid_age_s":2.011378,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279298.675 evc04/cn28/raw 
+1783279298.678 
+1783279298.681 ev current: 0
+1783279298.685 
+1783279298.689 max_offered_current: 16
+1783279298.692 lb current:0
+1783279298.695 
+1783279298.703 evc04/cn28/raw/ascii ..ev current: 0..max_offered_current: 16.lb current:0.
+1783279298.705 evc04/cn28/telemetry {"p1":{"v_mv":234767,"a_ma":45,"w":3,"wh":15557},"p2":{"v_mv":236098,"a_ma":18,"w":0,"wh":15322},"p3":{"v_mv":236511,"a_ma":18,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279299.493 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.661,"grid_age_s":3.021399,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279300.210 evc04/charge/grid_power {"watt": 510}
+1783279300.824 evc04/cn28/raw 
+1783279300.828 Temp: 28 C 
+1783279300.835 evc04/cn28/raw/ascii .Temp: 28 C 
+1783279300.838 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.99,"grid_age_s":0.467681,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279301.850 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.991,"grid_age_s":1.478395,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279302.668 evc04/cn28/raw 
+1783279302.671 
+1783279302.675 P1:	V: 234797	A: 45	W: 3	Wh: 15557
+1783279302.678 P2:	V: 235905	A: 18	W: 0	Wh: 15322
+1783279302.682 P3:	V: 236423	A: 18	W: 0	Wh: 15478
+1783279302.685 
+1783279302.689 
+1783279302.691 current_without_dlm_without_unplugged11
+1783279302.699 evc04/cn28/raw/ascii ..P1:.V: 234797.A: 45.W: 3.Wh: 15557.P2:.V: 235905.A: 18.W: 0.Wh: 15322.P3:.V: 236423.A: 18.W: 0.Wh: 15478...current_without_dlm_without_unplugged11
+1783279302.702 evc04/cn28/telemetry {"p1":{"v_mv":234797,"a_ma":45,"w":3,"wh":15557},"p2":{"v_mv":235905,"a_ma":18,"w":0,"wh":15322},"p3":{"v_mv":236423,"a_ma":18,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279302.770 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.99,"grid_age_s":2.488326,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279303.795 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":1,"grid_age_s":3.498391,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279304.717 evc04/cn28/raw 
+1783279304.720 ev current: 0
+1783279304.724 
+1783279304.727 max_offered_current: 16
+1783279304.731 lb current:11
+1783279304.735 
+1783279304.739 S:B1 Auth:1 D:193 Cmax:11 Ph:3 Relay:7
+1783279304.743 
+1783279304.746 S:C2 Auth:1 D:193 Cmax:11 Ph:3 Relay:7
+1783279304.751 
+1783279304.759 evc04/cn28/raw/ascii .ev current: 0..max_offered_current: 16.lb current:11..S:B1 Auth:1 D:193 Cmax:11 Ph:3 Relay:7..S:C2 Auth:1 D:193 Cmax:11 Ph:3 Relay:7.
+1783279304.763 evc04/cn28/telemetry {"p1":{"v_mv":234797,"a_ma":45,"w":3,"wh":15557},"p2":{"v_mv":235905,"a_ma":18,"w":0,"wh":15322},"p3":{"v_mv":236423,"a_ma":18,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":11,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279304.818 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":1,"grid_age_s":4.50837,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279305.137 evc04/charge/grid_power {"watt": 510}
+1783279305.843 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":1,"grid_age_s":0.60149103,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279306.661 evc04/cn28/raw 
+1783279306.665 S:C2 Auth:1 D:193 Cmax:11 Ph:3 Relay:0
+1783279306.666 
+1783279306.674 evc04/cn28/raw/ascii .S:C2 Auth:1 D:193 Cmax:11 Ph:3 Relay:0.
+1783279306.676 evc04/cn28/telemetry {"p1":{"v_mv":234797,"a_ma":45,"w":3,"wh":15557},"p2":{"v_mv":235905,"a_ma":18,"w":0,"wh":15322},"p3":{"v_mv":236423,"a_ma":18,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":11,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279306.867 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":1.01,"grid_age_s":1.6115451,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279307.995 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.011,"grid_age_s":2.621553,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279310.143 evc04/charge/grid_power {"watt": 510}
+1783279310.555 evc04/cn28/raw (null)
+1783279310.562 evc04/cn28/raw/ascii (null)
+1783279310.566 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.649,"grid_age_s":0.000121,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279311.476 evc04/cn28/raw 
+1783279311.479 P1:	V: 234856	A: 320	W: 10	Wh: 15557
+1783279311.483 P2:	V: 235965	A: 279	W: 0	Wh: 15322
+1783279311.486 P3:	V: 236305	A: 275	W: 0	Wh: 15478
+1783279311.489 
+1783279311.493 
+1783279311.682 evc04/cn28/raw/ascii .P1:.V: 234856.A: 320.W: 10.Wh: 15557.P2:.V: 235965.A: 279.W: 0.Wh: 15322.P3:.V: 236305.A: 275.W: 0.Wh: 15478..
+1783279311.687 evc04/cn28/telemetry {"p1":{"v_mv":234856,"a_ma":320,"w":10,"wh":15557},"p2":{"v_mv":235965,"a_ma":279,"w":0,"wh":15322},"p3":{"v_mv":236305,"a_ma":275,"w":0,"wh":15478},"temp_c":28,"ev_current_a":0,"max_offered_a":16,"lb_current_a":11,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279311.691 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.65,"grid_age_s":1.011007,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279312.603 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.641,"grid_age_s":2.011506,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279314.548 evc04/cn28/raw (null)
+1783279314.557 evc04/cn28/raw/ascii (null)
+1783279314.560 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.639,"grid_age_s":4.020029,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279315.165 evc04/charge/grid_power {"watt": 510}
+1783279315.470 evc04/cn28/raw 
+1783279315.473 ev current: 1
+1783279315.476 
+1783279315.480 max_offered_current: 16
+1783279315.483 lb current:11
+1783279315.489 evc04/cn28/raw/ascii .ev current: 1..max_offered_current: 16.lb current:11
+1783279315.492 evc04/cn28/telemetry {"p1":{"v_mv":234856,"a_ma":320,"w":10,"wh":15557},"p2":{"v_mv":235965,"a_ma":279,"w":0,"wh":15322},"p3":{"v_mv":236305,"a_ma":275,"w":0,"wh":15478},"temp_c":28,"ev_current_a":1,"max_offered_a":16,"lb_current_a":11,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279315.495 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.641,"grid_age_s":0.107777,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279316.598 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.641,"grid_age_s":1.107861,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279316.700 evc04/cn28/raw 
+1783279316.704 
+1783279316.707 lb wait for time
+1783279316.815 evc04/cn28/raw/ascii ..lb wait for time
+1783279316.819 evc04/cn28/telemetry {"p1":{"v_mv":234856,"a_ma":320,"w":10,"wh":15557},"p2":{"v_mv":235965,"a_ma":279,"w":0,"wh":15322},"p3":{"v_mv":236305,"a_ma":275,"w":0,"wh":15478},"temp_c":28,"ev_current_a":1,"max_offered_a":16,"lb_current_a":11,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279317.518 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.641,"grid_age_s":2.117864,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279318.235 evc04/cn28/status online
+1783279318.746 evc04/cn28/raw 
+1783279318.749 Temp: 28 C 
+1783279318.752 
+1783279318.759 evc04/cn28/raw/ascii .Temp: 28 C .
+1783279318.762 evc04/cn28/telemetry {"p1":{"v_mv":234856,"a_ma":320,"w":10,"wh":15557},"p2":{"v_mv":235965,"a_ma":279,"w":0,"wh":15322},"p3":{"v_mv":236305,"a_ma":275,"w":0,"wh":15478},"temp_c":28,"ev_current_a":1,"max_offered_a":16,"lb_current_a":11,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279318.765 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.855,"grid_age_s":3.332211,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279319.772 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":5,"last_poll_age_s":0.851,"grid_age_s":4.337868,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279320.182 evc04/charge/grid_power {"watt": 510}
+1783279321.412 evc04/cn28/raw 
+1783279321.415 P1:	V: 233378	A: 5520	W: 1268	Wh: 15558
+1783279321.419 P2:	V: 235802	A: 3062	W: 427	Wh: 15323
+1783279321.423 P3:	V: 236630	A: 275	W: 0	Wh: 15478
+1783279321.426 
+1783279321.433 evc04/cn28/raw/ascii .P1:.V: 233378.A: 5520.W: 1268.Wh: 15558.P2:.V: 235802.A: 3062.W: 427.Wh: 15323.P3:.V: 236630.A: 275.W: 0.Wh: 15478.
+1783279321.435 evc04/cn28/telemetry {"p1":{"v_mv":233378,"a_ma":5520,"w":1268,"wh":15558},"p2":{"v_mv":235802,"a_ma":3062,"w":427,"wh":15323},"p3":{"v_mv":236630,"a_ma":275,"w":0,"wh":15478},"temp_c":28,"ev_current_a":1,"max_offered_a":16,"lb_current_a":11,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279321.438 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":10,"last_poll_age_s":0.475,"grid_age_s":1.113605,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279322.445 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":10,"last_poll_age_s":0.471,"grid_age_s":2.119163,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279322.742 evc04/cn28/raw 
+1783279322.746 
+1783279322.749 ev current: 5
+1783279322.753 
+1783279322.756 max_offered_current: 16
+1783279322.759 lb current:11
+1783279322.762 
+1783279322.769 evc04/cn28/raw/ascii ..ev current: 5..max_offered_current: 16.lb current:11.
+1783279322.772 evc04/cn28/telemetry {"p1":{"v_mv":233378,"a_ma":5520,"w":1268,"wh":15558},"p2":{"v_mv":235802,"a_ma":3062,"w":427,"wh":15323},"p3":{"v_mv":236630,"a_ma":275,"w":0,"wh":15478},"temp_c":28,"ev_current_a":5,"max_offered_a":16,"lb_current_a":11,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279323.465 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":10,"last_poll_age_s":0.481,"grid_age_s":3.129152,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279324.491 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":10,"last_poll_age_s":0.481,"grid_age_s":4.139163,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279325.199 evc04/charge/grid_power {"watt": 510}
+1783279326.631 evc04/cn28/raw (null)
+1783279326.641 evc04/cn28/raw/ascii (null)
+1783279326.644 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":10,"last_poll_age_s":0.63,"grid_age_s":0.000121,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279327.455 evc04/cn28/raw 
+1783279327.458 ev current: 10
+1783279327.462 
+1783279327.466 max_offered_current: 16
+1783279327.470 lb current:11
+1783279327.478 evc04/cn28/raw/ascii .ev current: 10..max_offered_current: 16.lb current:11
+1783279327.482 evc04/cn28/telemetry {"p1":{"v_mv":233378,"a_ma":5520,"w":1268,"wh":15558},"p2":{"v_mv":235802,"a_ma":3062,"w":427,"wh":15323},"p3":{"v_mv":236630,"a_ma":275,"w":0,"wh":15478},"temp_c":28,"ev_current_a":10,"max_offered_a":16,"lb_current_a":11,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279327.658 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":10,"last_poll_age_s":0.631,"grid_age_s":1.010957,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279328.579 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":10,"last_poll_age_s":0.621,"grid_age_s":2.011081,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279328.784 evc04/cn28/raw 
+1783279328.787 
+1783279328.794 evc04/cn28/raw/ascii .
+1783279328.798 evc04/cn28/telemetry {"p1":{"v_mv":233378,"a_ma":5520,"w":1268,"wh":15558},"p2":{"v_mv":235802,"a_ma":3062,"w":427,"wh":15323},"p3":{"v_mv":236630,"a_ma":275,"w":0,"wh":15478},"temp_c":28,"ev_current_a":10,"max_offered_a":16,"lb_current_a":11,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279329.602 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":10,"last_poll_age_s":0.63,"grid_age_s":3.021068,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279330.218 evc04/charge/grid_power {"watt": 510}
+1783279330.935 evc04/cn28/raw 
+1783279330.939 current_without_dlm_without_unplugged16
+1783279331.036 evc04/cn28/raw/ascii .current_without_dlm_without_unplugged16
+1783279331.044 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":10,"last_poll_age_s":0.894,"grid_age_s":0.557467,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279331.859 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":10,"last_poll_age_s":0.901,"grid_age_s":1.563941,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279332.982 evc04/cn28/raw 
+1783279332.987 S:C2 Auth:1 D:281 Cmax:16 Ph:3 Relay:0
+1783279332.990 
+1783279332.994 P1:	V: 232875	A: 11157	W: 2573	Wh: 15565
+1783279332.997 P2:	V: 234339	A: 11094	W: 2575	Wh: 15329
+1783279332.001 P3:	V: 234619	A: 11139	W: 2588	Wh: 15480
+1783279333.004 
+1783279333.008 
+1783279333.012 Temp: 28 C 
+1783279333.019 evc04/cn28/raw/ascii .S:C2 Auth:1 D:281 Cmax:16 Ph:3 Relay:0..P1:.V: 232875.A: 11157.W: 2573.Wh: 15565.P2:.V: 234339.A: 11094.W: 2575.Wh: 15329.P3:.V: 234619.A: 11139.W: 2588.Wh: 15480...Temp: 28 C 
+1783279333.022 evc04/cn28/telemetry {"p1":{"v_mv":232875,"a_ma":11157,"w":2573,"wh":15565},"p2":{"v_mv":234339,"a_ma":11094,"w":2575,"wh":15329},"p3":{"v_mv":234619,"a_ma":11139,"w":2588,"wh":15480},"temp_c":28,"ev_current_a":10,"max_offered_a":16,"lb_current_a":11,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279333.025 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":16,"last_poll_age_s":0.987,"grid_age_s":2.660908,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279333.988 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":16,"last_poll_age_s":0.99,"grid_age_s":3.673938,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":11,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279334.824 evc04/cn28/raw 
+1783279334.828 
+1783279334.830 ev current: 12
+1783279334.833 
+1783279334.836 max_offered_current: 16
+1783279334.840 lb current:16
+1783279334.843 
+1783279334.846 current_without_dlm_without_unplugged13
+1783279334.854 evc04/cn28/raw/ascii ..ev current: 12..max_offered_current: 16.lb current:16..current_without_dlm_without_unplugged13
+1783279334.857 evc04/cn28/telemetry {"p1":{"v_mv":232875,"a_ma":11157,"w":2573,"wh":15565},"p2":{"v_mv":234339,"a_ma":11094,"w":2575,"wh":15329},"p3":{"v_mv":234619,"a_ma":11139,"w":2588,"wh":15480},"temp_c":28,"ev_current_a":12,"max_offered_a":16,"lb_current_a":16,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279335.032 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":510,"reported_ampere":18,"last_poll_age_s":1.002,"grid_age_s":4.685871,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":16,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279335.140 evc04/charge/grid_power {"watt": 510}
+1783279335.542 evc04/charge/grid_power {"watt": 6946}
+1783279336.053 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":6946,"reported_ampere":18,"last_poll_age_s":0.001,"grid_age_s":0.380504,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":16,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279336.875 evc04/cn28/raw 
+1783279336.878 S:C2 Auth:1 D:228 Cmax:13 Ph:3 Relay:0
+1783279336.881 
+1783279336.889 evc04/cn28/raw/ascii .S:C2 Auth:1 D:228 Cmax:13 Ph:3 Relay:0.
+1783279336.892 evc04/cn28/telemetry {"p1":{"v_mv":232875,"a_ma":11157,"w":2573,"wh":15565},"p2":{"v_mv":234339,"a_ma":11094,"w":2575,"wh":15329},"p3":{"v_mv":234619,"a_ma":11139,"w":2588,"wh":15480},"temp_c":28,"ev_current_a":12,"max_offered_a":16,"lb_current_a":16,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279337.077 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":6946,"reported_ampere":18,"last_poll_age_s":0.011,"grid_age_s":1.389144,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":16,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279338.102 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":6946,"reported_ampere":18,"last_poll_age_s":0.011,"grid_age_s":2.399203,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":16,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279338.923 evc04/cn28/raw 
+1783279338.927 current_without_dlm_without_unplugged12
+1783279338.933 evc04/cn28/raw/ascii .current_without_dlm_without_unplugged12
+1783279339.026 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":6946,"reported_ampere":18,"last_poll_age_s":0.021,"grid_age_s":3.409433,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":16,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279340.049 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":6946,"reported_ampere":18,"last_poll_age_s":0.021,"grid_age_s":4.419195,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":16,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279340.153 evc04/charge/grid_power {"watt": 6946}
+1783279340.869 evc04/cn28/raw 
+1783279340.872 S:C2 Auth:1 D:211 Cmax:12 Ph:3 Relay:0
+1783279340.875 
+1783279340.878 ev current: 13
+1783279340.881 
+1783279340.884 max_offered_current: 16
+1783279340.886 lb current:12
+1783279340.889 
+1783279340.893 current_without_dlm_without_unplugged11
+1783279340.896 S:C2 Auth:1 D:193 Cmax:11 Ph:3 Relay:0
+1783279340.900 
+1783279340.907 evc04/cn28/raw/ascii .S:C2 Auth:1 D:211 Cmax:12 Ph:3 Relay:0..ev current: 13..max_offered_current: 16.lb current:12..current_without_dlm_without_unplugged11.S:C2 Auth:1 D:193 Cmax:11 Ph:3 Relay:0.
+1783279340.911 evc04/cn28/telemetry {"p1":{"v_mv":232875,"a_ma":11157,"w":2573,"wh":15565},"p2":{"v_mv":234339,"a_ma":11094,"w":2575,"wh":15329},"p3":{"v_mv":234619,"a_ma":11139,"w":2588,"wh":15480},"temp_c":28,"ev_current_a":13,"max_offered_a":16,"lb_current_a":12,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279341.075 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":6946,"reported_ampere":17,"last_poll_age_s":0.02,"grid_age_s":0.809969,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":12,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279342.099 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":6946,"reported_ampere":17,"last_poll_age_s":0.03,"grid_age_s":1.8200121,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":12,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279342.918 evc04/cn28/raw 
+1783279342.921 P1:	V: 232683	A: 13164	W: 3035	Wh: 15573
+1783279342.924 P2:	V: 233910	A: 13124	W: 3042	Wh: 15338
+1783279342.927 P3:	V: 234723	A: 13155	W: 3059	Wh: 15488
+1783279342.930 
+1783279342.933 
+1783279342.941 evc04/cn28/raw/ascii .P1:.V: 232683.A: 13164.W: 3035.Wh: 15573.P2:.V: 233910.A: 13124.W: 3042.Wh: 15338.P3:.V: 234723.A: 13155.W: 3059.Wh: 15488..
+1783279342.944 evc04/cn28/telemetry {"p1":{"v_mv":232683,"a_ma":13164,"w":3035,"wh":15573},"p2":{"v_mv":233910,"a_ma":13124,"w":3042,"wh":15338},"p3":{"v_mv":234723,"a_ma":13155,"w":3059,"wh":15488},"temp_c":28,"ev_current_a":13,"max_offered_a":16,"lb_current_a":12,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279343.123 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":6946,"reported_ampere":17,"last_poll_age_s":0.031,"grid_age_s":2.829993,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":12,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279344.147 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":6946,"reported_ampere":17,"last_poll_age_s":0.031,"grid_age_s":3.840012,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":12,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279345.068 evc04/cn28/raw 
+1783279345.071 current_without_dlm_without_unplugged10
+1783279345.078 evc04/cn28/raw/ascii .current_without_dlm_without_unplugged10
+1783279345.086 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":6946,"reported_ampere":17,"last_poll_age_s":0.041,"grid_age_s":4.849993,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":12,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279345.273 evc04/charge/grid_power {"watt": 6946}
+1783279345.887 evc04/charge/grid_power {"watt": 10116}
+1783279346.195 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":10116,"reported_ampere":17,"last_poll_age_s":0.041,"grid_age_s":0.131267,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":12,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279346.912 evc04/cn28/raw 
+1783279346.916 S:C2 Auth:1 D:176 Cmax:10 Ph:3 Relay:0
+1783279346.920 
+1783279346.923 ev current: 11
+1783279346.926 
+1783279346.930 max_offered_current: 16
+1783279346.935 lb current:10
+1783279346.939 
+1783279346.945 evc04/cn28/raw/ascii .S:C2 Auth:1 D:176 Cmax:10 Ph:3 Relay:0..ev current: 11..max_offered_current: 16.lb current:10.
+1783279346.949 evc04/cn28/telemetry {"p1":{"v_mv":232683,"a_ma":13164,"w":3035,"wh":15573},"p2":{"v_mv":233910,"a_ma":13124,"w":3042,"wh":15338},"p3":{"v_mv":234723,"a_ma":13155,"w":3059,"wh":15488},"temp_c":28,"ev_current_a":11,"max_offered_a":16,"lb_current_a":10,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279347.117 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":10116,"reported_ampere":15,"last_poll_age_s":0.04,"grid_age_s":1.141312,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":10,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279348.141 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":10116,"reported_ampere":15,"last_poll_age_s":0.051,"grid_age_s":2.151331,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":10,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279348.243 evc04/cn28/status online
+1783279349.062 evc04/cn28/raw 
+1783279349.066 Temp: 28 C 
+1783279349.072 evc04/cn28/raw/ascii .Temp: 28 C 
+1783279349.165 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":10116,"reported_ampere":15,"last_poll_age_s":0.051,"grid_age_s":3.161304,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":10,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279350.189 evc04/charge/grid_power {"watt": 10116}
+1783279350.194 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":10116,"reported_ampere":15,"last_poll_age_s":0.061,"grid_age_s":4.171339,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":10,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279351.006 evc04/cn28/raw 
+1783279351.009 
+1783279351.016 evc04/cn28/raw/ascii .
+1783279351.019 evc04/cn28/telemetry {"p1":{"v_mv":232683,"a_ma":13164,"w":3035,"wh":15573},"p2":{"v_mv":233910,"a_ma":13124,"w":3042,"wh":15338},"p3":{"v_mv":234723,"a_ma":13155,"w":3059,"wh":15488},"temp_c":28,"ev_current_a":11,"max_offered_a":16,"lb_current_a":10,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279351.213 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":10116,"reported_ampere":15,"last_poll_age_s":0.062,"grid_age_s":0.97796905,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":10,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279352.152 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":10116,"reported_ampere":15,"last_poll_age_s":0.061,"grid_age_s":1.987056,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":10,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279352.954 evc04/cn28/raw 
+1783279352.957 P1:	V: 233555	A: 10183	W: 2354	Wh: 15581
+1783279352.960 P2:	V: 234324	A: 10120	W: 2348	Wh: 15345
+1783279352.964 P3:	V: 233836	A: 10179	W: 2356	Wh: 15496
+1783279352.967 
+1783279352.971 
+1783279352.974 ev current: 10
+1783279352.976 
+1783279352.979 max_offered_current: 16
+1783279352.983 lb current:10
+1783279352.986 
+1783279352.993 evc04/cn28/raw/ascii .P1:.V: 233555.A: 10183.W: 2354.Wh: 15581.P2:.V: 234324.A: 10120.W: 2348.Wh: 15345.P3:.V: 233836.A: 10179.W: 2356.Wh: 15496...ev current: 10..max_offered_current: 16.lb current:10.
+1783279352.996 evc04/cn28/telemetry {"p1":{"v_mv":233555,"a_ma":10183,"w":2354,"wh":15581},"p2":{"v_mv":234324,"a_ma":10120,"w":2348,"wh":15345},"p3":{"v_mv":233836,"a_ma":10179,"w":2356,"wh":15496},"temp_c":28,"ev_current_a":10,"max_offered_a":16,"lb_current_a":10,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279353.159 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":10116,"reported_ampere":15,"last_poll_age_s":0.071,"grid_age_s":2.997053,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":10,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279354.181 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":10116,"reported_ampere":15,"last_poll_age_s":0.071,"grid_age_s":4.00706,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":10,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279355.209 evc04/charge/grid_power {"watt": 10116}
+1783279356.743 evc04/cn28/raw (null)
+1783279356.749 evc04/cn28/raw/ascii (null)
+1783279356.752 evc04/charge/status {"online":true,"target_ampere":11,"grid_power_w":10116,"reported_ampere":15,"last_poll_age_s":0.591,"grid_age_s":0.000574,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":10,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279357.269 evc04/charge/target {"ampere": 6}
+1783279357.766 evc04/cn28/raw 
+1783279357.769 ev current: 10
+1783279357.772 
+1783279357.775 max_offered_current: 16
+1783279357.779 lb current:10
+1783279357.785 evc04/cn28/raw/ascii .ev current: 10..max_offered_current: 16.lb current:10
+1783279357.788 evc04/cn28/telemetry {"p1":{"v_mv":233555,"a_ma":10183,"w":2354,"wh":15581},"p2":{"v_mv":234324,"a_ma":10120,"w":2348,"wh":15345},"p3":{"v_mv":233836,"a_ma":10179,"w":2356,"wh":15496},"temp_c":28,"ev_current_a":10,"max_offered_a":16,"lb_current_a":10,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279357.792 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":18,"last_poll_age_s":0.591,"grid_age_s":1.010128,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":10,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279358.792 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":18,"last_poll_age_s":0.581,"grid_age_s":2.010311,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":10,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279359.099 evc04/cn28/raw 
+1783279359.102 
+1783279359.105 lb wait for time
+1783279359.111 evc04/cn28/raw/ascii ..lb wait for time
+1783279359.114 evc04/cn28/telemetry {"p1":{"v_mv":233555,"a_ma":10183,"w":2354,"wh":15581},"p2":{"v_mv":234324,"a_ma":10120,"w":2348,"wh":15345},"p3":{"v_mv":233836,"a_ma":10179,"w":2356,"wh":15496},"temp_c":28,"ev_current_a":10,"max_offered_a":16,"lb_current_a":10,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279359.728 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":18,"last_poll_age_s":0.591,"grid_age_s":3.02041,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":10,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279360.224 evc04/charge/grid_power {"watt": 10116}
+1783279361.061 evc04/cn28/raw 
+1783279361.064 current_without_dlm_without_unplugged8
+1783279361.067 S:C2 Auth:1 D:141 Cmax:8 Ph:3 Relay:0
+1783279361.070 
+1783279361.074 current_without_dlm_without_unplugged7wc
+1783279361.153 evc04/cn28/raw/ascii .current_without_dlm_without_unplugged8.S:C2 Auth:1 D:141 Cmax:8 Ph:3 Relay:0..current_without_dlm_without_unplugged7wc
+1783279361.156 evc04/cn28/telemetry {"p1":{"v_mv":233555,"a_ma":10183,"w":2354,"wh":15581},"p2":{"v_mv":234324,"a_ma":10120,"w":2348,"wh":15345},"p3":{"v_mv":233836,"a_ma":10179,"w":2356,"wh":15496},"temp_c":28,"ev_current_a":10,"max_offered_a":16,"lb_current_a":10,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279361.160 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":18,"last_poll_age_s":0.936,"grid_age_s":0.78517705,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":10,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279362.170 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":18,"last_poll_age_s":0.931,"grid_age_s":1.790076,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":10,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279362.990 evc04/cn28/raw 
+1783279362.992 
+1783279362.995 S:C2 Auth:1 D:123 Cmax:7 Ph:3 Relay:0
+1783279362.999 
+1783279363.002 P1:	V: 233777	A: 8136	W: 1880	Wh: 15587
+1783279363.005 P2:	V: 234560	A: 8063	W: 1870	Wh: 15351
+1783279363.008 P3:	V: 234279	A: 8099	W: 1876	Wh: 15503
+1783279363.011 
+1783279363.015 
+1783279363.018 current_without_dlm_without_unplugged6
+1783279363.022 S:C2 Auth:1 D:105 Cmax:6 Ph:3 Relay:0
+1783279363.025 
+1783279363.033 evc04/cn28/raw/ascii ..S:C2 Auth:1 D:123 Cmax:7 Ph:3 Relay:0..P1:.V: 233777.A: 8136.W: 1880.Wh: 15587.P2:.V: 234560.A: 8063.W: 1870.Wh: 15351.P3:.V: 234279.A: 8099.W: 1876.Wh: 15503...current_without_dlm_without_unplugged6.S:C2 Auth:1 D:105 Cmax:6 Ph:3 Relay:0.
+1783279363.037 evc04/cn28/telemetry {"p1":{"v_mv":233777,"a_ma":8136,"w":1880,"wh":15587},"p2":{"v_mv":234560,"a_ma":8063,"w":1870,"wh":15351},"p3":{"v_mv":234279,"a_ma":8099,"w":1876,"wh":15503},"temp_c":28,"ev_current_a":10,"max_offered_a":16,"lb_current_a":10,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279363.100 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":18,"last_poll_age_s":0.941,"grid_age_s":2.800039,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":10,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279364.116 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":18,"last_poll_age_s":0.941,"grid_age_s":3.810076,"grid_failsafe":false,"charge_state":"B","enabled":true,"last_error":null,"lb_current_ampere":10,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279365.347 evc04/cn28/raw 
+1783279365.351 ev current: 8
+1783279365.354 
+1783279365.357 max_offered_current: 16
+1783279365.360 lb current:6
+1783279365.362 
+1783279365.366 Temp: 28 C 
+1783279365.371 evc04/cn28/raw/ascii .ev current: 8..max_offered_current: 16.lb current:6..Temp: 28 C 
+1783279365.374 evc04/cn28/telemetry {"p1":{"v_mv":233777,"a_ma":8136,"w":1880,"wh":15587},"p2":{"v_mv":234560,"a_ma":8063,"w":1870,"wh":15351},"p3":{"v_mv":234279,"a_ma":8099,"w":1876,"wh":15503},"temp_c":28,"ev_current_a":8,"max_offered_a":16,"lb_current_a":6,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279365.378 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.966,"grid_age_s":4.844994,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279365.381 evc04/charge/grid_power {"watt": 10116}
+1783279366.166 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.981,"grid_age_s":0.910096,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279367.086 evc04/cn28/raw 
+1783279367.090 
+1783279367.097 evc04/cn28/raw/ascii .
+1783279367.101 evc04/cn28/telemetry {"p1":{"v_mv":233777,"a_ma":8136,"w":1880,"wh":15587},"p2":{"v_mv":234560,"a_ma":8063,"w":1870,"wh":15351},"p3":{"v_mv":234279,"a_ma":8099,"w":1876,"wh":15503},"temp_c":28,"ev_current_a":8,"max_offered_a":16,"lb_current_a":6,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279367.188 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.981,"grid_age_s":1.920137,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279368.213 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.99,"grid_age_s":2.930156,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279369.756 evc04/cn28/raw 
+1783279369.759 ev current: 6
+1783279369.762 
+1783279369.765 max_offered_current: 16
+1783279369.768 lb current:6
+1783279369.857 evc04/cn28/raw/ascii .ev current: 6..max_offered_current: 16.lb current:6
+1783279369.861 evc04/cn28/telemetry {"p1":{"v_mv":233777,"a_ma":8136,"w":1880,"wh":15587},"p2":{"v_mv":234560,"a_ma":8063,"w":1870,"wh":15351},"p3":{"v_mv":234279,"a_ma":8099,"w":1876,"wh":15503},"temp_c":28,"ev_current_a":6,"max_offered_a":16,"lb_current_a":6,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279369.865 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.562,"grid_age_s":4.522943,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279370.158 evc04/charge/grid_power {"watt": 10116}
+1783279370.875 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.57,"grid_age_s":0.53997797,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279371.079 evc04/cn28/raw 
+1783279371.082 
+1783279371.087 evc04/cn28/raw/ascii .
+1783279371.091 evc04/cn28/telemetry {"p1":{"v_mv":233777,"a_ma":8136,"w":1880,"wh":15587},"p2":{"v_mv":234560,"a_ma":8063,"w":1870,"wh":15351},"p3":{"v_mv":234279,"a_ma":8099,"w":1876,"wh":15503},"temp_c":28,"ev_current_a":6,"max_offered_a":16,"lb_current_a":6,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279371.797 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.571,"grid_age_s":1.550067,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279372.822 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.56,"grid_age_s":2.550059,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279373.027 evc04/cn28/raw 
+1783279373.030 P1:	V: 234028	A: 6142	W: 1416	Wh: 15592
+1783279373.034 P2:	V: 234841	A: 6070	W: 1406	Wh: 15356
+1783279373.038 P3:	V: 234427	A: 6097	W: 1410	Wh: 15507
+1783279373.042 
+1783279373.045 
+1783279373.052 evc04/cn28/raw/ascii .P1:.V: 234028.A: 6142.W: 1416.Wh: 15592.P2:.V: 234841.A: 6070.W: 1406.Wh: 15356.P3:.V: 234427.A: 6097.W: 1410.Wh: 15507..
+1783279373.056 evc04/cn28/telemetry {"p1":{"v_mv":234028,"a_ma":6142,"w":1416,"wh":15592},"p2":{"v_mv":234841,"a_ma":6070,"w":1406,"wh":15356},"p3":{"v_mv":234427,"a_ma":6097,"w":1410,"wh":15507},"temp_c":28,"ev_current_a":6,"max_offered_a":16,"lb_current_a":6,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279373.806 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.57,"grid_age_s":3.560054,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279374.791 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.561,"grid_age_s":4.560054,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279375.177 evc04/charge/grid_power {"watt": 10116}
+1783279375.789 evc04/cn28/raw 
+1783279375.793 ev current: 6
+1783279375.796 
+1783279375.798 max_offered_current: 16
+1783279375.801 lb current:6
+1783279375.816 evc04/cn28/raw/ascii .ev current: 6..max_offered_current: 16.lb current:6
+1783279375.819 evc04/cn28/telemetry {"p1":{"v_mv":234028,"a_ma":6142,"w":1416,"wh":15592},"p2":{"v_mv":234841,"a_ma":6070,"w":1406,"wh":15356},"p3":{"v_mv":234427,"a_ma":6097,"w":1410,"wh":15507},"temp_c":28,"ev_current_a":6,"max_offered_a":16,"lb_current_a":6,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279375.822 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.563,"grid_age_s":0.000109,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279377.022 evc04/cn28/raw 
+1783279377.026 
+1783279377.033 evc04/cn28/raw/ascii .
+1783279377.037 evc04/cn28/telemetry {"p1":{"v_mv":234028,"a_ma":6142,"w":1416,"wh":15592},"p2":{"v_mv":234841,"a_ma":6070,"w":1406,"wh":15356},"p3":{"v_mv":234427,"a_ma":6097,"w":1410,"wh":15507},"temp_c":28,"ev_current_a":6,"max_offered_a":16,"lb_current_a":6,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279377.041 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.773,"grid_age_s":1.210744,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279378.045 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.771,"grid_age_s":2.217453,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279378.248 evc04/cn28/status online
+1783279380.194 evc04/charge/grid_power {"watt": 10116}
+1783279380.808 evc04/cn28/raw (null)
+1783279380.874 evc04/cn28/raw/ascii (null)
+1783279380.878 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.552,"grid_age_s":0.000125,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279381.322 evc04/cn28/raw 
+1783279381.326 Temp: 28 C 
+1783279381.333 evc04/cn28/raw/ascii .Temp: 28 C 
+1783279381.904 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.571,"grid_age_s":1.019017,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279383.062 evc04/cn28/raw 
+1783279383.066 
+1783279383.069 P1:	V: 234013	A: 6111	W: 1409	Wh: 15596
+1783279383.072 P2:	V: 234841	A: 6061	W: 1404	Wh: 15360
+1783279383.076 P3:	V: 234265	A: 6061	W: 1401	Wh: 15511
+1783279383.080 
+1783279383.083 
+1783279383.085 ev current: 6
+1783279383.088 
+1783279383.091 max_offered_current: 16
+1783279383.094 lb current:6
+1783279383.097 
+1783279383.103 evc04/cn28/raw/ascii ..P1:.V: 234013.A: 6111.W: 1409.Wh: 15596.P2:.V: 234841.A: 6061.W: 1404.Wh: 15360.P3:.V: 234265.A: 6061.W: 1401.Wh: 15511...ev current: 6..max_offered_current: 16.lb current:6.
+1783279383.107 evc04/cn28/telemetry {"p1":{"v_mv":234013,"a_ma":6111,"w":1409,"wh":15596},"p2":{"v_mv":234841,"a_ma":6061,"w":1404,"wh":15360},"p3":{"v_mv":234265,"a_ma":6061,"w":1401,"wh":15511},"temp_c":28,"ev_current_a":6,"max_offered_a":16,"lb_current_a":6,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279383.111 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.769,"grid_age_s":2.227685,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279384.086 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.771,"grid_age_s":3.239009,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279385.213 evc04/charge/grid_power {"watt": 10116}
+1783279386.850 evc04/cn28/raw (null)
+1783279386.855 evc04/cn28/raw/ascii (null)
+1783279386.859 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.549,"grid_age_s":0.000121,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279387.889 evc04/cn28/raw 
+1783279387.893 ev current: 6
+1783279387.897 
+1783279387.900 max_offered_current: 16
+1783279387.902 lb current:6
+1783279387.926 evc04/cn28/raw/ascii .ev current: 6..max_offered_current: 16.lb current:6
+1783279387.930 evc04/cn28/telemetry {"p1":{"v_mv":234013,"a_ma":6111,"w":1409,"wh":15596},"p2":{"v_mv":234841,"a_ma":6061,"w":1404,"wh":15360},"p3":{"v_mv":234265,"a_ma":6061,"w":1401,"wh":15511},"temp_c":28,"ev_current_a":6,"max_offered_a":16,"lb_current_a":6,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279387.933 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.576,"grid_age_s":1.036523,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279389.104 evc04/cn28/raw 
+1783279389.107 
+1783279389.116 evc04/cn28/raw/ascii .
+1783279389.119 evc04/cn28/telemetry {"p1":{"v_mv":234013,"a_ma":6111,"w":1409,"wh":15596},"p2":{"v_mv":234841,"a_ma":6061,"w":1404,"wh":15360},"p3":{"v_mv":234265,"a_ma":6061,"w":1401,"wh":15511},"temp_c":28,"ev_current_a":6,"max_offered_a":16,"lb_current_a":6,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279389.122 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.752,"grid_age_s":2.223134,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279390.128 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":10116,"reported_ampere":16,"last_poll_age_s":0.761,"grid_age_s":3.231555,"grid_failsafe":false,"charge_state":"C","enabled":true,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279390.145 evc04/charge/grid_power {"watt": 10116}
+1783279390.846 evc04/charge/grid_power {"watt": 4807}
+1783279391.255 evc04/charge/enable {"enable": false}
+1783279392.074 evc04/cn28/raw 
+1783279392.077 P1:	V: 234235	A: 6129	W: 1415	Wh: 15600
+1783279392.080 P2:	V: 234989	A: 6047	W: 1401	Wh: 15363
+1783279392.083 P3:	V: 233910	A: 6083	W: 1403	Wh: 15515
+1783279392.086 
+1783279392.090 
+1783279392.097 evc04/cn28/raw/ascii .P1:.V: 234235.A: 6129.W: 1415.Wh: 15600.P2:.V: 234989.A: 6047.W: 1401.Wh: 15363.P3:.V: 233910.A: 6083.W: 1403.Wh: 15515..
+1783279392.101 evc04/cn28/telemetry {"p1":{"v_mv":234235,"a_ma":6129,"w":1415,"wh":15600},"p2":{"v_mv":234989,"a_ma":6047,"w":1401,"wh":15363},"p3":{"v_mv":233910,"a_ma":6083,"w":1403,"wh":15515},"temp_c":28,"ev_current_a":6,"max_offered_a":16,"lb_current_a":6,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279392.103 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":4807,"reported_ampere":20,"last_poll_age_s":0.672,"grid_age_s":0.004277,"grid_failsafe":false,"charge_state":"B","enabled":false,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279394.020 evc04/cn28/raw 
+1783279394.024 ev current: 6
+1783279394.027 
+1783279394.030 max_offered_current: 16
+1783279394.033 lb current:6
+1783279394.037 
+1783279394.040 TEMP lb current: 20
+1783279394.043 Stop Pwm1
+1783279394.051 evc04/cn28/raw/ascii .ev current: 6..max_offered_current: 16.lb current:6..TEMP lb current: 20.Stop Pwm1
+1783279394.055 evc04/cn28/telemetry {"p1":{"v_mv":234235,"a_ma":6129,"w":1415,"wh":15600},"p2":{"v_mv":234989,"a_ma":6047,"w":1401,"wh":15363},"p3":{"v_mv":233910,"a_ma":6083,"w":1403,"wh":15515},"temp_c":28,"ev_current_a":6,"max_offered_a":16,"lb_current_a":6,"meter_detected":null,"last_error":null,"cp_state":"C"}
+1783279394.059 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":4807,"reported_ampere":20,"last_poll_age_s":0.614,"grid_age_s":1.95644,"grid_failsafe":false,"charge_state":"B","enabled":false,"last_error":null,"lb_current_ampere":6,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279395.146 evc04/cn28/raw 
+1783279395.150 
+1783279395.154 current_without_dlm_without_unplugged2
+1783279395.158 S:B1 Auth:1 D:105 Cmax:2 Ph:3 Relay:6
+1783279395.162 
+1783279395.166 TEMP lb current: 1
+1783279395.170 current_without_dlm_without_unplugged
+1783279395.178 evc04/cn28/raw/ascii ..current_without_dlm_without_unplugged2.S:B1 Auth:1 D:105 Cmax:2 Ph:3 Relay:6..TEMP lb current: 1.current_without_dlm_without_unplugged
+1783279395.181 evc04/charge/grid_power {"watt": 4807}
+1783279395.351 evc04/cn28/telemetry {"p1":{"v_mv":234235,"a_ma":6129,"w":1415,"wh":15600},"p2":{"v_mv":234989,"a_ma":6047,"w":1401,"wh":15363},"p3":{"v_mv":233910,"a_ma":6083,"w":1403,"wh":15515},"temp_c":28,"ev_current_a":6,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279395.356 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":4807,"reported_ampere":20,"last_poll_age_s":0.78,"grid_age_s":3.133654,"grid_failsafe":false,"charge_state":"B","enabled":false,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279396.168 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":4807,"reported_ampere":20,"last_poll_age_s":0.791,"grid_age_s":0.82616603,"grid_failsafe":false,"charge_state":"B","enabled":false,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279397.298 evc04/cn28/raw 1
+1783279397.302 S:B1 Auth:1 D:105 Cmax:1 Ph:3 Relay:7
+1783279397.305 
+1783279397.308 TEMP lb current: 0
+1783279397.313 current_without_dlm_without_unplugged0
+1783279397.316 S:B1 Auth:1 D:105 Cmax:0 Ph:3 Relay:7
+1783279397.320 
+1783279397.323 TEMP lb current: 0
+1783279397.331 evc04/cn28/raw/ascii 1.S:B1 Auth:1 D:105 Cmax:1 Ph:3 Relay:7..TEMP lb current: 0.current_without_dlm_without_unplugged0.S:B1 Auth:1 D:105 Cmax:0 Ph:3 Relay:7..TEMP lb current: 0
+1783279397.334 evc04/cn28/telemetry {"p1":{"v_mv":234235,"a_ma":6129,"w":1415,"wh":15600},"p2":{"v_mv":234989,"a_ma":6047,"w":1401,"wh":15363},"p3":{"v_mv":233910,"a_ma":6083,"w":1403,"wh":15515},"temp_c":28,"ev_current_a":6,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279397.338 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":4807,"reported_ampere":20,"last_poll_age_s":0.916,"grid_age_s":1.9618111,"grid_failsafe":false,"charge_state":"B","enabled":false,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279398.320 evc04/charge/status {"online":true,"target_ampere":6,"grid_power_w":4807,"reported_ampere":20,"last_poll_age_s":0.921,"grid_age_s":2.966178,"grid_failsafe":false,"charge_state":"B","enabled":false,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
+1783279398.337 evc04/charge/target {"ampere": 0}
+1783279399.244 evc04/cn28/raw 
+1783279399.247 Temp: 28 C 
+1783279399.250 
+1783279399.254 TEMP lb current: 0
+1783279399.257 TEMP lb current: 0
+1783279399.263 evc04/cn28/raw/ascii .Temp: 28 C ..TEMP lb current: 0.TEMP lb current: 0
+1783279399.267 evc04/cn28/telemetry {"p1":{"v_mv":234235,"a_ma":6129,"w":1415,"wh":15600},"p2":{"v_mv":234989,"a_ma":6047,"w":1401,"wh":15363},"p3":{"v_mv":233910,"a_ma":6083,"w":1403,"wh":15515},"temp_c":28,"ev_current_a":6,"max_offered_a":16,"lb_current_a":0,"meter_detected":null,"last_error":null,"cp_state":"B"}
+1783279399.345 evc04/charge/status {"online":true,"target_ampere":0,"grid_power_w":4807,"reported_ampere":20,"last_poll_age_s":0.921,"grid_age_s":3.976131,"grid_failsafe":false,"charge_state":"B","enabled":false,"last_error":null,"lb_current_ampere":0,"cn28_feedback_stale":false,"probe_over_ampere":0}
