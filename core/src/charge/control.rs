@@ -206,13 +206,16 @@ pub struct GrantControlInputs {
 
 /// The V4 per-tick decision: gate on enable, both staleness failsafes, the cold
 /// start and the min-charge floor — all of which pause — then regulate the grant
-/// via [`lb_tracking_report`]. While the car draws less than `min_charge` (the 6 A
-/// pilot minimum) the report is pinned to `max − target + car` instead: per the
-/// box's grant law (`lb ← car + max − reported`) that holds `lb = target` through
-/// the whole contactor lag *and* the 0→6 A ramp. Reporting the ceiling any
-/// earlier makes the box degrade or withdraw the grant — it only tolerates the
-/// meter at the ceiling once the car draws properly (flag-day captures
-/// 2026-07-03: cut at car 0 A, grant degraded 16→10 at car ~5 A).
+/// via [`lb_tracking_report`]. While a session exists (`lb > 0`) and the car draws
+/// less than `min_charge` (the 6 A pilot minimum) the report is pinned to
+/// `max − target + car` instead: per the box's grant law (`lb ← car + max −
+/// reported`) that holds `lb = target` through the whole contactor lag *and* the
+/// 0→6 A ramp. Reporting the ceiling any earlier makes the box degrade or
+/// withdraw the grant — it only tolerates the meter at the ceiling once the car
+/// draws properly (flag-day captures 2026-07-03: cut at car 0 A, grant degraded
+/// 16→10 at car ~5 A). Before a session exists the pin must **not** apply: the
+/// start law has no car term, so the deficit report serves `max − target` exactly
+/// (see the session-gate comment in the body, live 2026-07-05).
 pub fn grant_tracking_current(inputs: &GrantControlInputs) -> Ampere {
     let pause = pause_report(inputs.max, inputs.pause_margin);
     if !inputs.enabled || inputs.grid_stale || inputs.lb_stale {
@@ -224,7 +227,12 @@ pub fn grant_tracking_current(inputs: &GrantControlInputs) -> Ampere {
     if target.clamp(Ampere(0.0), inputs.max).0 < inputs.min_charge.0 {
         return pause;
     }
-    if inputs.car.0 < inputs.min_charge.0 {
+    // Ramp pin only once a session exists: at session start the box grants the bare
+    // headroom (`lb ← MAX − reported`, SPECS §6 — no car term), so folding the MID
+    // standby noise (~45 mA) into the report tips the start grant below the 6 A
+    // pilot floor and the box never opens (live 2026-07-05). Pre-session, fall
+    // through to the deficit report, which is exactly `MAX − target`.
+    if inputs.car.0 < inputs.min_charge.0 && inputs.lb.0 > 0.0 {
         return Ampere(inputs.max.0 - target.0 + inputs.car.0).clamp(Ampere(0.0), inputs.max);
     }
     lb_tracking_report(
@@ -425,6 +433,21 @@ mod tests {
         // contactor lag) drew nothing. An idle car must keep the deficit report.
         let i = GrantControlInputs {
             car: Ampere(0.0),
+            ..grant_base()
+        };
+        assert_eq!(grant_tracking_current(&i), Ampere(MAX.0 - 20.0));
+    }
+
+    #[test]
+    fn grant_tracking_start_posture_ignores_standby_noise_before_a_session() {
+        // Live regression 2026-07-05: the box's MID standby noise (~45 mA) leaked
+        // into the pre-session report (`MAX − target + car`), and the session-start
+        // grant law (`lb ← MAX − reported`, SPECS §6 — no car term at start) then
+        // landed 45 mA below the 6 A pilot floor, so the box never granted. Before
+        // a session exists the report must be exactly `MAX − target`.
+        let i = GrantControlInputs {
+            lb: Ampere(0.0),
+            car: Ampere(0.045),
             ..grant_base()
         };
         assert_eq!(grant_tracking_current(&i), Ampere(MAX.0 - 20.0));
