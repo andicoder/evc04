@@ -204,9 +204,12 @@ reads it via one MQTT sensor using `json_attributes_topic` + value templates.
 
 > **`charge_state` mirrors the box's real pilot, guarded for evcc.** Since #148 it is
 > derived from the CN28 LOG `S:` line (`cp_state`), not approximated from our command:
-> `A`/`B`/`C` follow the pilot, except that our pause (reporting above the ceiling)
-> forces `B` even while the box still reads `C` mid-ramp-down — so evcc's charge-power
-> estimate drops to 0 as soon as we cut. Because `cp_state` is transition-only and
+> `A`/`B`/`C` follow the pilot, except that our hard pause (reporting the full
+> `MAX + PAUSE_MARGIN` level) forces `B` even while the box still reads `C`
+> mid-ramp-down — so evcc's charge-power estimate drops to 0 as soon as we cut. A
+> V4 *shed* report (`MAX+1..MAX+2`) is live modulation and stays `C`: flashing `B`
+> mid-shed zeroes evcc's charge-power estimate and rattles its PV loop (live
+> 2026-07-05). Because `cp_state` is transition-only and
 > nullable (#117), an unknown pilot — the post-reboot blind window, a stale CN28 feed,
 > or an `F` fault — yields `""`: evcc's status parser errors on an empty string and the
 > loadpoint **retains its previous status**, so the blind window can never

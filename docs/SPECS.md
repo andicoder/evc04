@@ -331,8 +331,10 @@ at both DIP 65 A and DIP 16 A). Proportional control therefore has to ride the b
 > **exceed** the limit, not merely reach it: at `reported = MAX_BOX_AMPERE` the box
 > holds the charge; at `MAX_BOX_AMPERE + 2..4 A` it cuts (grid flipped import→export on
 > hardware). So a hard pause reports `MAX_BOX_AMPERE + PAUSE_MARGIN_AMPERE` (§7), and
-> `charge_state` treats only `reported > MAX_BOX_AMPERE` as paused (reporting *at* the
-> ceiling is live modulation).
+> `charge_state` treats only that full pause level (`reported ≥ MAX_BOX_AMPERE +
+> PAUSE_MARGIN_AMPERE`) as paused — a V4 shed report (`MAX+1..MAX+2`) is live
+> modulation and stays `C`; flashing `B` mid-shed zeroes evcc's charge-power
+> estimate and rattles its PV loop (live 2026-07-05).
 
 ### Mode selection lives in the controller, not here
 
@@ -353,33 +355,45 @@ the DIP value itself trades full-charge headroom against modulation range (§2).
 
 ### The V4 grant loop (shipped) — regulate the box's own grant (#134/#135)
 
-The box's grant dynamics, measured on hardware 2026-07-02 (fixtures
-`core/tests/fixtures/sessions/`, model `core/src/charge/boxsim.rs`). On a **~6 s
-eval cadence** (observed 5–10 s) the box recomputes its grant to the car
+The box's grant dynamics, measured on hardware 2026-07-02/03 and refitted from
+the 2026-07-05 characterization campaign (fixtures
+`core/tests/fixtures/sessions/`, model `core/src/charge/boxsim.rs`). The box
+runs **one grant law on two clocks**, recomputing its grant to the car
 (`lb_current` in the CN28 LOG) from the meter value it polls:
 
-| meter reads (vs. DIP limit `MAX`) | box response per eval |
-|---|---|
-| below `MAX` | `lb ← min(car_draw + (MAX − reported), MAX)` — headroom is added **on top of the live draw** (the fast-up ratchet) |
-| at `MAX` … `MAX + 0.5` | hold (dead zone; #57's "at the ceiling holds") — **only while the car draws** (see below) |
-| `MAX + 0.5` … cut | shed `floor(excess)` A — **proportional**: +1.0/+1.5 → −1 A per ~6 s, +2.0 → −2 A per ~6 s, ridden live from 16 A down to 6 A with no cut |
-| above the cut threshold (> +2, ≤ +4) | hard cut (session drop; pause reports `MAX + PAUSE_MARGIN_AMPERE` = +4) |
+```
+lb ← round(car_draw + (MAX − reported))          clamped to [0, MAX]
+```
 
-Session start grants the apparent headroom outright: `lb ← MAX − reported`.
+— i.e. the *signed* apparent headroom added on top of the live draw. **Downward
+moves and cut checks run on a fast ~4–6 s clock; session starts and upward
+moves on a slow ~30 s clock** (rep-0 wire: re-offer/up-grant gaps 28.2 s;
+engage latencies 17–66 s; post-cut re-engage 28–32 s on the flag-day capture —
+the "~30 s cut cooldown" is this same clock, reset by the cut). Everything
+previously modelled as separate branches falls out of the law:
 
-Three more rules, measured on the flag-day cutover 2026-07-03
-(`2026-07-03-flagday-start-cut.log` + the staircase capture): **at/over the
-ceiling with an idle car (< ~1 A) the box withdraws the PWM within one eval** —
-the dead-zone hold only exists while the car draws, and it degrades the grant
-(observed 16→10) even at ~5 A, i.e. below the pilot minimum; **after any cut it
-refuses a new session for ~30 s** (with little apparent headroom it took minutes
-to re-engage); and **a shed step of ≥2 A that lands at/below the 6 A pilot
-minimum drops the session** instead of shedding (lb 8 at reported +2 → cut while
-the car drew 6.2 A — the measured −1 A ride down *to* 6 from 2026-07-02 did not
-cut). A real car also needs 10–30 s of standing offer before it draws anything
-("contactor lag"), so a controller that reports the ceiling the moment the box
-grants produces an endless ~40 s grant/cut cycle and the car shows "Ladegerät
-nicht bereit".
+- *dead zone*: `round(MAX + 0.5 − reported at MAX+0.5) = MAX` — pure rounding;
+- *proportional shed*: with the car tracking its grant down, each fast eval
+  computes `round(car − excess)` = −1 A at +1.0/+1.5, −2 A at +2.0;
+- *idle-car cut*: car 0 at the ceiling computes grant 0;
+- *pilot-floor cut*: **a computed grant below the 6 A pilot minimum drops the
+  session** — the flag-day staircase cut (lb 8, reported +2, car ~6 → grant 4)
+  *and* the end of the 2026-07-02 probe +1.0 ride (reached 6, next eval
+  computes 5 → "session drop + self-recovery" per the fixture);
+- a pause report (`MAX + PAUSE_MARGIN_AMPERE` = +4, at/above the > +2 cut
+  threshold) cuts within one fast eval.
+
+**Session start** is gated, not immediate: on each slow-clock eval the box
+opens only when the opening grant `ceil(MAX − reported)` **exceeds `MAX/2`**
+(campaign sweeps: eleven refusals at ≤ 8.0 A headroom over 5–6 min each;
+engages at ≥ 8.4 A, opening grants all `ceil`). Right after **meter silence**
+(reboot/OTA of the emulated meter) the threshold drops to the pilot floor —
+the 2026-07-02 sessions opened at ~6.5 A headroom, the 2026-07-05 post-OTA
+morning session at ~6 A. Consequence: a steady-state target below ~8 A can
+*continue* a session but never *open* one. A real car also needs 10–30 s of
+standing offer before it draws anything ("contactor lag"), so a controller
+that reports the ceiling the moment the box grants produces an endless ~40 s
+grant/cut cycle and the car shows "Ladegerät nicht bereit".
 
 **Consequence — the V4 controller** (`lb_tracking_report`, `core`): regulate the
 grant directly on the ~5 s CN28 `lb_current` feedback and stop stacking
@@ -387,15 +401,17 @@ offset/measured/trim. Grant above target → report `MAX + clamp(err, 1, 2)` (th
 sheds it proportionally); at target (±1 A) → report exactly `MAX` (holds); below
 target → report the deficit as headroom (`MAX − (target − lb)`), which also covers
 the start-grant (`lb = 0` → grant = target). **Ramp pin**: once a session exists
-(`lb > 0`) and while the car draws less than the 6 A pilot minimum (max phase
-current from the CN28 metering) the report is `MAX − target + floor(car)`
-instead — per the box's grant law that holds `lb = target` through the contactor
-lag *and* the 0→6 A ramp; any ceiling report before the car draws properly
-triggers the idle-car cut/degrade above. The car term is floored to whole amps:
-grants are whole amps and the box floors its eval, so a fractional term races
-the box's own sub-amp noise and pins the grant one amp *under* target (grant
-stuck at 5 for target 6, observed live 2026-07-05, second bite). The pin must
-**not** apply before the session: the
+(`lb > 0`) and while the car draws less than the **target** (max phase current
+from the CN28 metering) the report is `MAX − target + floor(car)` instead — per
+the box's grant law that holds `lb = target` through the contactor lag *and*
+the whole ramp. Any ceiling report before the car has reached the target makes
+the box shed the grant back toward the live draw (flag-day: cut at car 0,
+degrade 16→10 at car ~5; replay vs the campaign-fitted box: a pin released at
+the 6 A pilot minimum turns every engage of a higher target into a ~2.5 A-per-
+up-period crawl). The car term is floored to whole amps: a fractional term
+races the box's own sub-amp rounding and pins the grant one amp *under* target
+(grant stuck at 5 for target 6, observed live 2026-07-05, second bite). The pin
+must **not** apply before the session: the
 start law grants the bare headroom (no car term, above), so folding the MID
 standby noise (~45 mA) into the pre-session report lands the start grant just
 below the 6 A pilot floor and the box never opens (observed live 2026-07-05 —
@@ -404,9 +420,10 @@ floor**: the over-report is additionally capped at `lb − (MIN_CHARGE + 1)`, so
 the box is never told to shed into its pilot floor — target 6 deliberately
 settles at 7 A (inside the ±1 A acceptance) instead of risking the ≥2 A-step
 cut. Proven in the simulator across the full 6–16 A staircase, under deep PV
-export, for eval periods 5–10 s and car start lags 0/15 s
-(`core/tests/replay.rs`); the box-side dynamics are pinned by the 2026-07-02
-probe and the 2026-07-03 flag-day captures. **Live-proven 2026-07-03**
+export, across the box's clock bands (up 24–36 s, down 4–6 s), car start lags
+0/15 s, ~2 % car overdraw and MID standby noise (`core/tests/replay.rs`); the
+box-side dynamics are pinned by the 2026-07-02 probe, the 2026-07-03 flag-day
+captures and the 2026-07-05 campaign sweeps. **Live-proven 2026-07-03**
 (`2026-07-03-flagday-staircase-pass.log`): the full staircase passed on hardware
 — every stage settled within ±1 A (16→15, 12→11, 10→9, 8→7, 6→7, 8→7, 16→15,
 grants are whole amps and land one below on down-steps), zero session cuts after
