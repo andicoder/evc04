@@ -2,8 +2,9 @@
 //! `boxsim` box model, an EV model and the measured-value pipeline as deployed
 //! today — proving offline that the controller reproduces the measured sessions in
 //! `tests/fixtures/sessions/`, most importantly the #119 symptom ("target 6,
-//! charged ~15 A"). Scenario timings/values are hand-copied from those fixtures
-//! (cited per test); the CSVs remain the provenance record.
+//! charged ~15 A") and the 2026-07-05 campaign wire captures. Scenario
+//! timings/values are hand-copied from those fixtures (cited per test); the
+//! CSVs/logs remain the provenance record.
 //!
 //! The EV and grid models live here (std test code) rather than in the `no_std`
 //! lib: they are simulation scaffolding, not product.
@@ -25,9 +26,10 @@ const TRIM_MAX: f32 = 8.0;
 const TRIM_PERIOD_S: u32 = 5;
 /// Today's HA automation publishes `max(grid_w/690, 0)` every 5 s (#134 H2).
 const MEASURED_PERIOD_S: u32 = 5;
-/// The box recomputes the CN28 LOG metering fields (incl. `lb_current`) only ~every
-/// 5 s (#119) — the V4 feedback is that stale.
-const CN28_PERIOD_S: u32 = 5;
+/// The firmware's `lb_current` feedback follows the box's `Cmax` within 0.2–2.4 s
+/// (2026-07-05-sweep2-rep0-wire.log: Cmax change → `charge/status` lb) — much
+/// fresher than the ~5 s LOG metering cadence assumed for #119.
+const CN28_PERIOD_S: u32 = 2;
 /// V4 caps the over-report at +2: the strongest *measured* shed rate (−2 A/eval)
 /// while staying clearly below the cut threshold (>2, ≤4).
 const LB_TRACKING_MAX_OVER: f32 = 2.0;
@@ -41,6 +43,9 @@ struct Ev {
     /// The flag-day capture (2026-07-03) showed the real car needs 10–30 s; the
     /// fixture-fitted scenarios predate that measurement and run with 0.
     start_lag_s: f32,
+    /// Chronic overdraw: the car pulls ~1–2 % above its grant when it draws at
+    /// all (campaign 2026-07-05: 8.15 @ 8, 6.14 @ 6). 1.0 = exact tracking.
+    overshoot: f32,
     offered_s: f32,
 }
 
@@ -49,7 +54,14 @@ impl Ev {
         Ev {
             amps: 0.0,
             start_lag_s,
+            overshoot: 1.0,
             offered_s: 0.0,
+        }
+    }
+    fn with_overshoot(start_lag_s: f32, overshoot: f32) -> Self {
+        Ev {
+            overshoot,
+            ..Ev::new(start_lag_s)
         }
     }
     fn tick(&mut self, dt: f32, lb: f32) {
@@ -60,7 +72,7 @@ impl Ev {
         }
         let ready = self.offered_s >= self.start_lag_s;
         let target = if lb >= MIN_CHARGE && ready {
-            lb.min(16.0)
+            (lb * self.overshoot).min(16.0)
         } else {
             0.0
         };
@@ -84,7 +96,7 @@ enum Reporting {
     /// below the box's cut threshold, so the box can see "over limit" without
     /// dropping the session. `trim` disabled — the open clamp replaces its job.
     OpenClamp { cap: f32 },
-    /// Variant V4 (#135 step 5): regulate the box's grant directly on the ~5 s
+    /// Variant V4 (#135 step 5): regulate the box's grant directly on the ~2 s
     /// CN28 `lb_current` feedback — no offset ramp, no measured, no trim.
     LbTracking,
 }
@@ -100,7 +112,11 @@ struct Scenario {
     duration_s: u32,
     reporting: Reporting,
     box_params: BoxSimParams,
-    ev_start_lag_s: f32,
+    ev: Ev,
+    /// MID standby noise on the box's own car-circuit meter (campaign 2026-07-05:
+    /// 18–45 mA per phase at idle) — rides on the CN28 car feedback the V4
+    /// controller consumes, not on the true draw.
+    mid_noise_a: f32,
 }
 
 #[derive(Debug)]
@@ -112,10 +128,12 @@ struct Sample {
     car: f32,
 }
 
-/// Run the full loop at 1 s ticks and record one sample per second.
-fn run(sc: &Scenario) -> Vec<Sample> {
+/// Run the full loop at 1 s ticks and record one sample per second. Session
+/// starts are the box's own decision now (start law on the slow clock) — the
+/// harness never nudges it.
+fn run(sc: Scenario) -> Vec<Sample> {
     let mut boxsim = BoxSim::new(sc.box_params);
-    let mut ev = Ev::new(sc.ev_start_lag_s);
+    let mut ev = sc.ev;
     let mut target: Option<f32> = None;
     let mut enabled = true;
     let mut offset = MAX_BOX; // firmware cold-start
@@ -166,11 +184,10 @@ fn run(sc: &Scenario) -> Vec<Sample> {
             };
         }
 
-        // CN28 telemetry: the box refreshes the LOG metering fields only ~every
-        // 5 s, so the V4 feedback lags the true grant by up to one period.
+        // CN28 telemetry: the V4 feedback follows the box's grant within ~2 s.
         if t % CN28_PERIOD_S == 0 {
             cn28_lb = boxsim.lb().0;
-            cn28_car = ev.amps;
+            cn28_car = ev.amps + sc.mid_noise_a;
         }
 
         let reported = match sc.reporting {
@@ -215,9 +232,6 @@ fn run(sc: &Scenario) -> Vec<Sample> {
             }
         };
 
-        if enabled && !boxsim.charging() {
-            boxsim.try_start(Ampere(reported));
-        }
         boxsim.tick(1.0, Ampere(reported), Ampere(ev.amps));
         ev.tick(1.0, boxsim.lb().0);
 
@@ -232,16 +246,16 @@ fn run(sc: &Scenario) -> Vec<Sample> {
     out
 }
 
+/// The steady-state box (campaign 2026-07-05): starts and up moves on the ~30 s
+/// clock, down moves and cut checks on the ~5 s clock, session opens only above
+/// MAX/2 headroom.
 fn fitted_box() -> BoxSimParams {
     BoxSimParams {
         max_dip: Ampere(MAX_BOX),
-        // Measured on hardware (#135 step 6, 2026-07-02-probe-measurement.log):
-        // −1 A per ~6 s at +1.0/+1.5 over, −2 A per ~6 s at +2.0, dead zone ≤0.5.
-        eval_period_s: 6.0,
+        up_period_s: 30.0,
+        down_period_s: 5.0,
         cut_margin: Ampere(PAUSE_MARGIN),
-        down_dead_zone: Ampere(0.5),
-        // Measured on the flag-day capture 2026-07-03: cut → re-engage ~30 s.
-        restart_cooldown_s: 30.0,
+        start_threshold: Ampere(MAX_BOX / 2.0),
     }
 }
 
@@ -252,6 +266,11 @@ fn fitted_box() -> BoxSimParams {
 fn scenario_2026_06_30() -> Scenario {
     Scenario {
         events: vec![
+            // The fixture window opens mid-session (the box was already charging
+            // when evcc offered 6 at 18:21:17) — warm the session up first, or the
+            // steady-state start law would delay the start into the window and
+            // change the whole grant path.
+            (0, Some(16.0), true),
             (137, Some(6.0), true),
             (168, Some(16.0), true),
             (195, Some(15.0), true),
@@ -263,13 +282,14 @@ fn scenario_2026_06_30() -> Scenario {
         duration_s: 900,
         reporting: Reporting::AsShipped,
         box_params: fitted_box(),
-        ev_start_lag_s: 0.0,
+        ev: Ev::new(0.0),
+        mid_noise_a: 0.0,
     }
 }
 
 #[test]
 fn replay_2026_06_30_reproduces_pinned_high_charge() {
-    let trace = run(&scenario_2026_06_30());
+    let trace = run(scenario_2026_06_30());
     let end = &trace[850];
     assert_eq!(end.target, Some(13.0));
     // Bug reproduced: the car sits well above the target (fixture: ~15.2 A) …
@@ -306,18 +326,26 @@ fn scenario_golden_window() -> Scenario {
         pv_w: 12_000.0, // deep export: grid negative → measured clamps to 0 (H2)
         duration_s: 600,
         reporting: Reporting::AsShipped,
-        box_params: fitted_box(),
-        ev_start_lag_s: 0.0,
+        // 2026-07-02 was the OTA-heavy dev day: every session followed meter
+        // silence, and the box opened at ~6.5 A headroom — the post-meter-silence
+        // start regime, not the steady-state MAX/2 threshold of the 2026-07-05
+        // sweeps.
+        box_params: BoxSimParams {
+            start_threshold: Ampere(0.0),
+            ..fitted_box()
+        },
+        ev: Ev::new(0.0),
+        mid_noise_a: 0.0,
     }
 }
 
 #[test]
 fn replay_golden_window_reproduces_ratchet_to_full() {
-    let trace = run(&scenario_golden_window());
+    let trace = run(scenario_golden_window());
     let start = trace.iter().find(|s| s.lb > 0.0).expect("charge starts");
     assert!(
         (6.0..=8.0).contains(&start.lb),
-        "start grant should be the rounded headroom (~7), got {start:?}"
+        "start grant should be the ceil of the headroom (~7), got {start:?}"
     );
     // Within ~90 s the ratchet has pushed the grant far above the ≤8 A target.
     let early = &trace[start.t as usize + 90];
@@ -340,7 +368,7 @@ fn replay_golden_window_reproduces_ratchet_to_full() {
 fn open_clamp_converges_to_target() {
     let mut sc = scenario_2026_06_30();
     sc.reporting = Reporting::OpenClamp { cap: 19.0 };
-    let end = &run(&sc)[850];
+    let end = &run(sc)[850];
     assert!(
         (end.car - 13.0).abs() <= 1.5,
         "with the measured down response the loop should settle near the 13 A target, got {end:?}"
@@ -350,13 +378,13 @@ fn open_clamp_converges_to_target() {
 /// The #135 step-5 acceptance run for variant V4: the planned live-test staircase
 /// (16→12→10→8→6→8→16) under deep PV export — the exact scenario that broke the
 /// shipped controller (H2: measured clamped to 0, loop open). V4 never looks at
-/// `measured`, so the export can't hurt it; the box's measured down response
-/// (#135 step 6) does the actual shedding.
+/// `measured`, so the export can't hurt it; the box's measured down response does
+/// the actual shedding.
 ///
-/// The eval period is only known as ~5–10 s (fitted: 6 s), and the ~5 s CN28
-/// feedback lag beats against it, so the proof must hold across the whole range —
-/// including the phase alignments where a stale grant makes V4 over-report one
-/// eval too long.
+/// The two decision clocks are only known as ranges (up ~28–36 s, down ~4–6 s)
+/// and the ~2 s CN28 feedback lag beats against them, so the proof must hold
+/// across the whole band — including the phase alignments where a stale grant
+/// makes V4 over-report one eval too long.
 #[test]
 fn lb_tracking_holds_every_target_across_the_band() {
     let steps: [(u32, f32); 7] = [
@@ -368,51 +396,55 @@ fn lb_tracking_holds_every_target_across_the_band() {
         (600, 8.0),
         (720, 16.0),
     ];
-    for eval_period_s in [5.0, 6.0, 7.0, 8.0, 9.0, 10.0] {
-        // Lag 0 = the fixture-fitted instant car; 15 s = the measured contactor
-        // lag of the real car (flag-day capture 2026-07-03).
-        for ev_start_lag_s in [0.0, 15.0] {
-            let sc = Scenario {
-                events: steps.iter().map(|&(t, a)| (t, Some(a), true)).collect(),
-                house_w: 300.0,
-                pv_w: 12_000.0, // deep export: the H2 scenario the old loop couldn't survive
-                duration_s: 840,
-                reporting: Reporting::LbTracking,
-                box_params: BoxSimParams {
-                    eval_period_s,
-                    ..fitted_box()
-                },
-                ev_start_lag_s,
-            };
-            let trace = run(&sc);
+    for up_period_s in [24.0, 30.0, 36.0] {
+        for down_period_s in [4.0, 5.0, 6.0] {
+            // Lag 0 = the fixture-fitted instant car; 15 s = the measured
+            // contactor lag of the real car (flag-day capture 2026-07-03).
+            for ev_start_lag_s in [0.0, 15.0] {
+                let sc = Scenario {
+                    events: steps.iter().map(|&(t, a)| (t, Some(a), true)).collect(),
+                    house_w: 300.0,
+                    pv_w: 12_000.0, // deep export: the H2 scenario the old loop couldn't survive
+                    duration_s: 840,
+                    reporting: Reporting::LbTracking,
+                    box_params: BoxSimParams {
+                        up_period_s,
+                        down_period_s,
+                        ..fitted_box()
+                    },
+                    ev: Ev::new(ev_start_lag_s),
+                    mid_noise_a: 0.0,
+                };
+                let trace = run(sc);
 
-            // The session must survive the whole staircase: once the car draws,
-            // the box never cuts (lb never returns to 0) and the car never
-            // stalls below 6 A.
-            let start = trace.iter().find(|s| s.car >= 1.0).expect("charge starts");
-            for s in trace.iter().skip(start.t as usize + 30) {
-                assert!(
-                    s.lb > 0.0,
-                    "box cut the session (eval {eval_period_s}, lag {ev_start_lag_s}) at {s:?}"
-                );
-                assert!(
-                    s.car >= MIN_CHARGE,
-                    "car stalled (eval {eval_period_s}, lag {ev_start_lag_s}) at {s:?}"
-                );
-            }
+                // The session must survive the whole staircase: once the car
+                // draws, the box never cuts (lb never returns to 0) and the car
+                // never stalls below 6 A.
+                let start = trace.iter().find(|s| s.car >= 1.0).expect("charge starts");
+                for s in trace.iter().skip(start.t as usize + 30) {
+                    assert!(
+                        s.lb > 0.0,
+                        "box cut the session (up {up_period_s}, down {down_period_s}, lag {ev_start_lag_s}) at {s:?}"
+                    );
+                    assert!(
+                        s.car >= MIN_CHARGE,
+                        "car stalled (up {up_period_s}, down {down_period_s}, lag {ev_start_lag_s}) at {s:?}"
+                    );
+                }
 
-            // Each step has settled onto its target (±1 A, grants are whole amps)
-            // well before the next one — no pin at 15/16, no undershoot.
-            for &(at, tgt) in &steps {
-                let settled = &trace[(at + 110) as usize];
-                assert!(
-                    (settled.car - tgt).abs() <= 1.0,
-                    "target {tgt} not held 110 s after the step (eval {eval_period_s}, lag {ev_start_lag_s}), got {settled:?}"
-                );
-                assert!(
-                    (settled.lb - tgt).abs() <= 1.0,
-                    "grant off target {tgt} 110 s after the step (eval {eval_period_s}, lag {ev_start_lag_s}), got {settled:?}"
-                );
+                // Each step has settled onto its target (±1 A, grants are whole
+                // amps) well before the next one — no pin at 15/16, no undershoot.
+                for &(at, tgt) in &steps {
+                    let settled = &trace[(at + 110) as usize];
+                    assert!(
+                        (settled.car - tgt).abs() <= 1.0,
+                        "target {tgt} not held 110 s after the step (up {up_period_s}, down {down_period_s}, lag {ev_start_lag_s}), got {settled:?}"
+                    );
+                    assert!(
+                        (settled.lb - tgt).abs() <= 1.0,
+                        "grant off target {tgt} 110 s after the step (up {up_period_s}, down {down_period_s}, lag {ev_start_lag_s}), got {settled:?}"
+                    );
+                }
             }
         }
     }
@@ -425,7 +457,7 @@ fn lb_tracking_holds_every_target_across_the_band() {
 /// the charge never started.
 #[test]
 fn lb_tracking_starts_a_slow_starting_car() {
-    for eval_period_s in [5.0, 6.0, 7.0, 8.0, 9.0, 10.0] {
+    for up_period_s in [24.0, 30.0, 36.0] {
         let sc = Scenario {
             events: vec![(0, Some(16.0), true)],
             house_w: 300.0,
@@ -433,23 +465,24 @@ fn lb_tracking_starts_a_slow_starting_car() {
             duration_s: 300,
             reporting: Reporting::LbTracking,
             box_params: BoxSimParams {
-                eval_period_s,
+                up_period_s,
                 ..fitted_box()
             },
-            ev_start_lag_s: 15.0,
+            ev: Ev::new(15.0),
+            mid_noise_a: 0.0,
         };
-        let trace = run(&sc);
+        let trace = run(sc);
         let late = &trace[240];
         assert!(
             late.car >= MIN_CHARGE,
-            "car never started (eval {eval_period_s}): {late:?}"
+            "car never started (up {up_period_s}): {late:?}"
         );
         // Once the car draws, the session must hold — no further grant/cut cycle.
         let first_draw = trace.iter().find(|s| s.car >= 1.0).unwrap().t as usize;
         for s in trace.iter().skip(first_draw) {
             assert!(
                 s.lb > 0.0,
-                "cut after the car started (eval {eval_period_s}): {s:?}"
+                "cut after the car started (up {up_period_s}): {s:?}"
             );
         }
     }
@@ -457,10 +490,11 @@ fn lb_tracking_starts_a_slow_starting_car() {
 
 /// Replay of the #135 step-6 probe measurement (`2026-07-02-probe-measurement.log`):
 /// the staged over-limit reports are fed verbatim; the fitted model must reproduce
-/// the measured lb ride within one eval step. This is the fixture that pins the
-/// down-regulation parameters.
+/// the measured lb rides within one eval step — including the +1.0 stage's ending
+/// (fixture header: "session drop + self-recovery"), which the pre-campaign model
+/// wrongly survived by holding at 6.
 #[test]
-fn replay_probe_measurement_reproduces_the_down_ride() {
+fn replay_probe_measurement_reproduces_the_down_rides_and_the_drop() {
     fn stage(boxsim: &mut BoxSim, ev: &mut Ev, secs: u32, reported: f32) -> f32 {
         for _ in 0..secs {
             boxsim.tick(1.0, Ampere(reported), Ampere(ev.amps));
@@ -469,27 +503,160 @@ fn replay_probe_measurement_reproduces_the_down_ride() {
         boxsim.lb().0
     }
 
-    let mut bx = BoxSim::new(fitted_box());
+    // The probe session followed an OTA reboot (meter silence) like everything on
+    // 2026-07-02 — the low-threshold start regime.
+    let mut bx = BoxSim::new(BoxSimParams {
+        start_threshold: Ampere(0.0),
+        ..fitted_box()
+    });
     let mut ev = Ev::new(0.0);
-    assert!(bx.try_start(Ampere(0.0)));
 
-    // Warm-up at reported 0: full grant, car reaches 16 A (21:33:54 baseline).
-    assert_eq!(stage(&mut bx, &mut ev, 60, 0.0), 16.0);
-    // Stage +0.5 (60 s): dead zone — lb held at 16.
+    // Warm-up at reported 0: the box opens on its slow clock, full grant, the car
+    // ramps to 16 A (21:33:54 baseline).
+    assert_eq!(stage(&mut bx, &mut ev, 100, 0.0), 16.0);
+    assert!((ev.amps - 16.0).abs() < 0.01);
+    // Stage +0.5 (60 s): lb held at 16 — round(16 − 0.5) = 16, the dead zone is
+    // the rounding.
     assert_eq!(stage(&mut bx, &mut ev, 60, 16.5), 16.0);
     assert_eq!(stage(&mut bx, &mut ev, 50, 0.0), 16.0);
-    // Stage +1.0 (60 s): measured ride 16→6, −1 A per ~6 s, no cut.
-    assert_eq!(stage(&mut bx, &mut ev, 30, 17.0), 11.0);
-    assert_eq!(stage(&mut bx, &mut ev, 30, 17.0), 6.0);
-    assert!(bx.charging());
-    // Probe off: the box re-grants (log: back at 16 within ~40 s).
+    // Stage +1.0 (60 s): measured ride 16→6, −1 A per eval with the car tracking
+    // the grant down — then the session DROPS: the next eval at 6 computes 5,
+    // below the pilot floor (fixture 21:37:41, cp C→B with the car still at ~6).
+    stage(&mut bx, &mut ev, 60, 17.0);
+    assert!(
+        !bx.charging(),
+        "the +1.0 ride must end in the measured drop"
+    );
+    assert_eq!(bx.lb(), Ampere(0.0));
+    // Self-recovery (log: lb back at 16 within ~40 s of the probe ending): the
+    // start clock reopens at full headroom.
     assert_eq!(stage(&mut bx, &mut ev, 40, 0.0), 16.0);
-    // Stage +1.5 (24 s): measured 16→12 — the same −1 A/eval as +1.0.
+    assert!(bx.charging());
+    let _ = stage(&mut bx, &mut ev, 20, 0.0); // let the car top out again
+                                              // Stage +1.5 (24 s): measured 16→12 — the same −1 A/eval as +1.0 (round(16 −
+                                              // 1.5) = 15, half-up).
     assert_eq!(stage(&mut bx, &mut ev, 24, 17.5), 12.0);
     assert_eq!(stage(&mut bx, &mut ev, 40, 0.0), 16.0);
-    // Stage +2.0 (15 s): −2 A per eval, still no cut (log: 16→12→10; the model's
-    // 12 after two evals is within the one-sample slack of the 5 s telemetry).
+    // Stage +2.0 (15 s): −2 A per eval, still no cut — the cut threshold sits
+    // above +2 (#57: pause at +4 cuts).
     let lb = stage(&mut bx, &mut ev, 15, 18.0);
     assert!((10.0..=12.0).contains(&lb), "expected ~−2 A/eval, got {lb}");
     assert!(bx.charging());
+}
+
+/// Replay of sweep2 rep 0 (`2026-07-05-sweep2-rep0-wire.log`): engage at target
+/// 11, settle, flip the target to 6. Measured: the box walked the grant down with
+/// the falling car and **held at exactly 6, session alive** — the V4 down-shed
+/// works. The `[10, 6, 0]` "cut" in sweep2.jsonl was an external enable flap 34 s
+/// later (69 s outage): the firmware's pause report, not a shed failure. The same
+/// flap pattern explains every "spontaneous" cut and the "car stops ramping" of
+/// reps 1–5 (minute-aligned enable=false all afternoon, 300 s outages during the
+/// later reps) — so there is no cut-history mechanism to model.
+#[test]
+fn replay_sweep2_rep0_flip_converges_and_only_the_enable_flap_cuts() {
+    let sc = Scenario {
+        events: vec![
+            (0, Some(11.0), true),
+            (150, Some(6.0), true),  // wire t=357.3: evcc-side flip 11 → 6
+            (190, Some(6.0), false), // wire t=391.3: the external enable flap
+            (259, Some(6.0), true),  // flap restored after 69 s
+        ],
+        house_w: 300.0,
+        pv_w: 12_000.0,
+        duration_s: 340,
+        reporting: Reporting::LbTracking,
+        box_params: fitted_box(),
+        // Rep 0 engaged in 65.5 s wall clock incl. the car's contactor lag; the
+        // car then drew chronically ~1–2 % over grant (10.18 @ 11 aside, which the
+        // Tesla capped itself).
+        ev: Ev::with_overshoot(15.0, 1.015),
+        mid_noise_a: 0.045,
+    };
+    let trace = run(sc);
+
+    // Engage: the box opens at the target (pre-session deficit report 5 → ceil
+    // headroom 11) on its slow clock.
+    let start = trace.iter().find(|s| s.lb > 0.0).expect("engages");
+    assert!(start.t <= 35, "engage within one up period, got {start:?}");
+    assert_eq!(start.lb, 11.0);
+
+    // After the flip the grant converges next to the target and HOLDS — no cut.
+    // The wire shows 6 exactly (the box out-shed the firmware's floor-capped
+    // over-report on stale feedback); with fresh feedback V4's deliberate
+    // never-shed-into-the-pilot-floor cap settles one amp higher — both inside
+    // the ±1 A acceptance. Allow the shed transient one down eval + car ramp.
+    for s in trace.iter().take(190).skip(165) {
+        assert!(
+            s.lb == 6.0 || s.lb == 7.0,
+            "expected the shed to hold at 6..7, got {s:?}"
+        );
+        assert!(s.car >= 6.0, "session must stay alive, got {s:?}");
+    }
+
+    // The enable flap pause-cuts within one fast eval …
+    let cut = trace.iter().find(|s| s.t >= 190 && s.lb == 0.0).unwrap();
+    assert!(cut.t <= 196, "pause must cut within ~5 s, got {cut:?}");
+    // … and with the target still 6 the steady-state start law (> MAX/2) keeps
+    // the box closed after re-enable — exactly what the campaign saw.
+    for s in trace.iter().skip(200) {
+        assert_eq!(s.lb, 0.0, "no re-engage at target 6, got {s:?}");
+    }
+}
+
+/// The steady-state start law makes low targets unreachable from a standing
+/// stop: sweep1/1c censored every attempt at ≤ 8.0 A headroom over 5–6 minutes
+/// (11 data points). A pv-surplus evcc target of 6–8 A therefore cannot *open* a
+/// session, only continue one — the controller-side answer to that is future
+/// down-shed policy work, not a simulator affordance.
+#[test]
+fn lb_tracking_cannot_open_a_session_below_half_max_headroom() {
+    let sc = Scenario {
+        events: vec![(0, Some(6.0), true)],
+        house_w: 300.0,
+        pv_w: 12_000.0,
+        duration_s: 360,
+        reporting: Reporting::LbTracking,
+        box_params: fitted_box(),
+        ev: Ev::new(15.0),
+        mid_noise_a: 0.045,
+    };
+    for s in run(sc) {
+        assert_eq!(s.lb, 0.0, "target 6 must never open a session, got {s:?}");
+    }
+}
+
+/// Noise robustness (campaign findings 5): the car draws ~1–2 % above the grant
+/// and the box's MID meter shows 18–45 mA standby noise on the CN28 feedback. The
+/// V4 loop must neither oscillate nor lose the session over either — in
+/// particular the whole-amp pin during the contactor lag must not be tipped by
+/// the noise (that regression killed session starts live on 2026-07-05).
+#[test]
+fn lb_tracking_survives_car_overshoot_and_mid_standby_noise() {
+    let steps: [(u32, f32); 3] = [(0, 16.0), (120, 8.0), (240, 6.0)];
+    let sc = Scenario {
+        events: steps.iter().map(|&(t, a)| (t, Some(a), true)).collect(),
+        house_w: 300.0,
+        pv_w: 12_000.0,
+        duration_s: 360,
+        reporting: Reporting::LbTracking,
+        box_params: fitted_box(),
+        ev: Ev::with_overshoot(15.0, 1.02),
+        mid_noise_a: 0.045,
+    };
+    let trace = run(sc);
+    let start = trace.iter().find(|s| s.car >= 1.0).expect("charge starts");
+    for s in trace.iter().skip(start.t as usize + 30) {
+        assert!(s.lb > 0.0, "box cut the session at {s:?}");
+        assert!(s.car >= MIN_CHARGE, "car stalled at {s:?}");
+    }
+    for &(at, tgt) in &steps {
+        // V4's floor cap settles target 6 at grant 7 by design; with the 2 %
+        // overdraw on top the car sits at ~7.14 — the acceptance is ±1 A on the
+        // grant plus the overdraw on the car.
+        let settled = &trace[(at + 110) as usize];
+        assert!(
+            (settled.car - tgt).abs() <= 1.2 && (settled.lb - tgt).abs() <= 1.0,
+            "target {tgt} not held under noise, got {settled:?}"
+        );
+    }
 }

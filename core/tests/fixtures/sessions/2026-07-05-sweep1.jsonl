@@ -1,0 +1,5 @@
+{"target": 6.0, "pre_session_report": 10, "grant": 0, "engage_latency_s": null, "censored_at_s": 360, "ts": 1783251628.165155}
+{"target": 6.05, "pre_session_report": 9.95, "grant": 0, "engage_latency_s": null, "censored_at_s": 360, "ts": 1783252052.503595}
+{"target": 6.1, "pre_session_report": 9.9, "grant": 0, "engage_latency_s": null, "censored_at_s": 360, "ts": 1783252474.5266325}
+{"target": 6.25, "pre_session_report": 9.75, "grant": 0, "engage_latency_s": null, "censored_at_s": 360, "ts": 1783252898.6815174}
+{"target": 6.5, "pre_session_report": 9.5, "grant": 0, "engage_latency_s": null, "censored_at_s": 360, "ts": 1783253322.5285444}

@@ -1,0 +1,5 @@
+{"target": 7.5, "pre_session_report": 8.5, "grant": 0, "engage_latency_s": null, "censored_at_s": 300, "ts": 1783277697.3226025}
+{"target": 8.0, "pre_session_report": 8, "grant": 0, "engage_latency_s": null, "censored_at_s": 300, "ts": 1783278064.561751}
+{"target": 7.0, "pre_session_report": 9, "grant": 0, "engage_latency_s": null, "censored_at_s": 300, "ts": 1783278809.160608}
+{"target": 6.5, "pre_session_report": 9.5, "grant": 0, "engage_latency_s": null, "censored_at_s": 300, "ts": 1783279177.6939294}
+{"phase": "1c", "done": true, "ts": 1783279178.1614718}

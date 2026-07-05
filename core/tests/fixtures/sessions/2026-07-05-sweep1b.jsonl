@@ -1,0 +1,8 @@
+{"target": 8.0, "pre_session_report": 20, "grant": 0, "engage_latency_s": null, "censored_at_s": 300, "ts": 1783269246.1292684}
+{"target": 8.0, "pre_session_report": 8, "grant": 0, "engage_latency_s": null, "censored_at_s": 300, "ts": 1783276761.1004133}
+{"target": 8.4, "pre_session_report": 7.6000004, "grant": 9, "engage_latency_s": 23.2, "censored_at_s": null, "ts": 1783276851.2383404}
+{"target": 8.5, "pre_session_report": 7.5, "grant": 9, "engage_latency_s": 16.8, "censored_at_s": null, "ts": 1783276945.5539935}
+{"target": 8.6, "pre_session_report": 7.3999996, "grant": 9, "engage_latency_s": 29.4, "censored_at_s": null, "ts": 1783277048.876233}
+{"target": 8.9, "pre_session_report": 7.1000004, "grant": 9, "engage_latency_s": 35.2, "censored_at_s": null, "ts": 1783277151.9972446}
+{"target": 11.0, "pre_session_report": 5, "grant": 11, "engage_latency_s": 31.5, "censored_at_s": null, "ts": 1783277254.812394}
+{"phase": "1b", "done": true, "ts": 1783277255.2287068}

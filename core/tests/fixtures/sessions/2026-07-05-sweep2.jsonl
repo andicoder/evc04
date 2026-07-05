@@ -1,0 +1,7 @@
+{"rep": 0, "mode": "settled", "engage_latency_s": 65.5, "engage_grant": 11, "car_at_flip": 10.183, "lb_path_after_flip": [10, 6, 0], "cut": true, "ts": 1783279397.893521}
+{"rep": 1, "mode": "settled", "engage_latency_s": 34.2, "engage_grant": 11, "car_at_flip": 0.04, "lb_path_after_flip": [0], "cut": true, "ts": 1783279540.9546974}
+{"rep": 2, "mode": "settled", "engage_latency_s": 30.4, "engage_grant": 11, "error": "car never reached the settled window", "ts": 1783279873.0025113}
+{"rep": 3, "mode": "settled", "engage_latency_s": 30.6, "engage_grant": 11, "car_at_flip": 0.045, "lb_path_after_flip": [0], "cut": true, "ts": 1783280011.5853422}
+{"rep": 4, "mode": "midramp", "engage_latency_s": 35.9, "engage_grant": 11, "error": "car never reached the midramp window", "ts": 1783280349.5836897}
+{"rep": 5, "mode": "midramp", "engage_latency_s": 27.5, "engage_grant": 11, "error": "car never reached the midramp window", "ts": 1783280681.9737504}
+{"phase": 2, "done": true, "ts": 1783280682.4629889}
