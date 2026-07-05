@@ -10,20 +10,30 @@ LOG telemetry tap. Start at [`../overview.md`](../overview.md); the CN28 protoco
 
 | File | What it is |
 |---|---|
-| `EVC04_SERVICE_MANUAL_2021.pdf` | Official EVC04 AC22-AC7.4 Service Manual (2021). Board layout, connector legend, software-update via Veslink, **Ch. 8 log retrieval via the LOG socket**, error-code table. |
-| `EVC04_SERVICE_MANUAL_2021.txt` | `pdftotext -layout` extraction (grep-friendly). |
-| `EVC04_Modbus_RTU_Specification_v2_2021.pdf` | Official Modbus RTU register map (box-as-slave). `5004` = charging current R/W, `1020` active power, `1001` charging state, etc. Gated behind the comms module / Smart variant. |
 | `board-layout-figure-2.1.png` | Service-manual Figure 2.1 (main board top view) with the numbered callouts. |
 | `board-layout-LOG-socket-annotated.png` | Same figure, LOG socket (item 7) ringed, JTAG/DEBUG (item 8) boxed for contrast. |
 | `board-photo-real-AC11.jpeg` | Photo of **our actual AC11 mainboard** near the rotary (silkscreen readable). |
 | `board-photo-real-CN28-LOG-CN25-VESLINK.jpeg` | Zoom: `CN28 LOG` (4-pin), `CN25 VESLINK` (~10-pin), SW2 rotary, DIP. |
 | `IMG_7188.jpg` | Macro of the real AC11 silkscreen at the **meter bus**: `CN24` (`5V`/`GND`) + `CN20` (`A`/`B`) RS485 data, plus `CN1/EN2` — confirms the connector map (the Waveshare's white/orange leads land on CN20 `A`/`B`). |
-| `fig7-7_*`, `fig8-2_*` | Service-manual figures: Veslink/CN25 flash cable, EVC-Tester at the LOG socket. |
+| `fig7-7_veslink-CN25-connector.png`, `fig8-2_LOG-socket-tester-cable.png` | Service-manual figure crops: Veslink/CN25 flash cable, EVC-Tester at the LOG socket. |
 
-Sources (in case re-download is needed):
-- Service manual: `https://s3fs-sogedis.s3.eu-west-3.amazonaws.com/sogedis_pdf/codespanne/EVC04_SERVICE_MANUAL_2021.pdf`
-- Modbus spec: `https://api.library.loxone.com/downloader/file/722/EVC04_Modbus_RTU_Specification_v2_12.04.2021.pdf`
-- The `board-photo-real-*` and `IMG_7188.jpg` shots are of our own AC11 mainboard.
+## Vendor documents (not redistributed)
+
+The two official Vestel documents this reference is built on are **copyrighted vendor
+material and are deliberately not included in this repository**. Download them from
+their public sources:
+
+- **EVC04 Service Manual (2021)** — board layout, connector legend, Veslink
+  software-update, **Ch. 8 log retrieval via the LOG socket**, error-code table:
+  `https://s3fs-sogedis.s3.eu-west-3.amazonaws.com/sogedis_pdf/codespanne/EVC04_SERVICE_MANUAL_2021.pdf`
+- **EVC04 Modbus RTU Specification v2 (2021)** — official register map (box-as-slave):
+  `5004` charging current R/W, `1020` active power, `1001` charging state, etc. Gated
+  behind the comms module / Smart variant:
+  `https://api.library.loxone.com/downloader/file/722/EVC04_Modbus_RTU_Specification_v2_12.04.2021.pdf`
+
+The few figure crops kept here are reproduced for interoperability documentation only;
+all rights remain with Vestel. The `board-photo-real-*` and `IMG_7188.jpg` shots are of
+our own AC11 mainboard.
 
 ## Mainboard connector legend (Service Manual Table 2-1)
 

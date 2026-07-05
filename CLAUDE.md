@@ -10,12 +10,12 @@ The active implementation lives on the **ESP32 inside the box** (`core/` +
 `firmware/`). The original k3s daemon (`charge/`) has been **removed** — all control
 work goes in core+firmware.
 
-## Public repo — do not leak the private wiki
+## Public repo — keep it self-contained
 
-This repository is **public**. The personal wiki and the `[private-repo]` repo are
-**private**. Never link to, quote, or reference them in any repo content — README,
-`docs/`, code comments, commit messages, or PR/issue bodies. Keep public docs
-self-contained, pointing only at in-repo material.
+This repository is **public**. The author's personal notes and home-infrastructure
+repositories are **private**. Never link to, quote, or reference any private material
+in repo content — README, `docs/`, code comments, commit messages, or PR/issue bodies.
+Keep public docs self-contained, pointing only at in-repo material.
 
 ## Sub-projects
 
