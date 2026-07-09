@@ -96,7 +96,6 @@ pub fn run(
             }
             Err(e) => warn!("mqtt connect failed: {e:#}"),
         }
-        crate::led::set_mqtt_up(false);
         offline_tick(&mut controller, &handoff, &mut wdt);
     }
 }
@@ -136,7 +135,6 @@ fn worker_loop(
 
         match rx.recv_timeout(timeout) {
             Ok(InMsg::Connected) => {
-                crate::led::set_mqtt_up(true);
                 // Non-fatal like every MQTT op in this loop (#87): a subscribe/publish
                 // that fails on a flapping reconnect must not reboot the chip. The next
                 // CONNECTED re-subscribes; the heartbeat/tick re-publish.
@@ -214,17 +212,15 @@ fn worker_loop(
 /// handoff, tick the controller, hand the new per-phase current back to the slave via
 /// the handoff, and publish the retained charge status (#86).
 /// The safety-critical, **MQTT-independent** half of a control tick: read the
-/// slave-stamped poll liveness, tick the controller, hand the new per-phase current to
-/// the slave and mirror the state on the LED. This must run every tick — online *or*
-/// offline — so the RS485 slave always gets a failsafe-correct value (a stale
-/// measurement engages the pause) even while WiFi/MQTT is down (#87).
+/// slave-stamped poll liveness, tick the controller, and hand the new per-phase current
+/// to the slave. This must run every tick — online *or* offline — so the RS485 slave
+/// always gets a failsafe-correct value (a stale measurement engages the pause) even
+/// while WiFi/MQTT is down (#87).
 fn tick_control(controller: &mut Controller, handoff: &Handoff) -> Tick {
     let now_ms = (unsafe { esp_timer_get_time() } / 1000) as u32;
     let last_poll_age_s = now_ms.wrapping_sub(handoff.last_poll_ms()) as f32 / 1000.0;
     let tick = controller.tick(Instant::now(), last_poll_age_s);
     handoff.set_reported(tick.reported);
-    crate::led::set_charging(tick.charging);
-    crate::led::set_error(tick.error);
     tick
 }
 
