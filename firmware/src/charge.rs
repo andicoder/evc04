@@ -68,17 +68,11 @@ const PROBE_MAX_OVER_AMPERE: f32 = 3.5;
 /// meter answer. Re-publish to extend a running measurement.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// One control tick's outputs: the per-phase current to hand to the slave, the
-/// retained status JSON to publish, and the two flags the status LED reflects (#123).
+/// One control tick's outputs: the per-phase current to hand to the slave and the
+/// retained status JSON to publish.
 pub struct Tick {
     pub reported: f32,
     pub status_json: String,
-    /// Charge allowed and current flowing (`charge_state == "C"`).
-    pub charging: bool,
-    /// A rejected control input is in effect (a genuine fault worth surfacing on the
-    /// LED). Routine target/measurement staleness is *not* an error here — with the
-    /// pause failsafe it is the normal idle state, not a fault to blink about.
-    pub error: bool,
 }
 
 /// Worker-local control state. Lives only on the prober/worker thread; the value it
@@ -308,8 +302,8 @@ impl Controller {
             self.probe_at = None;
             warn!("probe_over expired");
         }
-        // charge_state (and the LED below) stay derived from the UNprobed value: the
-        // probe perturbs only what the meter tells the box, not our command state —
+        // charge_state stays derived from the UNprobed value: the probe perturbs only
+        // what the meter tells the box, not our command state —
         // evcc reads charge_state as its charger status, and a probe flipping it to
         // 'B' would make evcc believe the charge stopped.
         let charge_state_letter = charge_state(
@@ -349,8 +343,6 @@ impl Controller {
         Tick {
             reported: served,
             status_json: status_json(&status),
-            charging: charge_state_letter == "C",
-            error: self.last_error.is_some(),
         }
     }
 }

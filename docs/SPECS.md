@@ -471,8 +471,8 @@ The `Handoff` carries exactly two scalars: `reported` (worker → slave, the cur
 to answer with) and `last_poll` (slave → worker, for the status liveness). The slave
 never blocks on the worker, and it is constructed **paused** (`reported =
 MAX_BOX_AMPERE + PAUSE_MARGIN_AMPERE`) so it serves a safe value before the first
-tick. `main()` also owns the WiFi guard, a 60 s **task watchdog**, and a status-LED
-thread; if the prober loop ever returns, it **reboots** to re-run bring-up.
+tick. `main()` also owns the WiFi guard and a 60 s **task watchdog**; if the prober
+loop ever returns, it **reboots** to re-run bring-up.
 
 ### Control — the V4 grant loop
 
