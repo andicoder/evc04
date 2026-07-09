@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use esp_idf_svc::nvs::{EspDefaultNvs, EspDefaultNvsPartition, EspNvs};
 use evc04_cn28_core::charge::control::{
-    grant_tracking_current, probe_report, Ampere, GrantControlInputs,
+    grant_tracking_current, probe_report, startup_kick_armed, Ampere, GrantControlInputs,
 };
 use evc04_cn28_core::charge::intake::IntakeError;
 use evc04_cn28_core::charge::status::{charge_state, status_json, Status};
@@ -105,6 +105,10 @@ pub struct Controller {
     /// persisted to NVS — a probe is a manual measurement, never a reboot survivor.
     probe_over: f32,
     probe_at: Option<Instant>,
+    /// Cold-start kick latch (live 2026-07-09): no session has opened since the last
+    /// pause, so the meter serves the full offer to force the box past its initiation
+    /// threshold. Advanced each tick by [`startup_kick_armed`]; starts armed.
+    startup_kick: bool,
     /// Persisted-setpoint store: the last `target`/`enable` are written here on change
     /// and restored on boot so an OTA/reboot resumes instead of cold-start pausing.
     /// `None` if NVS could not be opened — persistence off, the box still runs.
@@ -129,6 +133,8 @@ impl Controller {
             cn28_at: now,
             probe_over: 0.0,
             probe_at: None,
+            // Armed at boot: a cold start with no session yet must kick the box open.
+            startup_kick: true,
             nvs: None,
         };
         // Open the persistence namespace and restore the last commanded setpoint, so
@@ -262,6 +268,18 @@ impl Controller {
         let grid_stale = now.saturating_duration_since(self.grid_at) > GRID_TIMEOUT;
         let cn28_stale = now.saturating_duration_since(self.cn28_at) > CN28_TIMEOUT;
 
+        // Advance the cold-start kick latch first, mirroring the exact conditions
+        // grant_tracking_current pauses on so the two agree: re-arm on any pause (the next
+        // engage is a fresh cold start), disarm the instant the box grants (lb > 0). A
+        // transient lb == 0 mid-session then never re-arms and re-blasts the full offer.
+        let pausing = !self.enabled
+            || grid_stale
+            || cn28_stale
+            || self
+                .target
+                .map_or(true, |t| t.clamp(0.0, MAX_BOX_AMPERE) < MIN_CHARGE_AMPERE);
+        self.startup_kick = startup_kick_armed(self.startup_kick, pausing, Ampere(self.cn28_lb));
+
         // The target is a latched setpoint with no staleness of its own: evcc's MQTT
         // charger sets the current on-change and holds it, so a target timeout would
         // deadlock (box forgets → pauses → evcc never re-sends). The grid heartbeat
@@ -277,6 +295,7 @@ impl Controller {
             lb_stale: cn28_stale,
             grid_stale,
             enabled: self.enabled,
+            startup_kick: self.startup_kick,
         })
         .0;
 
