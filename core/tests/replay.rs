@@ -227,6 +227,11 @@ fn run(sc: Scenario) -> Vec<Sample> {
                     lb_stale: false,
                     grid_stale: false,
                     enabled,
+                    // The boxsim opens a session on any positive grant, so it does not
+                    // model the real box's initiation threshold (live 2026-07-09) that
+                    // the cold-start kick exists for. Leave the kick off here so this
+                    // replay keeps validating only the sustain/ramp law it was fitted to.
+                    startup_kick: false,
                 })
                 .0
             }
