@@ -390,7 +390,8 @@ engages at ≥ 8.4 A, opening grants all `ceil`). Right after **meter silence**
 (reboot/OTA of the emulated meter) the threshold drops to the pilot floor —
 the 2026-07-02 sessions opened at ~6.5 A headroom, the 2026-07-05 post-OTA
 morning session at ~6 A. Consequence: a steady-state target below ~8 A can
-*continue* a session but never *open* one. A real car also needs 10–30 s of
+*continue* a session but never *open* one (the controller works around this
+with the **cold-start kick**, below). A real car also needs 10–30 s of
 standing offer before it draws anything ("contactor lag"), so a controller
 that reports the ceiling the moment the box grants produces an endless ~40 s
 grant/cut cycle and the car shows "Ladegerät nicht bereit".
@@ -415,7 +416,20 @@ must **not** apply before the session: the
 start law grants the bare headroom (no car term, above), so folding the MID
 standby noise (~45 mA) into the pre-session report lands the start grant just
 below the 6 A pilot floor and the box never opens (observed live 2026-07-05 —
-`reported 10.045` at target 6, `lb` stuck at 0, pilot stuck in `B`). **Shed
+`reported 10.045` at target 6, `lb` stuck at 0, pilot stuck in `B`). **Cold-start
+kick** (live 2026-07-09): serving the clean deficit `MAX − target` is still not
+enough to *open* a session near the floor — the start law needs the opening grant
+to **exceed `MAX/2`**, but `MAX − target` grants only `target`, so target 6 (grant
+6 ≤ 8) leaves the box refusing indefinitely: offer ~5 A, pilot stuck in `B`, both
+`lb` and `ev_requested` 0, and the offer is **invariant** to the meter value there
+(`reported 10` at target 6 and `reported 8` at target 8 both stall; only `reported
+0` opened it). So while no session exists (`lb = 0`) the controller serves the
+**full offer** (`reported = 0` → grant `MAX`, well over `MAX/2`) to force the box
+open, then falls through to the deficit/pin path the instant it grants. A one-bit
+latch (`startup_kick`, held by the firmware — pure `startup_kick_armed`) re-arms on
+any pause and disarms once `lb > 0`, so a transient mid-session `lb = 0` never
+re-blasts the ceiling. Live-proven 2026-07-09: the exact stall opened `B → C` at
+target 6 (`reported 0` → box granted 16 → the pin ramped down to 7). **Shed
 floor**: the over-report is additionally capped at `lb − (MIN_CHARGE + 1)`, so
 the box is never told to shed into its pilot floor — target 6 deliberately
 settles at 7 A (inside the ±1 A acceptance) instead of risking the ≥2 A-step
