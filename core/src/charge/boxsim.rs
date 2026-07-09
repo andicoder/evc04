@@ -499,12 +499,21 @@ mod tests {
         // compute an opening of ceil(16 − 10) = 6 ≤ start_threshold 8, so the fitted box
         // never opens — exactly the stuck-B stall. Without the kick it must stay closed.
         let no_kick = cold_start_closed_loop(6.0, false, 200);
-        assert!(!no_kick.charging(), "the deficit report never opens a 6 A cold session");
+        assert!(
+            !no_kick.charging(),
+            "the deficit report never opens a 6 A cold session"
+        );
         assert_eq!(no_kick.lb(), Ampere(0.0));
         // The full-offer kick reports 0 → opening ceil(16) = 16 > 8 → the box opens; once
         // it grants, the latch disarms and the loop settles to a valid session at the floor.
         let kicked = cold_start_closed_loop(6.0, true, 200);
-        assert!(kicked.charging(), "the kick opens the cold session the box otherwise refuses");
-        assert!(kicked.lb().0 >= 6.0, "and the loop holds a valid ≥6 A grant");
+        assert!(
+            kicked.charging(),
+            "the kick opens the cold session the box otherwise refuses"
+        );
+        assert!(
+            kicked.lb().0 >= 6.0,
+            "and the loop holds a valid ≥6 A grant"
+        );
     }
 }
