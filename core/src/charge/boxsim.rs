@@ -455,4 +455,56 @@ mod tests {
         assert!(!b.charging());
         assert_eq!(b.lb(), Ampere(0.0));
     }
+
+    /// Close the loop: the firmware's `grant_tracking_current` drives the fitted box,
+    /// the car draws toward its grant (contactor lag), and the cold-start kick latch
+    /// advances each tick — the same wiring the firmware runs. Returns the box after
+    /// `secs` of a cold start at `target`.
+    fn cold_start_closed_loop(target: f32, kick: bool, secs: u32) -> BoxSim {
+        use crate::charge::control::{
+            grant_tracking_current, startup_kick_armed, GrantControlInputs,
+        };
+        let mut b = BoxSim::new(params()); // steady-state regime: start_threshold 8
+        let mut car = 0.0f32;
+        let mut armed = true;
+        for _ in 0..(secs / 5) {
+            let lb = b.lb().0;
+            // Enabled, target ≥ floor, fresh feedback: never pausing here.
+            armed = startup_kick_armed(armed, false, Ampere(lb));
+            let reported = grant_tracking_current(&GrantControlInputs {
+                max: Ampere(16.0),
+                min_charge: Ampere(6.0),
+                pause_margin: Ampere(4.0),
+                max_over: Ampere(2.0),
+                target: Some(Ampere(target)),
+                lb: Ampere(lb),
+                car: Ampere(car),
+                lb_stale: false,
+                grid_stale: false,
+                enabled: true,
+                startup_kick: kick && armed,
+            })
+            .0;
+            b.tick(5.0, Ampere(reported), Ampere(car));
+            // The car ramps toward its grant, never past what it wants (target + 1).
+            let want = b.lb().0.min(target + 1.0);
+            car += (want - car) * 0.5;
+        }
+        b
+    }
+
+    #[test]
+    fn cold_start_at_the_floor_needs_the_kick_to_open() {
+        // Live 2026-07-09: at target 6 the deficit report `max − target` = 10 has the box
+        // compute an opening of ceil(16 − 10) = 6 ≤ start_threshold 8, so the fitted box
+        // never opens — exactly the stuck-B stall. Without the kick it must stay closed.
+        let no_kick = cold_start_closed_loop(6.0, false, 200);
+        assert!(!no_kick.charging(), "the deficit report never opens a 6 A cold session");
+        assert_eq!(no_kick.lb(), Ampere(0.0));
+        // The full-offer kick reports 0 → opening ceil(16) = 16 > 8 → the box opens; once
+        // it grants, the latch disarms and the loop settles to a valid session at the floor.
+        let kicked = cold_start_closed_loop(6.0, true, 200);
+        assert!(kicked.charging(), "the kick opens the cold session the box otherwise refuses");
+        assert!(kicked.lb().0 >= 6.0, "and the loop holds a valid ≥6 A grant");
+    }
 }
