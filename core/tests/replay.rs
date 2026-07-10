@@ -227,13 +227,6 @@ fn run(sc: Scenario) -> Vec<Sample> {
                     lb_stale: false,
                     grid_stale: false,
                     enabled,
-                    // These fixtures were recorded on pre-kick firmware, so their openings
-                    // are the box reacting to the deficit report `max − target`. Replaying
-                    // them with the kick would serve reported 0 instead and diverge from the
-                    // recorded grants. The kick is covered against the fitted box model by
-                    // the closed-loop test in `boxsim.rs`; here it stays off to reproduce the
-                    // captures faithfully.
-                    startup_kick: false,
                 })
                 .0
             }
@@ -581,11 +574,12 @@ fn replay_sweep2_rep0_flip_converges_and_only_the_enable_flap_cuts() {
     };
     let trace = run(sc);
 
-    // Engage: the box opens at the target (pre-session deficit report 5 → ceil
-    // headroom 11) on its slow clock.
+    // Engage on the slow clock. The wire recorded 11 here (pre-kick firmware: deficit
+    // report 5 → ceil headroom 11); the kick serves the full offer instead, so the box
+    // opens at its ceiling and the pin walks it back down to the target.
     let start = trace.iter().find(|s| s.lb > 0.0).expect("engages");
     assert!(start.t <= 35, "engage within one up period, got {start:?}");
-    assert_eq!(start.lb, 11.0);
+    assert_eq!(start.lb, MAX_BOX);
 
     // After the flip the grant converges next to the target and HOLDS — no cut.
     // The wire shows 6 exactly (the box out-shed the firmware's floor-capped
@@ -603,20 +597,30 @@ fn replay_sweep2_rep0_flip_converges_and_only_the_enable_flap_cuts() {
     // The enable flap pause-cuts within one fast eval …
     let cut = trace.iter().find(|s| s.t >= 190 && s.lb == 0.0).unwrap();
     assert!(cut.t <= 196, "pause must cut within ~5 s, got {cut:?}");
-    // … and with the target still 6 the steady-state start law (> MAX/2) keeps
-    // the box closed after re-enable — exactly what the campaign saw.
-    for s in trace.iter().skip(200) {
-        assert_eq!(s.lb, 0.0, "no re-engage at target 6, got {s:?}");
+    // … and stays cut for as long as the flap holds enable low.
+    for s in trace.iter().take(259).skip(200) {
+        assert_eq!(s.lb, 0.0, "a pause must not re-engage, got {s:?}");
     }
+    // Once enable returns, target 6 is a cold start again: the campaign's pre-kick
+    // firmware never re-engaged here (deficit report 10 → opening 6 ≤ MAX/2), which is
+    // the stall this loop must not reproduce. The kick reopens within one up period.
+    let reengage = trace
+        .iter()
+        .find(|s| s.t > 259 && s.lb > 0.0)
+        .expect("the kick must reopen after the flap clears");
+    assert!(
+        reengage.t <= 295,
+        "reopen within one up period, got {reengage:?}"
+    );
 }
 
-/// The steady-state start law makes low targets unreachable from a standing
-/// stop: sweep1/1c censored every attempt at ≤ 8.0 A headroom over 5–6 minutes
-/// (11 data points). A pv-surplus evcc target of 6–8 A therefore cannot *open* a
-/// session, only continue one — the controller-side answer to that is future
-/// down-shed policy work, not a simulator affordance.
+/// The steady-state start law makes low targets unreachable from a standing stop:
+/// sweep1/1c censored every attempt at ≤ 8.0 A headroom over 5–6 minutes (11 data
+/// points), so the deficit report `max − target` cannot *open* a pv-surplus session
+/// at 6–8 A. The cold-start kick is the controller-side answer: with no grant it
+/// serves the full offer, the box opens at its ceiling, and the pin sheds to target.
 #[test]
-fn lb_tracking_cannot_open_a_session_below_half_max_headroom() {
+fn lb_tracking_kick_opens_a_session_below_half_max_headroom() {
     let sc = Scenario {
         events: vec![(0, Some(6.0), true)],
         house_w: 300.0,
@@ -627,8 +631,22 @@ fn lb_tracking_cannot_open_a_session_below_half_max_headroom() {
         ev: Ev::new(15.0),
         mid_noise_a: 0.045,
     };
-    for s in run(sc) {
-        assert_eq!(s.lb, 0.0, "target 6 must never open a session, got {s:?}");
+    let trace = run(sc);
+
+    let start = trace.iter().find(|s| s.lb > 0.0).expect("the kick engages");
+    assert!(start.t <= 35, "engage within one up period, got {start:?}");
+    assert_eq!(
+        start.lb, MAX_BOX,
+        "the full offer opens the box at its ceiling"
+    );
+
+    // The car is still in its contactor lag when the ceiling grant lands, so it never
+    // draws it; the pin sheds the grant to the 6 A target on the fast clock.
+    for s in trace.iter().skip(120) {
+        assert!(
+            s.lb == 6.0 || s.lb == 7.0,
+            "the session must settle at the target, got {s:?}"
+        );
     }
 }
 

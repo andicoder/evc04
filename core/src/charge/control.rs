@@ -202,14 +202,6 @@ pub struct GrantControlInputs {
     pub grid_stale: bool,
     /// The enable gate (#60): `false` hard-pauses regardless of the target.
     pub enabled: bool,
-    /// Cold-start kick latch (#, live 2026-07-09): no session has opened since the
-    /// last pause. Near the floor the box offers ~5 A for the deficit report
-    /// `max − target` and never crosses its own initiation threshold (`reported=10`
-    /// at target 6 → stuck `B`; only `reported=0`/full offer opens it). So while this
-    /// is set and no session exists (`lb == 0`), serve the full offer to force the box
-    /// open; the firmware clears it once the box grants (`lb > 0`) and re-arms it on
-    /// any pause. Held by the firmware ([`startup_kick_armed`]).
-    pub startup_kick: bool,
 }
 
 /// The V4 per-tick decision: gate on enable, both staleness failsafes, the cold
@@ -222,9 +214,9 @@ pub struct GrantControlInputs {
 /// (flag-day captures 2026-07-03: cut at car 0 A, grant degraded 16→10 at car
 /// ~5 A; replay vs the campaign-fitted box: releasing at the 6 A pilot minimum
 /// turned every engage of a target above ~6 into a ~2.5 A-per-up-period crawl).
-/// Before a session exists the pin must **not** apply: the start law has no car
-/// term, so the deficit report serves `max − target` exactly (see the
-/// session-gate comment in the body, live 2026-07-05).
+/// Before a session exists neither the pin nor the deficit report applies: the box
+/// refuses to *open* near the floor unless it sees the full offer (the cold-start
+/// kick in the body, live 2026-07-09).
 pub fn grant_tracking_current(inputs: &GrantControlInputs) -> Ampere {
     let pause = pause_report(inputs.max, inputs.pause_margin);
     if !inputs.enabled || inputs.grid_stale || inputs.lb_stale {
@@ -239,19 +231,20 @@ pub fn grant_tracking_current(inputs: &GrantControlInputs) -> Ampere {
     // Cold-start kick (live 2026-07-09): near the floor the deficit report `max − target`
     // has the box offer ~5 A and it never crosses its own initiation threshold — the pilot
     // sticks in B, the box grants nothing (`reported=10` at target 6 → stuck; `reported=8`
-    // at target 8 → stuck; only `reported=0`/full offer opened it). So until a session
-    // exists, serve the full offer to force the box open. The firmware clears the latch the
-    // instant the box grants (`lb > 0`) and re-arms it on any pause ([`startup_kick_armed`]),
-    // so a transient `lb == 0` mid-session never re-blasts the ceiling.
-    if inputs.startup_kick && inputs.lb.0 <= 0.0 {
+    // at target 8 → stuck; only `reported=0`/full offer opened it). So whenever the box
+    // grants nothing, serve the full offer to force it open. This is deliberately
+    // memoryless: a session that *ends* leaves no pause behind (enable, target and both
+    // feeds stay valid), so any "already kicked once" latch stays disarmed for the life of
+    // the process and the box never reopens (live 2026-07-10, PR #157). A one-tick full
+    // offer cannot lift an open session either — the box's up clock is ~30 s.
+    if inputs.lb.0 <= 0.0 {
         return Ampere(0.0);
     }
-    // Ramp pin only once a session exists: at session start the box grants the bare
-    // headroom (`lb ← MAX − reported`, SPECS §6 — no car term), so folding the MID
-    // standby noise (~45 mA) into the report tips the start grant below the 6 A
-    // pilot floor and the box never opens (live 2026-07-05). Pre-session, fall
-    // through to the deficit report, which is exactly `MAX − target`.
-    if inputs.car.0 < target.0 && inputs.lb.0 > 0.0 {
+    // Ramp pin, now that a session exists: the box's grant law folds in the live draw
+    // (`lb ← car + MAX − reported`), so while the car is still below target the report
+    // must hold `MAX − target + floor(car)` to keep `lb = target` through the contactor
+    // lag and the ramp.
+    if inputs.car.0 < target.0 {
         // Grants are whole amps and the box floors its eval (`lb ← live_car +
         // headroom`): a fractional car term makes our estimate race the box's own
         // sub-amp noise, flooring the grant one amp under target and sticking there
@@ -267,22 +260,6 @@ pub fn grant_tracking_current(inputs: &GrantControlInputs) -> Ampere {
         inputs.max_over,
         inputs.min_charge,
     )
-}
-
-/// Advance the cold-start kick latch (live 2026-07-09), held by the firmware across polls
-/// and fed into [`GrantControlInputs::startup_kick`]. Re-arm on any pause (the next engage
-/// is a fresh cold start); disarm the instant the box grants (`lb > 0`, session open);
-/// otherwise hold — so a transient `lb == 0` mid-session (a dropped feedback sample) never
-/// re-arms the kick and re-blasts the ceiling. `pausing` must be the same condition
-/// [`grant_tracking_current`] pauses on (disabled / either staleness / target below floor).
-pub fn startup_kick_armed(prev: bool, pausing: bool, lb: Ampere) -> bool {
-    if pausing {
-        true
-    } else if lb.0 > 0.0 {
-        false
-    } else {
-        prev
-    }
 }
 
 /// Everything the per-poll decision needs, supplied by the firmware. Holding the last
@@ -464,7 +441,6 @@ mod tests {
             lb_stale: false,
             grid_stale: false,
             enabled: true,
-            startup_kick: false,
         }
     }
 
@@ -481,31 +457,17 @@ mod tests {
     }
 
     #[test]
-    fn grant_tracking_start_posture_ignores_standby_noise_before_a_session() {
-        // Live regression 2026-07-05: the box's MID standby noise (~45 mA) leaked
-        // into the pre-session report (`MAX − target + car`), and the session-start
-        // grant law (`lb ← MAX − reported`, SPECS §6 — no car term at start) then
-        // landed 45 mA below the 6 A pilot floor, so the box never granted. Before
-        // a session exists the report must be exactly `MAX − target`.
-        let i = GrantControlInputs {
-            lb: Ampere(0.0),
-            car: Ampere(0.045),
-            ..grant_base()
-        };
-        assert_eq!(grant_tracking_current(&i), Ampere(MAX.0 - 20.0));
-    }
-
-    #[test]
     fn grant_tracking_kicks_the_full_offer_to_open_a_cold_session() {
         // Live 2026-07-09: the deficit report `max − target` (10 A at target 6) has the
         // box offer ~5 A — below its own initiation threshold — so it never opens the
         // session (stuck B, lb 0, ev_req 0). Only the full offer (reported 0 → box
-        // grants its max) crosses the threshold and opens the pilot to C. So a cold
-        // start with the kick armed must serve 0, not the deficit report.
+        // grants its max) crosses the threshold and opens the pilot to C.
+        // The car term must not leak in either (live 2026-07-05: the MID standby noise
+        // of ~45 mA in the pre-session report tipped the opening grant under the pilot
+        // floor); the full offer is independent of it by construction.
         let i = GrantControlInputs {
-            startup_kick: true,
             lb: Ampere(0.0),
-            car: Ampere(0.0),
+            car: Ampere(0.045),
             ..grant_base()
         };
         assert_eq!(grant_tracking_current(&i), Ampere(0.0));
@@ -517,7 +479,6 @@ mod tests {
         // the full offer must stop and the normal pin/lb-tracking take over so it
         // ramps down to target — otherwise it would hold the box at its ceiling.
         let i = GrantControlInputs {
-            startup_kick: true,
             lb: Ampere(20.0),
             car: Ampere(0.0),
             ..grant_base()
@@ -526,27 +487,18 @@ mod tests {
     }
 
     #[test]
-    fn startup_kick_stays_armed_at_cold_start_until_the_box_grants() {
-        // Enabled, target ≥ floor, fresh feedback, but no session yet (lb 0): hold armed.
-        assert!(startup_kick_armed(true, false, Ampere(0.0)));
-    }
-
-    #[test]
-    fn startup_kick_disarms_once_the_box_grants() {
-        assert!(!startup_kick_armed(true, false, Ampere(1.0)));
-    }
-
-    #[test]
-    fn startup_kick_rearms_on_any_pause() {
-        // A pause means the next engage is a fresh cold start → arm again for the next kick.
-        assert!(startup_kick_armed(false, true, Ampere(6.0)));
-    }
-
-    #[test]
-    fn startup_kick_holds_disarmed_across_a_transient_lb_zero_mid_session() {
-        // Session opened earlier (disarmed); a dropped CN28 sample reads lb 0 while still
-        // enabled. Must NOT re-arm — else the next poll re-blasts the full offer.
-        assert!(!startup_kick_armed(false, false, Ampere(0.0)));
+    fn grant_tracking_kicks_again_after_a_session_ends_without_a_pause() {
+        // Live 2026-07-10: a session ran and ended (car done / unplugged) while enable,
+        // target and both feeds stayed valid — so nothing paused the control layer. The
+        // decision must not remember the earlier grant: `lb == 0` is a cold start again,
+        // whatever came before. An armed/disarmed latch got stuck here and the box never
+        // reopened, serving the deficit report forever.
+        let i = GrantControlInputs {
+            lb: Ampere(0.0),
+            car: Ampere(0.0),
+            ..grant_base()
+        };
+        assert_eq!(grant_tracking_current(&i), Ampere(0.0));
     }
 
     #[test]
