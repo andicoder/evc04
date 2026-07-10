@@ -423,13 +423,18 @@ to **exceed `MAX/2`**, but `MAX − target` grants only `target`, so target 6 (g
 6 ≤ 8) leaves the box refusing indefinitely: offer ~5 A, pilot stuck in `B`, both
 `lb` and `ev_requested` 0, and the offer is **invariant** to the meter value there
 (`reported 10` at target 6 and `reported 8` at target 8 both stall; only `reported
-0` opened it). So while no session exists (`lb = 0`) the controller serves the
-**full offer** (`reported = 0` → grant `MAX`, well over `MAX/2`) to force the box
-open, then falls through to the deficit/pin path the instant it grants. A one-bit
-latch (`startup_kick`, held by the firmware — pure `startup_kick_armed`) re-arms on
-any pause and disarms once `lb > 0`, so a transient mid-session `lb = 0` never
-re-blasts the ceiling. Live-proven 2026-07-09: the exact stall opened `B → C` at
-target 6 (`reported 0` → box granted 16 → the pin ramped down to 7). **Shed
+0` opened it). So whenever the box grants nothing (`lb = 0`) the controller serves
+the **full offer** (`reported = 0` → grant `MAX`, well over `MAX/2`) to force the box
+open, then falls through to the pin path the instant it grants. The rule is
+deliberately **memoryless**: a session that merely *ends* (car full, unplugged)
+leaves no pause behind — `enable`, `target` and both feeds stay valid — so any
+"already kicked once" latch stays disarmed for the life of the process and the box
+never reopens (live 2026-07-10; the box sat at `reported 10, lb 0, cp B` with the
+car plugged in and 4.4 kW of surplus). A one-tick full offer cannot lift an open
+session either, since the box's up clock is ~30 s. Live-proven 2026-07-09: the exact
+stall opened `B → C` at target 6 (`reported 0` → box granted 16 → the pin ramped
+down to 7); the car is still in its contactor lag when the ceiling grant lands, so
+it never draws it. **Shed
 floor**: the over-report is additionally capped at `lb − (MIN_CHARGE + 1)`, so
 the box is never told to shed into its pilot floor — target 6 deliberately
 settles at 7 A (inside the ±1 A acceptance) instead of risking the ≥2 A-step
