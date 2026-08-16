@@ -19,6 +19,44 @@ lines observed so far and grows as new ones appear. Treat field meanings marked
 | Framing | text lines terminated by `LF` (`\n`); some end `CR LF` (`\r\n`). The decoder strips a trailing `\r`. |
 | Cadence | **request/response-ish**: the box emits nothing useful unprompted — writing any byte (the prober sends `\r\n`) opens a window in which it streams a burst of the lines below. A burst can begin or end mid-line, even mid-token, so consumers must reassemble whole lines across read windows before parsing (`core::cn28::LineReassembler`). |
 | Robustness | unknown/garbled lines must be ignored, never fatal. |
+| Interleaving | the box writes a **second output stream on top of the one it is already printing** — see below. A line can therefore start with, or contain, unrelated text. |
+
+### Interleaved output ("the splice")
+
+The box does not serialise its own console writes. A second producer emits status
+text — observed as a 16-byte `MP lb current: 6` block — **into the middle of a line
+already in flight**, overwriting its opening bytes. Measured on 2026-08-16 with a
+`raw-debug` capture image (evc04#159), 66 probe windows across two runs:
+
+- The splice lands on the **head of the burst**, every time.
+- The first line of a burst is the `P1:` metering line, so **`P1`'s label was
+  destroyed in 13 of 13 bursts** while `P2:` and `P3:` arrived clean. What survived
+  in front of the payload was junk like `b c`, `.TE`, `fer` — often not even the
+  phase digit.
+- The V/A/W/Wh payload itself was intact in every case; only the label died.
+
+This is genuinely the box's own output, not a read artefact: instrumenting every
+`uart.read()` with a poisoned scratch buffer (`core::debug::trace`, topic
+`evc04/cn28/raw/reads`) reported **zero unwritten bytes in every read of every
+window**, so the bytes really do arrive on the wire in that order.
+
+Jittering the probe interval does **not** help — the collision is tied to the burst
+itself, not to a phase-lock between the poll period and the box's print period. A
+90 s capture at `2 s ± 700 ms` produced the same 9-of-9 destroyed `P1` labels as the
+fixed 2 s cadence.
+
+**Consequences for a decoder.** Anchoring a record at the start of the line is wrong
+for this transport. `core::cn28::parse_line` therefore falls back to *scanning*: it
+anchors on the distinctive payload (`:\tV: …\tA: …\tW: …\tWh: …`, or `S:` plus a
+`Cmax:` field) and reads the label backwards from there. Two rules keep that honest:
+
+- A phase label counts only as a full `P<n>`. A lone surviving digit is rejected —
+  the box prints `lb current:3`, and junk ending in a digit would otherwise
+  mislabel a phase.
+- A payload whose label is gone is held as *unlabelled* and promoted to phase 1
+  **only** if a labelled `P2` follows it immediately, which is the documented burst
+  frame below. Otherwise it is dropped. A mislabelled phase is worse than a missing
+  reading.
 
 ### Connector
 
@@ -62,8 +100,10 @@ P2:\tV: 232727\tA: 18\tW: 0\tWh: 0
 P3:\tV: 234605\tA: 18\tW: 0\tWh: 0
 ```
 
-One line per phase `P1`/`P2`/`P3`. Fields are **TAB-delimited** (`0x09`); each
-`X: ` label is followed by a space then the value.
+One line per phase `P1`/`P2`/`P3`, emitted back to back and **in that order** —
+which is what lets a decoder recover `P1`'s spliced-away label (see "Interleaved
+output" above). Fields are **TAB-delimited** (`0x09`); each `X: ` label is followed
+by a space then the value.
 
 | Field | Unit | Meaning |
 |---|---|---|

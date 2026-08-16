@@ -3,3 +3,4 @@
 //! never part of the production telemetry path.
 
 pub mod dump;
+pub mod trace;

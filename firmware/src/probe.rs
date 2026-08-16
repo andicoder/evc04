@@ -27,7 +27,7 @@ use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys::{esp_err_t, esp_timer_get_time, ESP_ERR_TIMEOUT};
 use evc04_cn28_core::probe::cn28::{Cn28Snapshot, LineReassembler};
 #[cfg(feature = "raw-debug")]
-use evc04_cn28_core::debug::dump;
+use evc04_cn28_core::debug::{dump, trace};
 use log::{info, warn};
 
 use crate::charge::{Controller, Handoff, Tick};
@@ -265,14 +265,26 @@ fn probe(
     let gap = TickType::new_millis(READ_GAP.as_millis() as u64).ticks();
     let mut resp = Vec::new();
     let mut chunk = [0u8; READ_BUF];
+    #[cfg(feature = "raw-debug")]
+    let mut read_trace = trace::ReadTrace::new();
     loop {
         // Wait FIRST_BYTE_TIMEOUT for the opening byte, then only READ_GAP
         // between bytes — so a slow/late reply still lands, but a finished frame
         // still returns promptly once the line goes quiet.
         let timeout = if resp.is_empty() { first } else { gap };
+        // Poison the scratch buffer before every read (#159). The LOG is ASCII, so
+        // 0xFF can never be real payload: any 0xFF still standing inside the range
+        // the driver claims to have filled is a byte it did NOT write — which is
+        // what separates "the box sent this" from "the read over-reported".
+        #[cfg(feature = "raw-debug")]
+        chunk.fill(trace::POISON);
         match uart.read(&mut chunk, timeout) {
             Ok(0) => break,
-            Ok(n) => resp.extend_from_slice(&chunk[..n]),
+            Ok(n) => {
+                #[cfg(feature = "raw-debug")]
+                read_trace.record(&chunk[..n]);
+                resp.extend_from_slice(&chunk[..n]);
+            }
             Err(e) if e.code() == ESP_ERR_TIMEOUT as esp_err_t => break,
             Err(e) => return Err(e).context("uart read"),
         }
@@ -280,8 +292,18 @@ fn probe(
 
     // Raw views are capture/discovery debug only — compiled out of production
     // builds so the box does not spray three extra publishes per auto-poll (#110).
+    // Best-effort like the telemetry publish below: as a propagated `?` this killed
+    // the worker loop on any MQTT hiccup, which silences the RS485 slave and
+    // red-faults the box (#87) — the one failure a capture image must not add.
     #[cfg(feature = "raw-debug")]
-    mqtt.publish_raw(&resp, &dump::to_hex(&resp), &dump::to_printable(&resp))?;
+    {
+        if let Err(e) = mqtt.publish_raw(&resp, &dump::to_hex(&resp), &dump::to_printable(&resp)) {
+            warn!("raw publish skipped (mqtt down?): {e:#}");
+        }
+        if let Err(e) = mqtt.publish_read_trace(&read_trace.to_json()) {
+            warn!("read-trace publish skipped (mqtt down?): {e:#}");
+        }
+    }
 
     // Reassemble whole lines from this window's bytes (a line, or even a token,
     // can straddle window boundaries — the reassembler holds the partial tail) and

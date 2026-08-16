@@ -34,6 +34,11 @@ const TOPIC_RAW: &str = "evc04/cn28/raw";
 const TOPIC_RAW_HEX: &str = "evc04/cn28/raw/hex";
 #[cfg(feature = "raw-debug")]
 const TOPIC_RAW_ASCII: &str = "evc04/cn28/raw/ascii";
+/// Per-read accounting for the window on `raw` (#159): what each `read()` claimed
+/// against how much of that it actually wrote. Separates a re-delivering read from
+/// genuine box output, which the raw bytes alone cannot.
+#[cfg(feature = "raw-debug")]
+const TOPIC_RAW_READS: &str = "evc04/cn28/raw/reads";
 /// Decoded telemetry snapshot (#66): the structured view over the raw frames,
 /// retained so a late subscriber (Home Assistant) gets the latest values at once.
 /// Public because the HA discovery config (built elsewhere) points its sensors here.
@@ -198,6 +203,14 @@ impl Mqtt {
             .publish(TOPIC_RAW_HEX, QoS::AtLeastOnce, false, hex.as_bytes())?;
         self.client
             .publish(TOPIC_RAW_ASCII, QoS::AtLeastOnce, false, ascii.as_bytes())?;
+        Ok(())
+    }
+
+    /// Non-retained per-read trace for the window just published (#159).
+    #[cfg(feature = "raw-debug")]
+    pub fn publish_read_trace(&mut self, json: &str) -> Result<()> {
+        self.client
+            .publish(TOPIC_RAW_READS, QoS::AtLeastOnce, false, json.as_bytes())?;
         Ok(())
     }
 }

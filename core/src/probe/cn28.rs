@@ -99,6 +99,17 @@ pub enum LogRecord {
     ProbeDetected(Probe),
     /// `Powercut Detected` — the box logged a mains power interruption.
     PowerCut,
+    /// A per-phase payload whose `P<n>:` label was destroyed by a splice (#159).
+    /// Carries no phase number on purpose — the number is recovered from the burst
+    /// frame in [`Cn28Snapshot::apply`], or the reading is dropped. Never guess it
+    /// from a surviving bare digit: the box prints `lb current:3`, so junk ending in
+    /// a digit would silently mislabel a phase.
+    PhaseUnlabelled {
+        v_mv: u32,
+        a_ma: u32,
+        w: u32,
+        wh: u32,
+    },
     /// `S:<state><n> … Cmax:<a> …` — control-pilot state line: the CP state plus
     /// the current currently offered to the EV.
     CpStatus { state: CpState, cmax_a: u16 },
@@ -121,6 +132,56 @@ pub fn parse_line(line: &str) -> Option<LogRecord> {
         .or_else(|| prefixed_u16(line, "max_offered_current:").map(LogRecord::MaxOffered))
         .or_else(|| prefixed_u16(line, "lb current:").map(LogRecord::LbCurrent))
         .or_else(|| parse_probe_value(line))
+        // Last: the box splices unrelated output into a line it is already printing
+        // (#159), so a whole record can sit behind junk. Scanning is the fallback,
+        // never the first choice — a clean line must still take the strict path.
+        .or_else(|| scan_phase(line))
+        .or_else(|| scan_cp_status(line))
+}
+
+/// Recover a control-pilot line that a splice pushed off the start of the line
+/// (#159). Worth the extra pass because `S:` is emitted only on transitions, so a
+/// single lost one latches the CP state until the next plug/charge event (#158).
+/// Each `S:` candidate must still satisfy the strict parse — a known state letter
+/// *and* a `Cmax:` field — so a stray `S:` in prose cannot fabricate a pilot state.
+fn scan_cp_status(line: &str) -> Option<LogRecord> {
+    line.match_indices("S:")
+        .find_map(|(i, _)| parse_cp_status(&line[i..]))
+}
+
+/// Recover a per-phase record that a splice pushed off the start of the line (#159).
+///
+/// Anchors on the payload — `:\tV: <u32>\tA: <u32>\tW: <u32>\tWh: <u32>` — which is
+/// distinctive enough that junk cannot imitate it, then reads the label *backwards*
+/// from the anchor. A label counts only as the full `P<n>`; a lone surviving digit is
+/// rejected, because the box prints lines like `lb current:3` whose trailing digit
+/// would otherwise be read as a phase number.
+fn scan_phase(line: &str) -> Option<LogRecord> {
+    let anchor = line.find(":\tV: ")?;
+    let (head, payload) = line.split_at(anchor);
+    let mut fields = payload.strip_prefix(':')?.split('\t').skip(1);
+    let v_mv = labelled(fields.next()?, "V")?;
+    let a_ma = labelled(fields.next()?, "A")?;
+    let w = labelled(fields.next()?, "W")?;
+    let wh = labelled(fields.next()?, "Wh")?;
+    if fields.next().is_some() {
+        return None;
+    }
+    let phase = head
+        .strip_suffix(|c: char| c.is_ascii_digit())
+        .filter(|rest| rest.ends_with('P'))
+        .and_then(|_| head.as_bytes().last())
+        .map(|d| d - b'0');
+    Some(match phase {
+        Some(phase) => LogRecord::Phase {
+            phase,
+            v_mv,
+            a_ma,
+            w,
+            wh,
+        },
+        None => LogRecord::PhaseUnlabelled { v_mv, a_ma, w, wh },
+    })
 }
 
 /// Map a probe/meter-type token to a [`Probe`]; unknown tokens yield `None` so
@@ -292,6 +353,10 @@ pub struct Cn28Snapshot {
     pub last_error: Option<u16>,
     /// Control-pilot state from the last `S:` line — the live plug/charge state.
     pub cp_state: Option<CpState>,
+    /// A phase payload whose label a splice destroyed, held until the next record
+    /// says whether it was the burst head (#159). Never serialised — it is either
+    /// promoted to phase 1 or dropped.
+    pending_unlabelled: Option<PhaseReading>,
 }
 
 impl Cn28Snapshot {
@@ -302,7 +367,19 @@ impl Cn28Snapshot {
     /// Fold a decoded record into the snapshot, overwriting that field's value.
     /// A `NoData` fault clears the named phase — its last reading is stale.
     pub fn apply(&mut self, record: LogRecord) {
+        // A held unlabelled payload survives exactly one record: the burst prints
+        // P1, P2, P3 back to back (protocol doc §1), so it is phase 1 if and only if
+        // a labelled P2 follows it immediately. Anything else and it is dropped —
+        // this must never invent a phase label.
+        let pending = self.pending_unlabelled.take();
+        if let (Some(reading), LogRecord::Phase { phase: 2, .. }) = (pending, &record) {
+            self.phases[0] = Some(reading);
+        }
+
         match record {
+            LogRecord::PhaseUnlabelled { v_mv, a_ma, w, wh } => {
+                self.pending_unlabelled = Some(PhaseReading { v_mv, a_ma, w, wh });
+            }
             LogRecord::Phase {
                 phase,
                 v_mv,
@@ -581,6 +658,127 @@ mod tests {
         snap.apply_line("P1:\tV: 237132\tA: 63\tW: 2\tWh: 0");
         snap.apply_line("No data received from P1!");
         assert_eq!(snap.phases[0], None);
+    }
+
+    // --- Spliced-line recovery (#159) ---------------------------------------
+    // The box writes an unrelated status block on top of whatever it is printing.
+    // Measured live over two captures: the splice always lands on the head of the
+    // burst, so `P1:`'s label is destroyed in 13 of 13 bursts while `P2:`/`P3:`
+    // arrive clean. The V/A/W/Wh payload itself is intact every time. These
+    // fixtures are verbatim lines from those captures.
+
+    #[test]
+    fn a_labelled_phase_line_is_decoded_through_leading_splice_noise() {
+        assert_eq!(
+            parse_line("MP lb current: 6P2:\tV: 232934\tA: 18\tW: 0\tWh: 147965"),
+            Some(LogRecord::Phase {
+                phase: 2,
+                v_mv: 232934,
+                a_ma: 18,
+                w: 0,
+                wh: 147965,
+            })
+        );
+    }
+
+    #[test]
+    fn a_phase_payload_whose_label_was_eaten_decodes_as_unlabelled() {
+        // Verbatim from the 2026-08-16 capture: `\nP1` fully overwritten.
+        assert_eq!(
+            parse_line("MP lb current: 6b c:\tV: 239202\tA: 45\tW: 3\tWh: 150190"),
+            Some(LogRecord::PhaseUnlabelled {
+                v_mv: 239202,
+                a_ma: 45,
+                w: 3,
+                wh: 150190,
+            })
+        );
+    }
+
+    #[test]
+    fn a_bare_digit_left_by_the_splice_is_not_taken_as_a_phase_label() {
+        // The box prints `lb current:3`; if that junk ends up in front of a payload
+        // the trailing '3' must not be read as "phase 3" — a mislabelled phase is
+        // worse than a dropped reading.
+        assert_eq!(
+            parse_line("lb current:3:\tV: 239202\tA: 45\tW: 3\tWh: 150190"),
+            Some(LogRecord::PhaseUnlabelled {
+                v_mv: 239202,
+                a_ma: 45,
+                w: 3,
+                wh: 150190,
+            })
+        );
+    }
+
+    #[test]
+    fn a_cp_status_line_is_decoded_through_leading_splice_noise() {
+        // The pilot line is emitted only on transitions, so one lost to a splice
+        // latches the CP state until the next transition — the #158 freeze.
+        assert_eq!(
+            parse_line("MP lb current: 6S:C2 Auth:1 D:281 Cmax:16 Ph:3 Relay:7"),
+            Some(LogRecord::CpStatus {
+                state: CpState::Charging,
+                cmax_a: 16,
+            })
+        );
+    }
+
+    #[test]
+    fn a_stray_s_colon_without_a_cp_payload_is_not_a_status_line() {
+        assert_eq!(parse_line("ERRORS: 12 lb current: 6"), None);
+    }
+
+    #[test]
+    fn an_unlabelled_payload_followed_by_p2_is_recorded_as_p1() {
+        // The documented burst frame is P1, P2, P3 back to back (protocol doc §1),
+        // so an unlabelled payload immediately before a labelled P2 is P1. Observed
+        // in 13 of 13 bursts.
+        let mut snap = Cn28Snapshot::new();
+        snap.apply_line("MP lb current: 6b c:\tV: 239202\tA: 45\tW: 3\tWh: 150190");
+        snap.apply_line("P2:\tV: 232934\tA: 18\tW: 0\tWh: 147965");
+        assert_eq!(
+            snap.phases[0],
+            Some(PhaseReading {
+                v_mv: 239202,
+                a_ma: 45,
+                w: 3,
+                wh: 150190,
+            })
+        );
+    }
+
+    #[test]
+    fn an_unlabelled_payload_on_its_own_is_never_recorded() {
+        let mut snap = Cn28Snapshot::new();
+        snap.apply_line("MP lb current: 6b c:\tV: 239202\tA: 45\tW: 3\tWh: 150190");
+        assert_eq!(snap.phases[0], None);
+    }
+
+    #[test]
+    fn an_unlabelled_payload_not_followed_by_p2_is_dropped() {
+        // Anything but the documented successor means this was not the burst head;
+        // guessing would fabricate a phase label.
+        let mut snap = Cn28Snapshot::new();
+        snap.apply_line("MP lb current: 6b c:\tV: 239202\tA: 45\tW: 3\tWh: 150190");
+        snap.apply_line("P3:\tV: 238729\tA: 18\tW: 0\tWh: 149400");
+        assert_eq!(snap.phases[0], None);
+        assert!(snap.phases[2].is_some(), "P3 itself must still be recorded");
+    }
+
+    #[test]
+    fn a_clean_p1_line_still_takes_the_direct_path() {
+        let mut snap = Cn28Snapshot::new();
+        snap.apply_line("P1:\tV: 234841\tA: 16150\tW: 3761\tWh: 2661");
+        assert_eq!(
+            snap.phases[0],
+            Some(PhaseReading {
+                v_mv: 234841,
+                a_ma: 16150,
+                w: 3761,
+                wh: 2661,
+            })
+        );
     }
 
     #[test]
