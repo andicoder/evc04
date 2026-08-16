@@ -202,6 +202,14 @@ pub struct GrantControlInputs {
     pub grid_stale: bool,
     /// The enable gate (#60): `false` hard-pauses regardless of the target.
     pub enabled: bool,
+    /// A bounded post-boot pilot probe is running (#161). The control-pilot line is
+    /// transition-only, so after a reboot with a vehicle already plugged in and idle
+    /// nothing ever changes: the box says nothing, evcc rejects the empty status and
+    /// commands nothing, so nothing starts and nothing changes. The only lever that
+    /// breaks that is moving the offered current, which does make the box report
+    /// (measured 2026-08-16). While this is set the offer is opened *despite* the
+    /// pause gates, for the bounded window the firmware allows.
+    pub pilot_probe: bool,
 }
 
 /// The V4 per-tick decision: gate on enable, both staleness failsafes, the cold
@@ -219,15 +227,31 @@ pub struct GrantControlInputs {
 /// kick in the body, live 2026-07-09).
 pub fn grant_tracking_current(inputs: &GrantControlInputs) -> Ampere {
     let pause = pause_report(inputs.max, inputs.pause_margin);
-    if !inputs.enabled || inputs.grid_stale || inputs.lb_stale {
+    // Both failsafes come first and are never overridden: a stale heartbeat or a
+    // stale grant means the control layer is blind, and the probe below is only a
+    // diagnostic convenience.
+    if inputs.grid_stale || inputs.lb_stale {
         return pause;
     }
-    let Some(target) = inputs.target else {
-        return pause;
-    };
-    if target.clamp(Ampere(0.0), inputs.max).0 < inputs.min_charge.0 {
+    // Everything below the failsafes that would hold the box shut: not enabled, no
+    // target yet, or a target under the floor the car cannot hold.
+    let shut = !inputs.enabled
+        || inputs
+            .target
+            .is_none_or(|t| t.clamp(Ampere(0.0), inputs.max).0 < inputs.min_charge.0);
+    // The post-boot pilot probe (#161) opens the offer through exactly those gates —
+    // and only those. Moving the offered current is the one thing that makes the box
+    // report its pilot state, and without that state the whole stack stays wedged.
+    // It never touches a running session (nothing to learn there, the pilot is
+    // already reporting) and never overrides a failsafe (checked above). The
+    // firmware bounds it to one short window per boot.
+    if shut && inputs.pilot_probe {
+        return Ampere(0.0);
+    }
+    if shut {
         return pause;
     }
+    let target = inputs.target.expect("shut covers the None case");
     // Cold-start kick (live 2026-07-09): near the floor the deficit report `max − target`
     // has the box offer ~5 A and it never crosses its own initiation threshold — the pilot
     // sticks in B, the box grants nothing (`reported=10` at target 6 → stuck; `reported=8`
@@ -441,7 +465,85 @@ mod tests {
             lb_stale: false,
             grid_stale: false,
             enabled: true,
+            pilot_probe: false,
         }
+    }
+
+    // --- Post-boot pilot probe (#161) ---------------------------------------
+    // The pilot line is transition-only, so a reboot with the vehicle plugged in and
+    // idle wedges the whole stack: the box knows no pilot state, publishes an empty
+    // charge_state, evcc rejects it and commands nothing, so nothing changes and no
+    // line is ever emitted. Measured 2026-08-16 — it cost an afternoon of PV surplus.
+    // Moving the offered current is the only lever that makes the box report, and it
+    // demonstrably works (`None` -> `B` -> `C` after a single enable).
+    //
+    // With no vehicle plugged the probe cannot start anything, and plugging in is
+    // itself a transition that resolves the unknown, so the probe only ever matters
+    // in the one case it is built for.
+
+    #[test]
+    fn the_pilot_probe_opens_the_offer_despite_the_cold_start_pause() {
+        // The wedged shape: never enabled since boot, so every gate says pause.
+        let inputs = GrantControlInputs {
+            enabled: false,
+            target: None,
+            lb: Ampere(0.0),
+            car: Ampere(0.0),
+            pilot_probe: true,
+            ..grant_base()
+        };
+        // A full offer (report 0) is what makes the box open — the same lever the
+        // cold-start kick uses — and moving the offer is what emits the pilot line.
+        assert_eq!(grant_tracking_current(&inputs), Ampere(0.0));
+    }
+
+    #[test]
+    fn the_pilot_probe_is_ignored_while_a_failsafe_is_active() {
+        // A stale grid heartbeat or CN28 feed means the control layer is blind. The
+        // probe is a diagnostic convenience; it must never override a failsafe.
+        for (grid_stale, lb_stale) in [(true, false), (false, true)] {
+            let inputs = GrantControlInputs {
+                enabled: false,
+                target: None,
+                grid_stale,
+                lb_stale,
+                pilot_probe: true,
+                ..grant_base()
+            };
+            assert_eq!(
+                grant_tracking_current(&inputs),
+                pause_report(MAX, MARGIN),
+                "probe must not override grid_stale={grid_stale} lb_stale={lb_stale}"
+            );
+        }
+    }
+
+    #[test]
+    fn without_the_probe_the_wedged_shape_still_pauses() {
+        // Regression guard: the probe is the only thing that may open this.
+        let inputs = GrantControlInputs {
+            enabled: false,
+            target: None,
+            lb: Ampere(0.0),
+            car: Ampere(0.0),
+            pilot_probe: false,
+            ..grant_base()
+        };
+        assert_eq!(grant_tracking_current(&inputs), pause_report(MAX, MARGIN));
+    }
+
+    #[test]
+    fn the_pilot_probe_does_not_disturb_a_healthy_session() {
+        // If the probe ever fired with a session running it must change nothing —
+        // the normal regulation already owns the report.
+        let with = GrantControlInputs {
+            pilot_probe: true,
+            ..grant_base()
+        };
+        assert_eq!(
+            grant_tracking_current(&with),
+            grant_tracking_current(&grant_base())
+        );
     }
 
     #[test]
