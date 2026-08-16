@@ -139,14 +139,32 @@ pub fn parse_line(line: &str) -> Option<LogRecord> {
         .or_else(|| scan_cp_status(line))
 }
 
-/// Recover a control-pilot line that a splice pushed off the start of the line
-/// (#159). Worth the extra pass because `S:` is emitted only on transitions, so a
-/// single lost one latches the CP state until the next plug/charge event (#158).
-/// Each `S:` candidate must still satisfy the strict parse — a known state letter
-/// *and* a `Cmax:` field — so a stray `S:` in prose cannot fabricate a pilot state.
+/// Recover a control-pilot line a splice damaged (#159/#161). Worth the extra pass
+/// because the line is emitted only on transitions, so a single lost one latches the
+/// CP state until the next plug/charge event (#158).
+///
+/// The candidate must still satisfy the strict parse — a known state letter *and* a
+/// `Cmax:` field — so an ` Auth:` appearing in unrelated output cannot fabricate a
+/// pilot state.
 fn scan_cp_status(line: &str) -> Option<LogRecord> {
-    line.match_indices("S:")
-        .find_map(|(i, _)| parse_cp_status(&line[i..]))
+    // Anchor on ` Auth:`, not on `S:`. Measured 2026-08-16 (#161): across two
+    // deliberate offered-current changes the box emitted a pilot line both times and
+    // the splice ate the `S:` marker both times (`eC2 Auth:1 …`, `…b cC2 Auth:1 …`),
+    // so keying on the marker recovered neither. The state letter and its sub-index
+    // sit immediately before the anchor; everything ahead of them is junk.
+    line.match_indices(" Auth:").find_map(|(i, _)| {
+        let head = line.get(..i)?;
+        let sub = head.strip_suffix(|c: char| c.is_ascii_digit())?;
+        let letter = sub.chars().next_back()?;
+        CpState::from_letter(letter)?;
+        // Rebuild the marker and re-run the strict parse, so the `Cmax:` requirement
+        // and the field rules live in exactly one place.
+        parse_cp_status(&format!(
+            "S:{}{}",
+            &head[sub.len() - letter.len_utf8()..],
+            &line[i..]
+        ))
+    })
 }
 
 /// Recover a per-phase record that a splice pushed off the start of the line (#159).
@@ -709,6 +727,42 @@ mod tests {
                 wh: 150190,
             })
         );
+    }
+
+    // Both verbatim from a 2026-08-16 capture taken across two deliberate offered-
+    // current changes (#161): the box does emit a pilot line when only `Cmax` moves,
+    // but the splice ate the `S:` marker itself both times. Anchoring the scan on
+    // `S:` therefore recovered neither — the scan has to key on the payload.
+
+    #[test]
+    fn a_cp_line_whose_s_marker_was_eaten_is_still_recovered() {
+        assert_eq!(
+            parse_line("eC2 Auth:1 D:176 Cmax:10 Ph:3 Relay:0"),
+            Some(LogRecord::CpStatus {
+                state: CpState::Charging,
+                cmax_a: 10,
+            })
+        );
+    }
+
+    #[test]
+    fn a_cp_line_behind_a_long_splice_is_still_recovered() {
+        assert_eq!(
+            parse_line(
+                "ev rrent_without_dlm_without_unplugged16b cC2 Auth:1 D:281 Cmax:16 Ph:3 Relay:0"
+            ),
+            Some(LogRecord::CpStatus {
+                state: CpState::Charging,
+                cmax_a: 16,
+            })
+        );
+    }
+
+    #[test]
+    fn an_auth_field_without_a_valid_state_letter_is_not_a_pilot_line() {
+        // The anchor alone must not conjure a pilot state out of unrelated output.
+        assert_eq!(parse_line("xx9 Auth:1 D:176 Cmax:10 Ph:3 Relay:0"), None);
+        assert_eq!(parse_line("Auth:1 D:176 Cmax:10"), None);
     }
 
     #[test]
