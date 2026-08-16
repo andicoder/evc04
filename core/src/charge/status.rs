@@ -10,6 +10,11 @@ use alloc::string::String;
 use super::control::Ampere;
 use crate::probe::cn28::CpState;
 
+/// Measured current above which the car is definitely drawing (#158). Well above
+/// the ~40 mA per-phase noise an idle box reads, and well below the 6 A minimum of
+/// any real charge, so neither noise nor a genuine charge sits near the boundary.
+const CURRENT_FLOWING_AMPERE: f32 = 1.0;
+
 /// evcc charge status (#148): mirror the box's real control-pilot state (CN28 LOG
 /// `S:` line) instead of approximating from our command. `""` when the pilot is
 /// unknown — post-reboot blind window (`cp_state` is transition-only, #117), a
@@ -19,17 +24,36 @@ use crate::probe::cn28::CpState;
 /// still forces `B` while the pilot reads `C`, so evcc's power estimate drops to
 /// 0 during the ramp-down. Reporting exactly the ceiling holds an active charge,
 /// so `== max` is still `C`.
+///
+/// The pilot is only trusted where it cannot have gone stale: a non-`C` letter with
+/// the metering showing real current is overridden to `C` (#158). See the match arm.
 pub fn charge_state(
     reported: Ampere,
     max: Ampere,
     pause_margin: Ampere,
     cp_state: Option<CpState>,
     cn28_stale: bool,
+    measured: Ampere,
 ) -> &'static str {
     if cn28_stale {
         return "";
     }
     match cp_state {
+        // A pilot that is not `C` while the metering shows the car drawing is a
+        // physical contradiction — current only flows in state C — and the pilot is
+        // the untrustworthy half: `S:` is transition-only, so one lost line pins the
+        // letter indefinitely (#158, live 25 h of `B` through a 7 kW charge). The
+        // metering is stateless and cannot go stale that way, which is the resolution
+        // #117 already pointed at. Only ever upgrades: `C` is left alone below,
+        // because a real state C may legitimately draw nothing while the car pauses,
+        // and downgrading on that would flap.
+        None | Some(CpState::NoVehicle) | Some(CpState::Connected)
+            if measured.0 >= CURRENT_FLOWING_AMPERE =>
+        {
+            "C"
+        }
+        // A fault is never overridden — `F` means the box itself is unhappy, and
+        // guessing past that is not the metering's job.
         None | Some(CpState::Fault) => "",
         Some(CpState::NoVehicle) => "A",
         Some(CpState::Connected) => "B",
@@ -119,7 +143,8 @@ mod tests {
                 Ampere(16.0),
                 Ampere(4.0),
                 fresh(CpState::NoVehicle),
-                false
+                false,
+                Ampere(0.0),
             ),
             "A"
         );
@@ -133,7 +158,8 @@ mod tests {
                 Ampere(16.0),
                 Ampere(4.0),
                 fresh(CpState::NoVehicle),
-                false
+                false,
+                Ampere(0.0),
             ),
             "A"
         );
@@ -147,7 +173,8 @@ mod tests {
                 Ampere(16.0),
                 Ampere(4.0),
                 fresh(CpState::Connected),
-                false
+                false,
+                Ampere(0.0),
             ),
             "B"
         );
@@ -161,7 +188,8 @@ mod tests {
                 Ampere(16.0),
                 Ampere(4.0),
                 fresh(CpState::Charging),
-                false
+                false,
+                Ampere(0.0),
             ),
             "C"
         );
@@ -175,7 +203,8 @@ mod tests {
                 Ampere(16.0),
                 Ampere(4.0),
                 fresh(CpState::Charging),
-                false
+                false,
+                Ampere(0.0),
             ),
             "C"
         );
@@ -190,7 +219,8 @@ mod tests {
                 Ampere(16.0),
                 Ampere(4.0),
                 fresh(CpState::Charging),
-                false
+                false,
+                Ampere(0.0),
             ),
             "B"
         );
@@ -208,7 +238,8 @@ mod tests {
                 Ampere(16.0),
                 Ampere(4.0),
                 fresh(CpState::Charging),
-                false
+                false,
+                Ampere(0.0),
             ),
             "C"
         );
@@ -218,7 +249,8 @@ mod tests {
                 Ampere(16.0),
                 Ampere(4.0),
                 fresh(CpState::Charging),
-                false
+                false,
+                Ampere(0.0),
             ),
             "C"
         );
@@ -227,7 +259,14 @@ mod tests {
     #[test]
     fn unknown_pilot_reports_empty() {
         assert_eq!(
-            charge_state(Ampere(6.0), Ampere(16.0), Ampere(4.0), None, false),
+            charge_state(
+                Ampere(6.0),
+                Ampere(16.0),
+                Ampere(4.0),
+                None,
+                false,
+                Ampere(0.0)
+            ),
             ""
         );
     }
@@ -240,9 +279,131 @@ mod tests {
                 Ampere(16.0),
                 Ampere(4.0),
                 fresh(CpState::Charging),
-                true
+                true,
+                Ampere(0.0),
             ),
             ""
+        );
+    }
+
+    // --- Measured current outranks a latched pilot (#158) --------------------
+    // `S:` is emitted only on transitions, so one lost line pins the pilot letter
+    // indefinitely — live on 2026-08-14 it read `B` for 25 h through a 7 kW charge,
+    // and again on 2026-08-16 while the car pulled 15 A. Current can only flow in
+    // state C, so the box's own metering settles the contradiction. #117 reached
+    // the same conclusion from the other end: the reliable-after-boot answer is
+    // "a live, stateless source (external charge-power measurement)", not a
+    // remembered categorical state.
+
+    #[test]
+    fn measured_current_overrides_a_latched_connected_pilot() {
+        assert_eq!(
+            charge_state(
+                Ampere(6.0),
+                Ampere(16.0),
+                Ampere(4.0),
+                fresh(CpState::Connected),
+                false,
+                Ampere(15.0),
+            ),
+            "C"
+        );
+    }
+
+    #[test]
+    fn measured_current_resolves_a_pilot_that_is_still_unknown() {
+        // After a reboot mid-charge the box has seen no transition at all; the
+        // metering still proves the car is drawing.
+        assert_eq!(
+            charge_state(
+                Ampere(6.0),
+                Ampere(16.0),
+                Ampere(4.0),
+                None,
+                false,
+                Ampere(15.0)
+            ),
+            "C"
+        );
+    }
+
+    #[test]
+    fn metering_noise_does_not_fake_a_charge() {
+        // An idle box reads ~40 mA of noise per phase; the lowest real charge is 6 A.
+        assert_eq!(
+            charge_state(
+                Ampere(6.0),
+                Ampere(16.0),
+                Ampere(4.0),
+                fresh(CpState::Connected),
+                false,
+                Ampere(0.045),
+            ),
+            "B"
+        );
+    }
+
+    #[test]
+    fn measured_current_never_overrides_a_fault() {
+        assert_eq!(
+            charge_state(
+                Ampere(6.0),
+                Ampere(16.0),
+                Ampere(4.0),
+                fresh(CpState::Fault),
+                false,
+                Ampere(15.0),
+            ),
+            ""
+        );
+    }
+
+    #[test]
+    fn measured_current_does_not_override_a_stale_feed() {
+        // A stale CN28 feed means the metering is as untrustworthy as the pilot.
+        assert_eq!(
+            charge_state(
+                Ampere(6.0),
+                Ampere(16.0),
+                Ampere(4.0),
+                fresh(CpState::Connected),
+                true,
+                Ampere(15.0),
+            ),
+            ""
+        );
+    }
+
+    #[test]
+    fn our_deliberate_pause_still_reports_b_while_current_is_still_flowing() {
+        // The pause report (#57) forces `B` on purpose during the ramp-down, and
+        // current is still flowing at that moment. The cross-check must not undo it
+        // — it corrects a *latched* pilot, never our own commanded state.
+        assert_eq!(
+            charge_state(
+                Ampere(20.0),
+                Ampere(16.0),
+                Ampere(4.0),
+                fresh(CpState::Charging),
+                false,
+                Ampere(15.0),
+            ),
+            "B"
+        );
+    }
+
+    #[test]
+    fn an_unplugged_pilot_with_no_current_still_reports_a() {
+        assert_eq!(
+            charge_state(
+                Ampere(6.0),
+                Ampere(16.0),
+                Ampere(4.0),
+                fresh(CpState::NoVehicle),
+                false,
+                Ampere(0.0),
+            ),
+            "A"
         );
     }
 
@@ -254,7 +415,8 @@ mod tests {
                 Ampere(16.0),
                 Ampere(4.0),
                 fresh(CpState::Fault),
-                false
+                false,
+                Ampere(0.0),
             ),
             ""
         );

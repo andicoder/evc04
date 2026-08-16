@@ -293,6 +293,9 @@ impl Controller {
             Ampere(PAUSE_MARGIN_AMPERE),
             self.cn28_cp_state,
             cn28_stale,
+            // The car's real draw (max phase current off the CN28 MID metering),
+            // which outranks a latched pilot letter (#158).
+            Ampere(self.cn28_car),
         );
         let served = probe_report(
             Ampere(reported),
