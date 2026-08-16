@@ -473,6 +473,7 @@ mod tests {
                 lb_stale: false,
                 grid_stale: false,
                 enabled: true,
+                pilot_probe: false,
             })
             .0;
             b.tick(5.0, Ampere(reported), Ampere(car));

@@ -67,6 +67,26 @@ const PROBE_MAX_OVER_AMPERE: f32 = 3.5;
 /// A probe expires on its own: a forgotten publish must not keep perturbing the
 /// meter answer. Re-publish to extend a running measurement.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Wait this long after boot before probing for the pilot state (#161). The control
+/// pilot is transition-only, so a reboot with a vehicle plugged in and idle leaves it
+/// unknown forever — nothing changes, so the box never reports. Long enough that a
+/// real transition (someone plugging in, evcc resuming) resolves it first and the
+/// probe never runs.
+const PILOT_PROBE_DELAY: Duration = Duration::from_secs(90);
+/// How long the probe holds the offer open.
+///
+/// A first attempt used 3 s, hoping to be too brief for a plugged car to engage. It
+/// was measured live on 2026-08-16 and did nothing at all: the offer opened and closed
+/// exactly as designed and the box never moved `Cmax`, because the box's own up clock
+/// is ~30 s (the same clock the cold-start kick works around). So a short window is not
+/// the cautious choice, it is simply the useless one — there is no setting that both
+/// beats the box's clock and undercuts the car's.
+///
+/// 45 s therefore accepts that a plugged car may start. That is bounded and cheap: the
+/// moment the pilot reports, `charge_state` becomes valid, evcc stops rejecting it and
+/// takes over within its next cycle — which is exactly the outcome the probe exists to
+/// produce.
+const PILOT_PROBE_WINDOW: Duration = Duration::from_secs(45);
 
 /// One control tick's outputs: the per-phase current to hand to the slave and the
 /// retained status JSON to publish.
@@ -99,6 +119,14 @@ pub struct Controller {
     /// persisted to NVS — a probe is a manual measurement, never a reboot survivor.
     probe_over: f32,
     probe_at: Option<Instant>,
+    /// Post-boot pilot probe (#161): when it started, or `None` if it has not run
+    /// yet this boot. One shot only — a second one would be a repeat offer nobody
+    /// asked for, and the first either resolved the pilot or the box is not talking.
+    pilot_probe_at: Option<Instant>,
+    pilot_probed: bool,
+    /// Boot instant, so the probe delay is measured from a fixed point rather than
+    /// from whichever input last arrived.
+    boot_at: Instant,
     /// Persisted-setpoint store: the last `target`/`enable` are written here on change
     /// and restored on boot so an OTA/reboot resumes instead of cold-start pausing.
     /// `None` if NVS could not be opened — persistence off, the box still runs.
@@ -123,6 +151,9 @@ impl Controller {
             cn28_at: now,
             probe_over: 0.0,
             probe_at: None,
+            pilot_probe_at: None,
+            pilot_probed: false,
+            boot_at: now,
             nvs: None,
         };
         // Open the persistence namespace and restore the last commanded setpoint, so
@@ -252,6 +283,41 @@ impl Controller {
     /// return it alongside the retained status JSON. `last_poll_age_s` (the
     /// slave-stamped RS485 liveness) is supplied by the caller from the [`Handoff`],
     /// since this struct no longer sees the poll.
+    /// Whether the bounded post-boot pilot probe should open the offer this tick (#161).
+    ///
+    /// The control pilot is transition-only, so a reboot with a vehicle plugged in and
+    /// *idle* leaves it unknown forever: nothing changes, so the box never reports, so
+    /// `charge_state` stays empty, so evcc rejects it and commands nothing — and that
+    /// is what keeps nothing from changing. Measured 2026-08-16; it cost an afternoon
+    /// of PV surplus. Moving the offered current is the only lever that breaks the
+    /// cycle, and it demonstrably does (`None` -> `B` -> `C` after a single enable).
+    ///
+    /// Fires at most once per boot, only while the pilot is still unknown, and only
+    /// after a delay long enough for a real transition — someone plugging in, evcc
+    /// resuming — to resolve it first. With nothing plugged in it cannot start
+    /// anything; with a vehicle plugged in the window is short, and if the car does
+    /// engage, evcc regains a valid status within its next cycle and takes over, which
+    /// is the whole point of the probe.
+    fn pilot_probe_active(&mut self, now: Instant) -> bool {
+        if self.cn28_cp_state.is_some() || self.pilot_probed {
+            return false;
+        }
+        match self.pilot_probe_at {
+            Some(started) if now.saturating_duration_since(started) < PILOT_PROBE_WINDOW => true,
+            Some(_) => {
+                self.pilot_probed = true;
+                warn!("pilot probe window closed, pilot still unknown");
+                false
+            }
+            None if now.saturating_duration_since(self.boot_at) >= PILOT_PROBE_DELAY => {
+                self.pilot_probe_at = Some(now);
+                warn!("pilot unknown since boot, opening the offer briefly to make the box report");
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn tick(&mut self, now: Instant, last_poll_age_s: f32) -> Tick {
         let grid_stale = now.saturating_duration_since(self.grid_at) > GRID_TIMEOUT;
         let cn28_stale = now.saturating_duration_since(self.cn28_at) > CN28_TIMEOUT;
@@ -260,6 +326,8 @@ impl Controller {
         // charger sets the current on-change and holds it, so a target timeout would
         // deadlock (box forgets → pauses → evcc never re-sends). The grid heartbeat
         // carries the "controller is alive" failsafe instead (#136).
+        // Hoisted out of the struct literal below: it takes &mut self.
+        let pilot_probe = self.pilot_probe_active(now);
         let reported = grant_tracking_current(&GrantControlInputs {
             max: Ampere(MAX_BOX_AMPERE),
             min_charge: Ampere(MIN_CHARGE_AMPERE),
@@ -271,6 +339,7 @@ impl Controller {
             lb_stale: cn28_stale,
             grid_stale,
             enabled: self.enabled,
+            pilot_probe,
         })
         .0;
 
