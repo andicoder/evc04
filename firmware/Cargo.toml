@@ -1,6 +1,6 @@
 [package]
 name = "evc04-cn28-prober"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.82"
 description = "ESP32 (Xtensa) interactive CN28 LOG remote prober — sends MQTT-driven bytes to CN28, publishes raw responses."
