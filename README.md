@@ -30,4 +30,4 @@ MQTT and self-updates over OTA. Built and flashed locally, not in CI.
 
 ## License
 
-TBD.
+[MIT](LICENSE).
