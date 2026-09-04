@@ -558,6 +558,24 @@ those were kept nowhere. So:
 - **The fault is sticky** (`fault` on the telemetry topic, see
   [`cn28-log-protocol.md`](cn28-log-protocol.md)) — the box now remembers.
 
+Only the firmware's own records leave the box. Everything from this crate and
+`core` carries an `evc04` target prefix; third-party crates (esp-idf-svc, the MQTT
+and HTTP clients) arrive through the `log` bridge under the target `log` and are
+dropped — their diagnostics are not ours to ship, and on a bounded queue they
+crowd out the records that are.
+
+Verbosity is switchable at runtime, because the box is sealed and every other way
+to change it costs an OTA:
+
+```
+evc04/device/log_level    (in)  {"level":"debug"}  |  {"level":"info"}
+```
+
+`debug` adds the per-window CN28 chatter and **expires on its own after 15
+minutes**, the same bounded-diagnostic shape as the measurement probe — a
+forgotten debug session would out-run the exporter queue and drown the records it
+was switched on to find.
+
 The plane is built so it can never endanger the meter poll: emitting a record is a
 `try_send` onto a bounded queue that **drops** when the collector is unreachable, all
 network work happens on the SDK's own exporter thread, and that thread runs inside

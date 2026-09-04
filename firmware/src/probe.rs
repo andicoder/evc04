@@ -203,6 +203,10 @@ fn worker_loop(
             }
             Ok(InMsg::SetBaud(rate)) => set_baud(mqtt, uart, rate)?,
             Ok(InMsg::Ota(payload)) => device::run_ota(mqtt, &payload)?,
+            Ok(InMsg::LogLevel(parsed)) => match parsed {
+                Ok(level) => crate::logging::set_level(level, uptime_ms()),
+                Err(e) => warn!(error = ?e, "rejected log-level payload"),
+            },
             Ok(InMsg::Target(parsed)) => controller.apply_target(parsed, Instant::now()),
             Ok(InMsg::GridPower(parsed)) => controller.apply_grid_power(parsed, Instant::now()),
             Ok(InMsg::Enable(parsed)) => controller.apply_enable(parsed),
@@ -244,7 +248,9 @@ fn worker_loop(
 /// always gets a failsafe-correct value (a stale measurement engages the pause) even
 /// while WiFi/MQTT is down (#87).
 fn tick_control(controller: &mut Controller, handoff: &Handoff) -> Tick {
-    let now_ms = (unsafe { esp_timer_get_time() } / 1000) as u32;
+    let now_ms = uptime_ms();
+    // A raised debug level is bounded; this is what walks it back down (#3).
+    crate::logging::tick_level_expiry(now_ms);
     let last_poll_age_s = now_ms.wrapping_sub(handoff.last_poll_ms()) as f32 / 1000.0;
     let tick = controller.tick(Instant::now(), last_poll_age_s);
     handoff.set_reported(tick.reported);
@@ -289,7 +295,7 @@ fn log_control_transition(tick: &Tick) {
 /// Emit the full status on a fixed cadence, whether or not anything moved.
 /// Without it a healthy box and a dead one look the same in the log.
 fn log_health(tick: &Tick) {
-    let now_ms = (unsafe { esp_timer_get_time() } / 1000) as u32;
+    let now_ms = uptime_ms();
     let last = LAST_HEALTH_MS.load(Ordering::Relaxed);
     if last == 0 || now_ms.wrapping_sub(last) >= HEALTH_INTERVAL.as_millis() as u32 {
         LAST_HEALTH_MS.store(now_ms, Ordering::Relaxed);
@@ -437,6 +443,13 @@ fn record_line(telemetry: &mut Cn28Snapshot, line: &[u8]) -> bool {
             false
         }
     }
+}
+
+/// Milliseconds since boot (`esp_timer`), the monotonic clock the control path
+/// and the log-level expiry share. Wraps roughly every 49 days; every comparison
+/// on it uses wrapping arithmetic.
+fn uptime_ms() -> u32 {
+    (unsafe { esp_timer_get_time() } / 1000) as u32
 }
 
 /// Milliseconds since the Unix epoch, so a fault's first sighting lines up with

@@ -18,8 +18,9 @@ use esp_idf_svc::mqtt::client::{
     EspMqttClient, EspMqttConnection, EventPayload, LwtConfiguration, MqttClientConfiguration, QoS,
 };
 use evc04_cn28_core::charge::intake::{parse_ampere, parse_enable, parse_watt, IntakeError};
+use evc04_cn28_core::device::log_level::{parse_log_level, LogLevel};
 use evc04_cn28_core::probe::{baud, command};
-use tracing::warn;
+use tracing::{debug, info, warn};
 
 const TOPIC_CMD: &str = "evc04/cn28/cmd";
 const TOPIC_BAUD: &str = "evc04/cn28/baud";
@@ -28,6 +29,10 @@ const TOPIC_BAUD: &str = "evc04/cn28/baud";
 // durable `evc04/device/*` namespace rather than the prober's `cn28/*` topics.
 const TOPIC_OTA: &str = "evc04/device/ota";
 const TOPIC_OTA_STATUS: &str = "evc04/device/ota/status";
+/// Runtime verbosity (#3): `{"level":"debug"|"info"}`. Device-scoped like OTA —
+/// it outlives the CN28 role. `debug` self-expires, so a forgotten session
+/// cannot keep flooding the collector.
+const TOPIC_LOG_LEVEL: &str = "evc04/device/log_level";
 #[cfg(feature = "raw-debug")]
 const TOPIC_RAW: &str = "evc04/cn28/raw";
 #[cfg(feature = "raw-debug")]
@@ -72,6 +77,7 @@ pub enum InMsg {
     Probe(Vec<u8>),
     SetBaud(u32),
     Ota(String),
+    LogLevel(Result<LogLevel, IntakeError>),
     Target(Result<f32, IntakeError>),
     GridPower(Result<f32, IntakeError>),
     Enable(Result<bool, IntakeError>),
@@ -120,6 +126,7 @@ impl Mqtt {
             TOPIC_CMD,
             TOPIC_BAUD,
             TOPIC_OTA,
+            TOPIC_LOG_LEVEL,
             TOPIC_CTRL_TARGET,
             TOPIC_CTRL_GRID_POWER,
             TOPIC_CTRL_ENABLE,
@@ -134,6 +141,7 @@ impl Mqtt {
     pub fn publish_status_online(&mut self) -> Result<()> {
         self.client
             .publish(TOPIC_STATUS, QoS::AtLeastOnce, true, b"online")?;
+        debug!(topic = TOPIC_STATUS, "published liveness heartbeat");
         Ok(())
     }
 
@@ -142,6 +150,13 @@ impl Mqtt {
     pub fn publish_charge_status(&mut self, json: &str) -> Result<()> {
         self.client
             .publish(TOPIC_CTRL_STATUS, QoS::AtLeastOnce, true, json.as_bytes())?;
+        // Debug: this is the ~1 Hz control heartbeat. What it *carries* is already
+        // on the record through the health and transition records (#3).
+        debug!(
+            topic = TOPIC_CTRL_STATUS,
+            bytes = json.len(),
+            "published charge status"
+        );
         Ok(())
     }
 
@@ -149,6 +164,11 @@ impl Mqtt {
     pub fn publish_telemetry(&mut self, json: &str) -> Result<()> {
         self.client
             .publish(TOPIC_TELEMETRY, QoS::AtLeastOnce, true, json.as_bytes())?;
+        debug!(
+            topic = TOPIC_TELEMETRY,
+            bytes = json.len(),
+            "published telemetry"
+        );
         Ok(())
     }
 
@@ -156,15 +176,23 @@ impl Mqtt {
     pub fn publish_version(&mut self, json: &str) -> Result<()> {
         self.client
             .publish(TOPIC_VERSION, QoS::AtLeastOnce, true, json.as_bytes())?;
+        info!(
+            topic = TOPIC_VERSION,
+            version = json,
+            "published build identity"
+        );
         Ok(())
     }
 
     /// Retained Home Assistant discovery configs (dynamic `homeassistant/…` topics).
     pub fn publish_discovery(&mut self, messages: Vec<(String, String)>) -> Result<()> {
+        let mut count = 0usize;
         for (topic, payload) in messages {
             self.client
                 .publish(&topic, QoS::AtLeastOnce, true, payload.as_bytes())?;
+            count += 1;
         }
+        info!(entities = count, "published home assistant discovery");
         Ok(())
     }
 
@@ -185,20 +213,23 @@ impl Mqtt {
     pub fn publish_ota_status(&mut self, status: &str) -> Result<()> {
         self.client
             .publish(TOPIC_OTA_STATUS, QoS::AtLeastOnce, false, status.as_bytes())?;
+        info!(topic = TOPIC_OTA_STATUS, status, "published ota status");
         Ok(())
     }
 
     /// Delete the retained OTA trigger (a zero-length retained publish removes it)
     /// so a stale URL can never re-fire an OTA on the next reconnect (#76).
     pub fn clear_ota_trigger(&mut self) -> Result<()> {
-        self.client.publish(TOPIC_OTA, QoS::AtLeastOnce, true, b"")?;
+        self.client
+            .publish(TOPIC_OTA, QoS::AtLeastOnce, true, b"")?;
         Ok(())
     }
 
     /// Non-retained raw capture views (capture/discovery debug only, #110).
     #[cfg(feature = "raw-debug")]
     pub fn publish_raw(&mut self, raw: &[u8], hex: &str, ascii: &str) -> Result<()> {
-        self.client.publish(TOPIC_RAW, QoS::AtLeastOnce, false, raw)?;
+        self.client
+            .publish(TOPIC_RAW, QoS::AtLeastOnce, false, raw)?;
         self.client
             .publish(TOPIC_RAW_HEX, QoS::AtLeastOnce, false, hex.as_bytes())?;
         self.client
@@ -245,6 +276,9 @@ fn spawn_connection_pump(mut connection: EspMqttConnection, tx: mpsc::Sender<InM
                                 if !data.is_empty() {
                                     let _ = tx.send(InMsg::Ota(payload.to_string()));
                                 }
+                            }
+                            Some(t) if t == TOPIC_LOG_LEVEL => {
+                                let _ = tx.send(InMsg::LogLevel(parse_log_level(payload)));
                             }
                             Some(t) if t == TOPIC_CTRL_TARGET => {
                                 let _ = tx.send(InMsg::Target(parse_ampere(payload)));
