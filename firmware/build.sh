@@ -3,7 +3,7 @@
 # Sources the espup env, adds the libxml2/ICU compat shim esp-clang needs on
 # rolling distros (staged by bootstrap.sh), and defaults WiFi/MQTT to
 # placeholders so the build never fails on an unset env! — export real values
-# before flashing.
+# before flashing (WIFI_SSID, WIFI_PASSWORD, MQTT_URL, OTLP_LOGS_URL).
 #
 #   ./build.sh                # debug build
 #   ./build.sh --release
@@ -22,7 +22,13 @@ COMPAT="$HOME/.espressif/compat-libs"
 : "${WIFI_SSID:=placeholder}"
 : "${WIFI_PASSWORD:=placeholder}"
 : "${MQTT_URL:=mqtt://localhost:1883}"
-export WIFI_SSID WIFI_PASSWORD MQTT_URL
+# Full OTLP *logs* endpoint (#3) — the collector's signal URL, not its base.
+: "${OTLP_LOGS_URL:=http://localhost:4318/v1/logs}"
+# OTLP_LOGS_AUTH is deliberately NOT defaulted: the firmware reads it with
+# option_env!, so an unset variable means "post unauthenticated" rather than a
+# build failure or a bogus Authorization header.
+export WIFI_SSID WIFI_PASSWORD MQTT_URL OTLP_LOGS_URL
+[ -n "${OTLP_LOGS_AUTH:-}" ] && export OTLP_LOGS_AUTH
 
 cd "$(dirname "$0")"
 

@@ -30,7 +30,7 @@ use evc04_cn28_core::charge::control::{
 use evc04_cn28_core::charge::intake::IntakeError;
 use evc04_cn28_core::charge::status::{charge_state, status_json, Status};
 use evc04_cn28_core::probe::cn28::CpState;
-use log::warn;
+use tracing::warn;
 
 const MAX_BOX_AMPERE: f32 = 16.0;
 const MIN_CHARGE_AMPERE: f32 = 6.0;
@@ -164,7 +164,7 @@ impl Controller {
                 controller.restore_from(&nvs);
                 controller.nvs = Some(nvs);
             }
-            Err(e) => warn!("charge: NVS open failed, persistence off: {e:#}"),
+            Err(e) => warn!(error = ?e, "charge: NVS open failed, persistence off"),
         }
         controller
     }
@@ -187,7 +187,7 @@ impl Controller {
     fn persist_target(&self, v: f32) {
         if let Some(nvs) = &self.nvs {
             if let Err(e) = nvs.set_u32(NVS_KEY_TARGET, v.to_bits()) {
-                warn!("charge: persist target failed: {e:#}");
+                warn!(error = ?e, "charge: persist target failed");
             }
         }
     }
@@ -195,7 +195,7 @@ impl Controller {
     fn persist_enable(&self, b: bool) {
         if let Some(nvs) = &self.nvs {
             if let Err(e) = nvs.set_u8(NVS_KEY_ENABLE, b as u8) {
-                warn!("charge: persist enable failed: {e:#}");
+                warn!(error = ?e, "charge: persist enable failed");
             }
         }
     }
@@ -259,7 +259,11 @@ impl Controller {
                 self.probe_over = v;
                 self.probe_at = (v > 0.0).then_some(now);
                 self.last_error = None;
-                warn!("probe_over set to {v} A (auto-expires in {PROBE_TIMEOUT:?})");
+                warn!(
+                    ampere = v,
+                    expires_in_s = PROBE_TIMEOUT.as_secs(),
+                    "probe_over armed"
+                );
             }
             Ok(v) => self.last_error = Some(format!("probe_over out of range: {v}")),
             Err(e) => self.last_error = Some(format!("bad probe_over: {e:?}")),

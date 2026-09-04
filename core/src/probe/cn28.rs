@@ -353,6 +353,28 @@ pub struct PhaseReading {
     pub wh: u32,
 }
 
+/// A fault the box raised and has not explicitly retracted (#3). It survives an
+/// unrelated `CLEAR:` on purpose: the box's own error field is edge-triggered, so
+/// without stickiness a fault that ended before anyone looked is unreportable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fault {
+    pub code: u16,
+    /// Milliseconds (caller's clock) when this code was first seen.
+    pub first_seen_ms: u64,
+    /// How often the box has raised this code since then.
+    pub count: u32,
+}
+
+/// What one LOG line was. `Blank` exists so the empty lines the box pads its
+/// bursts with never count as parse failures — the counter (#3) is only useful
+/// if every increment means real wreckage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineOutcome {
+    Applied,
+    Blank,
+    Unparsed,
+}
+
 /// The latest-seen value of each CN28 LOG field, accumulated across probe
 /// windows so a truncated window's gaps stay filled from earlier ones. A field
 /// that has never appeared is `None` and serialises as `null`.
@@ -367,8 +389,9 @@ pub struct Cn28Snapshot {
     /// `Any metering device NOT detected!`. Only the negative is currently
     /// recognised (no known positive token), so it never flips back to `true`.
     pub meter_detected: Option<bool>,
-    /// The most recent `ERROR: {n}` code, or `None` if none has been seen.
-    pub last_error: Option<u16>,
+    /// The standing fault (#3): raised by `ERROR: {n}`, cleared only by a
+    /// `CLEAR:` naming the *same* code.
+    pub fault: Option<Fault>,
     /// Control-pilot state from the last `S:` line — the live plug/charge state.
     pub cp_state: Option<CpState>,
     /// A phase payload whose label a splice destroyed, held until the next record
@@ -384,7 +407,8 @@ impl Cn28Snapshot {
 
     /// Fold a decoded record into the snapshot, overwriting that field's value.
     /// A `NoData` fault clears the named phase — its last reading is stale.
-    pub fn apply(&mut self, record: LogRecord) {
+    /// `now_ms` stamps a newly-opened fault; it is ignored by every other record.
+    pub fn apply(&mut self, record: LogRecord, now_ms: u64) {
         // A held unlabelled payload survives exactly one record: the burst prints
         // P1, P2, P3 back to back (protocol doc §1), so it is phase 1 if and only if
         // a labelled P2 follows it immediately. Anything else and it is dropped —
@@ -420,8 +444,14 @@ impl Cn28Snapshot {
             }
             LogRecord::MeterNotDetected => self.meter_detected = Some(false),
             LogRecord::ProbeDetected(_) => self.meter_detected = Some(true),
-            LogRecord::Error(code) => self.last_error = Some(code),
-            LogRecord::Clear(_) => self.last_error = None,
+            LogRecord::Error(code) => self.raise_fault(code, now_ms),
+            // Only the code the box names is retracted; a CLEAR for anything else
+            // leaves the standing fault alone (#3).
+            LogRecord::Clear(code) => {
+                if self.fault.is_some_and(|f| f.code == code) {
+                    self.fault = None;
+                }
+            }
             LogRecord::CpStatus { state, .. } => self.cp_state = Some(state),
             // A cut ends the session, and the box prints no `LB current` while
             // idle — without this the last grant would stay latched and mislead
@@ -435,15 +465,31 @@ impl Cn28Snapshot {
         }
     }
 
-    /// Decode one LOG line and apply it. Returns `true` if the line was a
-    /// recognised record (and thus updated the snapshot), `false` for junk.
-    pub fn apply_line(&mut self, line: &str) -> bool {
+    /// Decode one LOG line and apply it, reporting what the line turned out to be
+    /// so the caller can log a parse failure without re-deciding it here.
+    pub fn apply_line(&mut self, line: &str, now_ms: u64) -> LineOutcome {
         match parse_line(line) {
             Some(record) => {
-                self.apply(record);
-                true
+                self.apply(record, now_ms);
+                LineOutcome::Applied
             }
-            None => false,
+            None if line.trim().is_empty() => LineOutcome::Blank,
+            None => LineOutcome::Unparsed,
+        }
+    }
+
+    /// Open a fault, or count another sighting of the one already standing. A
+    /// different code replaces it: the newest fault is the one worth reporting.
+    fn raise_fault(&mut self, code: u16, now_ms: u64) {
+        match self.fault {
+            Some(ref mut f) if f.code == code => f.count += 1,
+            _ => {
+                self.fault = Some(Fault {
+                    code,
+                    first_seen_ms: now_ms,
+                    count: 1,
+                })
+            }
         }
     }
 
@@ -457,7 +503,7 @@ impl Cn28Snapshot {
         format!(
             "{{\"p1\":{},\"p2\":{},\"p3\":{},\"temp_c\":{},\
              \"ev_current_a\":{},\"max_offered_a\":{},\"lb_current_a\":{},\
-             \"meter_detected\":{},\"last_error\":{},\"cp_state\":{}}}",
+             \"meter_detected\":{},\"fault\":{},\"cp_state\":{}}}",
             phase_json(&self.phases[0]),
             phase_json(&self.phases[1]),
             phase_json(&self.phases[2]),
@@ -466,7 +512,7 @@ impl Cn28Snapshot {
             opt_json(self.max_offered_a),
             opt_json(self.lb_current_a),
             opt_json(self.meter_detected),
-            opt_json(self.last_error),
+            fault_json(&self.fault),
             cp_state,
         )
     }
@@ -474,6 +520,17 @@ impl Cn28Snapshot {
     /// 1-based phase number → its slot, or `None` for an out-of-range phase.
     fn phase_slot(&mut self, phase: u8) -> Option<&mut Option<PhaseReading>> {
         self.phases.get_mut(phase.checked_sub(1)? as usize)
+    }
+}
+
+/// The standing fault as a nested JSON object, or `null` while healthy.
+fn fault_json(fault: &Option<Fault>) -> String {
+    match fault {
+        Some(f) => format!(
+            "{{\"code\":{},\"first_seen_ms\":{},\"count\":{}}}",
+            f.code, f.first_seen_ms, f.count
+        ),
+        None => String::from("null"),
     }
 }
 
@@ -519,8 +576,10 @@ impl LineReassembler {
     }
 
     /// Feed a chunk; return every line that terminated within it (CR/LF stripped),
-    /// in order. The trailing partial line, if any, is kept for the next call.
-    pub fn push(&mut self, bytes: &[u8]) -> Vec<String> {
+    /// in order, as raw bytes — a line carrying wreckage must survive verbatim
+    /// for the forensic hex dump (#3). The trailing partial line, if any, is kept
+    /// for the next call.
+    pub fn push(&mut self, bytes: &[u8]) -> Vec<Vec<u8>> {
         let mut lines = Vec::new();
         for &byte in bytes {
             if byte == b'\n' {
@@ -532,7 +591,7 @@ impl LineReassembler {
                     if line.last() == Some(&b'\r') {
                         line = &line[..line.len() - 1];
                     }
-                    lines.push(String::from_utf8_lossy(line).into_owned());
+                    lines.push(line.to_vec());
                 }
                 self.buf.clear();
             } else if !self.discarding {
@@ -622,14 +681,17 @@ mod tests {
     fn empty_snapshot_serializes_every_field_as_null() {
         assert_eq!(
             Cn28Snapshot::new().to_json(),
-            r#"{"p1":null,"p2":null,"p3":null,"temp_c":null,"ev_current_a":null,"max_offered_a":null,"lb_current_a":null,"meter_detected":null,"last_error":null,"cp_state":null}"#
+            r#"{"p1":null,"p2":null,"p3":null,"temp_c":null,"ev_current_a":null,"max_offered_a":null,"lb_current_a":null,"meter_detected":null,"fault":null,"cp_state":null}"#
         );
     }
 
     #[test]
     fn apply_line_records_a_phase_reading() {
         let mut snap = Cn28Snapshot::new();
-        assert!(snap.apply_line("P2:\tV: 234974\tA: 16046\tW: 3739\tWh: 2624"));
+        assert_eq!(
+            snap.apply_line("P2:\tV: 234974\tA: 16046\tW: 3739\tWh: 2624", 0),
+            LineOutcome::Applied
+        );
         assert_eq!(
             snap.phases[1],
             Some(PhaseReading {
@@ -644,10 +706,10 @@ mod tests {
     #[test]
     fn apply_line_records_temp_and_control_currents() {
         let mut snap = Cn28Snapshot::new();
-        snap.apply_line("Temp: 52 C ");
-        snap.apply_line("ev current: 16");
-        snap.apply_line("max_offered_current: 14");
-        snap.apply_line("lb current:10");
+        snap.apply_line("Temp: 52 C ", 0);
+        snap.apply_line("ev current: 16", 0);
+        snap.apply_line("max_offered_current: 14", 0);
+        snap.apply_line("lb current:10", 0);
         assert_eq!(snap.temp_c, Some(52));
         assert_eq!(snap.ev_current_a, Some(16));
         assert_eq!(snap.max_offered_a, Some(14));
@@ -657,24 +719,24 @@ mod tests {
     #[test]
     fn a_pwm_stop_zeroes_the_grant() {
         let mut snap = Cn28Snapshot::new();
-        snap.apply_line("lb current:10");
-        snap.apply_line("Stop Pwm1");
+        snap.apply_line("lb current:10", 0);
+        snap.apply_line("Stop Pwm1", 0);
         assert_eq!(snap.lb_current_a, Some(0));
     }
 
     #[test]
     fn a_power_cut_zeroes_the_grant() {
         let mut snap = Cn28Snapshot::new();
-        snap.apply_line("lb current:10");
-        snap.apply_line("Powercut Detected");
+        snap.apply_line("lb current:10", 0);
+        snap.apply_line("Powercut Detected", 0);
         assert_eq!(snap.lb_current_a, Some(0));
     }
 
     #[test]
     fn a_no_data_fault_invalidates_that_phase() {
         let mut snap = Cn28Snapshot::new();
-        snap.apply_line("P1:\tV: 237132\tA: 63\tW: 2\tWh: 0");
-        snap.apply_line("No data received from P1!");
+        snap.apply_line("P1:\tV: 237132\tA: 63\tW: 2\tWh: 0", 0);
+        snap.apply_line("No data received from P1!", 0);
         assert_eq!(snap.phases[0], None);
     }
 
@@ -789,8 +851,11 @@ mod tests {
         // so an unlabelled payload immediately before a labelled P2 is P1. Observed
         // in 13 of 13 bursts.
         let mut snap = Cn28Snapshot::new();
-        snap.apply_line("MP lb current: 6b c:\tV: 239202\tA: 45\tW: 3\tWh: 150190");
-        snap.apply_line("P2:\tV: 232934\tA: 18\tW: 0\tWh: 147965");
+        snap.apply_line(
+            "MP lb current: 6b c:\tV: 239202\tA: 45\tW: 3\tWh: 150190",
+            0,
+        );
+        snap.apply_line("P2:\tV: 232934\tA: 18\tW: 0\tWh: 147965", 0);
         assert_eq!(
             snap.phases[0],
             Some(PhaseReading {
@@ -805,7 +870,10 @@ mod tests {
     #[test]
     fn an_unlabelled_payload_on_its_own_is_never_recorded() {
         let mut snap = Cn28Snapshot::new();
-        snap.apply_line("MP lb current: 6b c:\tV: 239202\tA: 45\tW: 3\tWh: 150190");
+        snap.apply_line(
+            "MP lb current: 6b c:\tV: 239202\tA: 45\tW: 3\tWh: 150190",
+            0,
+        );
         assert_eq!(snap.phases[0], None);
     }
 
@@ -814,8 +882,11 @@ mod tests {
         // Anything but the documented successor means this was not the burst head;
         // guessing would fabricate a phase label.
         let mut snap = Cn28Snapshot::new();
-        snap.apply_line("MP lb current: 6b c:\tV: 239202\tA: 45\tW: 3\tWh: 150190");
-        snap.apply_line("P3:\tV: 238729\tA: 18\tW: 0\tWh: 149400");
+        snap.apply_line(
+            "MP lb current: 6b c:\tV: 239202\tA: 45\tW: 3\tWh: 150190",
+            0,
+        );
+        snap.apply_line("P3:\tV: 238729\tA: 18\tW: 0\tWh: 149400", 0);
         assert_eq!(snap.phases[0], None);
         assert!(snap.phases[2].is_some(), "P3 itself must still be recorded");
     }
@@ -823,7 +894,7 @@ mod tests {
     #[test]
     fn a_clean_p1_line_still_takes_the_direct_path() {
         let mut snap = Cn28Snapshot::new();
-        snap.apply_line("P1:\tV: 234841\tA: 16150\tW: 3761\tWh: 2661");
+        snap.apply_line("P1:\tV: 234841\tA: 16150\tW: 3761\tWh: 2661", 0);
         assert_eq!(
             snap.phases[0],
             Some(PhaseReading {
@@ -838,23 +909,26 @@ mod tests {
     #[test]
     fn apply_line_leaves_the_snapshot_untouched_on_junk() {
         let mut snap = Cn28Snapshot::new();
-        snap.apply_line("Temp: 33 C ");
+        snap.apply_line("Temp: 33 C ", 0);
         let before = snap.clone();
-        assert!(!snap.apply_line("6136\tW: 3774\tWh: 2661"));
+        assert_eq!(
+            snap.apply_line("6136\tW: 3774\tWh: 2661", 0),
+            LineOutcome::Unparsed
+        );
         assert_eq!(snap, before);
     }
 
     #[test]
     fn serializes_a_populated_snapshot() {
         let mut snap = Cn28Snapshot::new();
-        snap.apply_line("P1:\tV: 234841\tA: 16150\tW: 3761\tWh: 2661");
-        snap.apply_line("Temp: 52 C ");
-        snap.apply_line("ev current: 16");
-        snap.apply_line("max_offered_current: 16");
-        snap.apply_line("lb current:16");
+        snap.apply_line("P1:\tV: 234841\tA: 16150\tW: 3761\tWh: 2661", 0);
+        snap.apply_line("Temp: 52 C ", 0);
+        snap.apply_line("ev current: 16", 0);
+        snap.apply_line("max_offered_current: 16", 0);
+        snap.apply_line("lb current:16", 0);
         assert_eq!(
             snap.to_json(),
-            r#"{"p1":{"v_mv":234841,"a_ma":16150,"w":3761,"wh":2661},"p2":null,"p3":null,"temp_c":52,"ev_current_a":16,"max_offered_a":16,"lb_current_a":16,"meter_detected":null,"last_error":null,"cp_state":null}"#
+            r#"{"p1":{"v_mv":234841,"a_ma":16150,"w":3761,"wh":2661},"p2":null,"p3":null,"temp_c":52,"ev_current_a":16,"max_offered_a":16,"lb_current_a":16,"meter_detected":null,"fault":null,"cp_state":null}"#
         );
     }
 
@@ -942,25 +1016,68 @@ mod tests {
     #[test]
     fn a_probe_detected_sets_the_snapshot_flag_true() {
         let mut snap = Cn28Snapshot::new();
-        assert!(snap.apply_line("KLEFR DETECTED"));
+        assert_eq!(snap.apply_line("KLEFR DETECTED", 0), LineOutcome::Applied);
         assert_eq!(snap.meter_detected, Some(true));
     }
 
     #[test]
-    fn a_clear_line_clears_last_error() {
+    fn a_clear_of_the_same_code_closes_the_fault() {
         let mut snap = Cn28Snapshot::new();
-        assert!(snap.apply_line("ERROR: 22"));
-        assert_eq!(snap.last_error, Some(22));
-        assert!(snap.apply_line("CLEAR: 22"));
-        assert_eq!(snap.last_error, None);
+        assert_eq!(snap.apply_line("ERROR: 22", 1_000), LineOutcome::Applied);
+        assert_eq!(snap.fault.map(|f| f.code), Some(22));
+        assert_eq!(snap.apply_line("CLEAR: 22", 2_000), LineOutcome::Applied);
+        assert_eq!(snap.fault, None);
+    }
+
+    #[test]
+    fn a_clear_of_another_code_leaves_the_fault_standing() {
+        // The 2026-09-02 incident (#3): any CLEAR wiped the error field, so the
+        // box could not report a fault it was still carrying.
+        let mut snap = Cn28Snapshot::new();
+        snap.apply_line("ERROR: 22", 1_000);
+        snap.apply_line("CLEAR: 7", 2_000);
+        assert_eq!(snap.fault.map(|f| f.code), Some(22));
+    }
+
+    #[test]
+    fn a_repeating_error_keeps_the_first_sighting_and_counts() {
+        let mut snap = Cn28Snapshot::new();
+        snap.apply_line("ERROR: 22", 1_000);
+        snap.apply_line("ERROR: 22", 9_000);
+        assert_eq!(
+            snap.fault,
+            Some(Fault {
+                code: 22,
+                first_seen_ms: 1_000,
+                count: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn another_error_code_replaces_the_fault_and_restarts_the_count() {
+        let mut snap = Cn28Snapshot::new();
+        snap.apply_line("ERROR: 22", 1_000);
+        snap.apply_line("ERROR: 7", 9_000);
+        assert_eq!(
+            snap.fault,
+            Some(Fault {
+                code: 7,
+                first_seen_ms: 9_000,
+                count: 1,
+            })
+        );
     }
 
     #[test]
     fn a_powercut_is_recognised_without_changing_state() {
         let mut snap = Cn28Snapshot::new();
-        assert!(snap.apply_line("Powercut Detected"));
+        assert_eq!(
+            snap.apply_line("Powercut Detected", 0),
+            LineOutcome::Applied
+        );
         assert_eq!(snap.meter_detected, None);
-        assert_eq!(snap.last_error, None);
+        assert_eq!(snap.fault, None);
     }
 
     #[test]
@@ -1007,12 +1124,18 @@ mod tests {
     #[test]
     fn a_cp_state_line_sets_the_snapshot_and_serializes_the_letter() {
         let mut snap = Cn28Snapshot::new();
-        assert!(snap.apply_line("S:C2 Auth:1 D:281 Cmax:16 Ph:3 Relay:7"));
+        assert_eq!(
+            snap.apply_line("S:C2 Auth:1 D:281 Cmax:16 Ph:3 Relay:7", 0),
+            LineOutcome::Applied
+        );
         assert_eq!(snap.cp_state, Some(CpState::Charging));
         let json = snap.to_json();
         assert!(json.contains(r#""cp_state":"C""#), "{json}");
         // A later connected-idle line flips it to B.
-        assert!(snap.apply_line("S:B1 Auth:1 D:0 Cmax:0 Ph:3 Relay:7"));
+        assert_eq!(
+            snap.apply_line("S:B1 Auth:1 D:0 Cmax:0 Ph:3 Relay:7", 0),
+            LineOutcome::Applied
+        );
         assert_eq!(snap.cp_state, Some(CpState::Connected));
     }
 
@@ -1038,61 +1161,100 @@ mod tests {
     #[test]
     fn a_global_meter_not_detected_sets_the_snapshot_flag_false() {
         let mut snap = Cn28Snapshot::new();
-        assert!(snap.apply_line("Any metering device NOT detected!"));
+        assert_eq!(
+            snap.apply_line("Any metering device NOT detected!", 0),
+            LineOutcome::Applied
+        );
         assert_eq!(snap.meter_detected, Some(false));
     }
 
     #[test]
-    fn an_error_line_sets_last_error() {
+    fn an_error_line_opens_a_sticky_fault() {
         let mut snap = Cn28Snapshot::new();
-        assert!(snap.apply_line("ERROR: 22"));
-        assert_eq!(snap.last_error, Some(22));
+        assert_eq!(snap.apply_line("ERROR: 22", 1_000), LineOutcome::Applied);
+        assert_eq!(
+            snap.fault,
+            Some(Fault {
+                code: 22,
+                first_seen_ms: 1_000,
+                count: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn a_blank_line_is_not_a_parse_failure() {
+        // The LOG stream carries empty lines between bursts; counting them as
+        // failures would bury the signal the parse-failure counter exists for.
+        let mut snap = Cn28Snapshot::new();
+        assert_eq!(snap.apply_line("", 0), LineOutcome::Blank);
+        assert_eq!(snap.apply_line("   ", 0), LineOutcome::Blank);
     }
 
     #[test]
     fn detect_process_lines_are_recognised_but_do_not_change_state() {
         let mut snap = Cn28Snapshot::new();
-        assert!(snap.apply_line("PO detect start"));
-        assert!(snap.apply_line("P1_init"));
-        assert!(snap.apply_line("KLEFR NOT DETECTED!"));
+        assert_eq!(snap.apply_line("PO detect start", 0), LineOutcome::Applied);
+        assert_eq!(snap.apply_line("P1_init", 0), LineOutcome::Applied);
+        assert_eq!(
+            snap.apply_line("KLEFR NOT DETECTED!", 0),
+            LineOutcome::Applied
+        );
         assert_eq!(snap.meter_detected, None);
-        assert_eq!(snap.last_error, None);
+        assert_eq!(snap.fault, None);
     }
 
     #[test]
     fn serializes_meter_detection_and_error_fields() {
         let mut snap = Cn28Snapshot::new();
-        snap.apply_line("Any metering device NOT detected!");
-        snap.apply_line("ERROR: 22");
+        snap.apply_line("Any metering device NOT detected!", 0);
+        snap.apply_line("ERROR: 22", 1_000);
         let json = snap.to_json();
         assert!(json.contains(r#""meter_detected":false"#), "{json}");
-        assert!(json.contains(r#""last_error":22"#), "{json}");
+        assert!(
+            json.contains(r#""fault":{"code":22,"first_seen_ms":1000,"count":1}"#),
+            "{json}"
+        );
     }
 
     #[test]
     fn reassembler_emits_a_complete_line() {
         let mut r = LineReassembler::new();
-        assert_eq!(r.push(b"Temp: 33 C\n"), vec!["Temp: 33 C".to_string()]);
+        assert_eq!(r.push(b"Temp: 33 C\n"), alloc::vec![b"Temp: 33 C".to_vec()]);
     }
 
     #[test]
     fn reassembler_buffers_a_token_split_across_chunks() {
         let mut r = LineReassembler::new();
         assert!(r.push(b"P1 NOT DETECTE").is_empty());
-        assert_eq!(r.push(b"D!\n"), vec!["P1 NOT DETECTED!".to_string()]);
+        assert_eq!(r.push(b"D!\n"), alloc::vec![b"P1 NOT DETECTED!".to_vec()]);
     }
 
     #[test]
     fn reassembler_emits_each_line_and_keeps_the_partial_tail() {
         let mut r = LineReassembler::new();
-        assert_eq!(r.push(b"a\nb\nc"), vec!["a".to_string(), "b".to_string()]);
-        assert_eq!(r.push(b"\n"), vec!["c".to_string()]);
+        assert_eq!(
+            r.push(b"a\nb\nc"),
+            alloc::vec![b"a".to_vec(), b"b".to_vec()]
+        );
+        assert_eq!(r.push(b"\n"), alloc::vec![b"c".to_vec()]);
     }
 
     #[test]
     fn reassembler_strips_a_trailing_carriage_return() {
         let mut r = LineReassembler::new();
-        assert_eq!(r.push(b"x\r\n"), vec!["x".to_string()]);
+        assert_eq!(r.push(b"x\r\n"), alloc::vec![b"x".to_vec()]);
+    }
+
+    #[test]
+    fn reassembler_hands_out_the_raw_bytes_of_a_line() {
+        // The forensic case (#3): a line carrying wreckage must reach the log
+        // record byte-for-byte, so lossy UTF-8 replacement cannot happen here.
+        let mut r = LineReassembler::new();
+        assert_eq!(
+            r.push(b"Temp: \xff15042 C\n"),
+            alloc::vec![b"Temp: \xff15042 C".to_vec()]
+        );
     }
 
     #[test]
@@ -1102,6 +1264,6 @@ mod tests {
         assert!(r.push(&huge).is_empty());
         // The overflowed head is dropped; the next newline resyncs and the
         // following line comes through clean.
-        assert_eq!(r.push(b"junk-tail\nok\n"), vec!["ok".to_string()]);
+        assert_eq!(r.push(b"junk-tail\nok\n"), alloc::vec![b"ok".to_vec()]);
     }
 }

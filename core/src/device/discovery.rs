@@ -246,9 +246,9 @@ pub fn cn28_discovery_messages(meta: &DiscoveryMeta) -> Vec<(String, String)> {
         &mut out,
         meta,
         "sensor",
-        "last_error",
-        "Last error",
-        "{{ value_json.last_error }}",
+        "fault_code",
+        "Fault code",
+        "{{ value_json.fault.code if value_json.fault else none }}",
         None,
         None,
         None,
@@ -345,11 +345,15 @@ mod tests {
     #[test]
     fn cn28_set_covers_phases_temp_verdict_and_error() {
         let msgs = cn28_discovery_messages(&meta());
-        // 3 phases x (V/A/W/Wh) + temp + ev + max + lb + meter_detected + last_error + cp_state
+        // 3 phases x (V/A/W/Wh) + temp + ev + max + lb + meter_detected + fault_code + cp_state
         assert_eq!(msgs.len(), 19);
         let topics: Vec<&str> = msgs.iter().map(|(t, _)| t.as_str()).collect();
         assert!(topics.contains(&"homeassistant/sensor/evc04_cn28/p1_voltage/config"));
         assert!(topics.contains(&"homeassistant/sensor/evc04_cn28/p3_energy/config"));
+        assert!(
+            topics.contains(&"homeassistant/sensor/evc04_cn28/fault_code/config"),
+            "{topics:?}"
+        );
         assert!(
             topics.contains(&"homeassistant/binary_sensor/evc04_cn28/meter_detected/config"),
             "{topics:?}"

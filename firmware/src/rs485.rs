@@ -25,7 +25,7 @@ use esp_idf_svc::hal::delay::TickType;
 use esp_idf_svc::hal::uart::UartDriver;
 use esp_idf_svc::sys::{esp_err_t, esp_timer_get_time, ESP_ERR_TIMEOUT};
 use evc04_cn28_core::charge::frame::{build_response, encode_currents, parse_request};
-use log::{info, warn};
+use tracing::{info, warn};
 
 use crate::charge::Handoff;
 
@@ -54,7 +54,12 @@ const READ_BUF: usize = 32;
 /// owns construction of `uart` and moves it onto this thread (#86 will feed the
 /// reported value from MQTT instead of the bench const).
 pub fn run(uart: UartDriver<'static>, handoff: Arc<Handoff>) {
-    info!("rs485: meter slave up (addr {SLAVE_ADDR}, 0x{POLL_REGISTER:04x}×{POLL_QUANTITY}, 9600 8E1)");
+    info!(
+        addr = SLAVE_ADDR,
+        register = POLL_REGISTER,
+        quantity = POLL_QUANTITY,
+        "rs485: meter slave up (9600 8E1)"
+    );
 
     let first = TickType::new_millis(FIRST_BYTE_MS).ticks();
     let gap = TickType::new_millis(READ_GAP_MS).ticks();
@@ -73,7 +78,7 @@ pub fn run(uart: UartDriver<'static>, handoff: Arc<Handoff>) {
                 // (or nothing came), not an error. (Same idiom as the prober.)
                 Err(e) if e.code() == ESP_ERR_TIMEOUT as esp_err_t => break,
                 Err(e) => {
-                    warn!("rs485: uart read error: {e}");
+                    warn!(error = %e, "rs485: uart read error");
                     break;
                 }
             }
@@ -105,7 +110,7 @@ pub fn run(uart: UartDriver<'static>, handoff: Arc<Handoff>) {
         // while we transmit and falls back to receive once the line idles — so there
         // is no direction line to hold; just write the reply.
         if let Err(e) = uart.write(&response) {
-            warn!("rs485: uart write error: {e}");
+            warn!(error = %e, "rs485: uart write error");
         }
     }
 }

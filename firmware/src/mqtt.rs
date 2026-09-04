@@ -19,7 +19,7 @@ use esp_idf_svc::mqtt::client::{
 };
 use evc04_cn28_core::charge::intake::{parse_ampere, parse_enable, parse_watt, IntakeError};
 use evc04_cn28_core::probe::{baud, command};
-use log::warn;
+use tracing::warn;
 
 const TOPIC_CMD: &str = "evc04/cn28/cmd";
 const TOPIC_BAUD: &str = "evc04/cn28/baud";
@@ -236,7 +236,7 @@ fn spawn_connection_pump(mut connection: EspMqttConnection, tx: mpsc::Sender<InM
                                 Ok(rate) => {
                                     let _ = tx.send(InMsg::SetBaud(rate));
                                 }
-                                Err(e) => warn!("bad baud {payload:?}: {e:?}"),
+                                Err(e) => warn!(payload, error = ?e, "rejected baud payload"),
                             },
                             Some(t) if t == TOPIC_OTA => {
                                 // Ignore our own retained-clear (empty payload);
@@ -262,7 +262,7 @@ fn spawn_connection_pump(mut connection: EspMqttConnection, tx: mpsc::Sender<InM
                                 Ok(bytes) => {
                                     let _ = tx.send(InMsg::Probe(bytes));
                                 }
-                                Err(e) => warn!("bad command {payload:?}: {e:?}"),
+                                Err(e) => warn!(payload, error = ?e, "rejected command payload"),
                             },
                         }
                     }
