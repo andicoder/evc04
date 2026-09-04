@@ -23,7 +23,8 @@
 //! pre-sync (1970) timestamp rather than delaying the workers' start.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
@@ -32,14 +33,17 @@ use esp_idf_svc::http::client::{Configuration as HttpConfig, EspHttpConnection};
 use esp_idf_svc::http::Method;
 use esp_idf_svc::io::Write;
 use esp_idf_svc::sntp::EspSntp;
+use evc04_cn28_core::device::log_level::LogLevel;
 use opentelemetry::KeyValue;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_http::{Bytes, HttpClient, HttpError, Request, Response};
 use opentelemetry_otlp::{LogExporter, Protocol, WithExportConfig, WithHttpConfig};
 use opentelemetry_sdk::logs::{BatchConfigBuilder, BatchLogProcessor, SdkLoggerProvider};
 use opentelemetry_sdk::Resource;
-use tracing_subscriber::filter::LevelFilter;
+use tracing::info;
+use tracing_subscriber::filter::{filter_fn, LevelFilter};
 use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::reload;
 use tracing_subscriber::util::SubscriberInitExt;
 
 /// Full OTLP logs endpoint, baked in at build time like the broker URL, e.g.
@@ -76,6 +80,17 @@ const EXPORT_TIMEOUT: Duration = Duration::from_secs(10);
 /// batch is the entire bring-up sequence — the records worth the most when a box
 /// misbehaves (#3).
 static NETWORK_UP: AtomicBool = AtomicBool::new(false);
+/// How long `debug` stays on before falling back to `info`. Bounded and
+/// self-expiring on purpose — the same shape as the measurement probe (#135):
+/// a forgotten debug session out-runs the exporter queue and drowns the very
+/// records it was switched on to find.
+const DEBUG_TTL: Duration = Duration::from_secs(15 * 60);
+/// Swaps the live level filter. A boxed closure rather than the reload handle
+/// itself: the handle's type carries the whole layered-subscriber type with it,
+/// which cannot be written down in a `static`.
+static SET_LEVEL: OnceLock<Box<dyn Fn(LevelFilter) + Send + Sync>> = OnceLock::new();
+/// `esp_timer` milliseconds at which an active `debug` reverts; 0 = not active.
+static DEBUG_UNTIL_MS: AtomicU32 = AtomicU32::new(0);
 /// How long an export waits for the link before trying anyway. Covers a cold boot
 /// (join takes seconds) and a short mid-run drop, without letting a long outage
 /// wedge the exporter thread.
@@ -128,14 +143,68 @@ pub fn init() -> Result<SdkLoggerProvider> {
     // `tracing-log` feature, `try_init` sets up the log compatibility layer
     // itself. Calling `LogTracer::init()` first is what made that fail here —
     // the second registration returns `SetLoggerError`.
+    // The level is reloadable so it can be raised over MQTT: the box is sealed,
+    // and every other way to change verbosity costs an OTA (#3).
+    let (level, handle) = reload::Layer::new(LevelFilter::INFO);
     tracing_subscriber::registry()
-        .with(LevelFilter::INFO)
+        .with(level)
+        .with(filter_fn(is_own_record))
         .with(tracing_subscriber::fmt::layer().with_ansi(false))
         .with(OpenTelemetryTracingBridge::new(&provider))
         .try_init()
         .context("install tracing subscriber")?;
+    let _ = SET_LEVEL.set(Box::new(move |level| {
+        let _ = handle.modify(|filter| *filter = level);
+    }));
 
     Ok(provider)
+}
+
+/// Keep only what this firmware and its `core` emit. Everything of ours shares
+/// the `evc04` prefix — `evc04::cn28` for the wire stream, `evc04_cn28_prober::…`
+/// and `evc04_cn28_core::…` for the module paths. Third-party crates reach us
+/// through the `log` bridge (esp-idf-svc, the MQTT and HTTP clients) and are
+/// dropped here: their diagnostics are not ours to ship, and on a 256-record
+/// queue they crowd out the records that are.
+fn is_own_record(meta: &tracing::Metadata<'_>) -> bool {
+    meta.target().starts_with("evc04")
+}
+
+/// Switch the live verbosity. `debug` self-expires after [`DEBUG_TTL`]; `info`
+/// clears any pending expiry. `now_ms` is the `esp_timer` clock the caller
+/// already holds.
+pub fn set_level(level: LogLevel, now_ms: u32) {
+    let filter = match level {
+        LogLevel::Debug => LevelFilter::DEBUG,
+        LogLevel::Info => LevelFilter::INFO,
+    };
+    match SET_LEVEL.get() {
+        Some(set) => set(filter),
+        // Only possible before `init` ran, i.e. never from the worker loop.
+        None => return,
+    }
+    let until = match level {
+        // `max(1)` keeps 0 meaning "not active" even if the clock lands there.
+        LogLevel::Debug => now_ms.wrapping_add(DEBUG_TTL.as_millis() as u32).max(1),
+        LogLevel::Info => 0,
+    };
+    DEBUG_UNTIL_MS.store(until, Ordering::Relaxed);
+    info!(
+        level = ?level,
+        expires_in_s = if until == 0 { 0 } else { DEBUG_TTL.as_secs() },
+        "log level changed"
+    );
+}
+
+/// Drop an expired `debug` back to `info`. Driven by the ~1 Hz control tick, so
+/// it runs whether or not the broker is reachable.
+pub fn tick_level_expiry(now_ms: u32) {
+    let until = DEBUG_UNTIL_MS.load(Ordering::Relaxed);
+    // Wrapping-safe "now is at or past until": the esp_timer ms counter wraps
+    // roughly every 49 days and the box outlives that.
+    if until != 0 && now_ms.wrapping_sub(until) < u32::MAX / 2 {
+        set_level(LogLevel::Info, now_ms);
+    }
 }
 
 /// Tell the exporter whether the network is usable. Called by [`crate::wifi`] on

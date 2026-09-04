@@ -57,7 +57,7 @@ pub fn parse_enable(payload: &str) -> Result<bool, IntakeError> {
 /// key is absent. The token runs from after the `:` to the next `,`/`}` — good for
 /// the contract's number/bool values; a string value keeps its quotes, so it fails
 /// the number/bool parse above (reported as `BadType`).
-fn field_value<'a>(payload: &'a str, key: &str) -> Option<&'a str> {
+pub(crate) fn field_value<'a>(payload: &'a str, key: &str) -> Option<&'a str> {
     let needle = format!("\"{key}\"");
     let after_key = &payload[payload.find(&needle)? + needle.len()..];
     let after_colon = &after_key[after_key.find(':')? + 1..];
