@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use esp_idf_svc::nvs::{EspDefaultNvs, EspDefaultNvsPartition, EspNvs};
 use evc04_cn28_core::charge::control::{
-    grant_tracking_current, probe_report, Ampere, GrantControlInputs,
+    grant_tracking_current, probe_report, Ampere, GrantControlInputs, GrantReason,
 };
 use evc04_cn28_core::charge::intake::IntakeError;
 use evc04_cn28_core::charge::status::{charge_state, status_json, Status};
@@ -98,6 +98,9 @@ pub struct Tick {
     /// box carried a degraded state for 20 minutes with nothing in the log.
     pub grid_failsafe: bool,
     pub cn28_stale: bool,
+    /// Which rule in the grant law produced `reported`. The served current cannot
+    /// be inverted back into a decision, so the rule says so itself (#3).
+    pub reason: GrantReason,
 }
 
 /// Worker-local control state. Lives only on the prober/worker thread; the value it
@@ -337,7 +340,7 @@ impl Controller {
         // carries the "controller is alive" failsafe instead (#136).
         // Hoisted out of the struct literal below: it takes &mut self.
         let pilot_probe = self.pilot_probe_active(now);
-        let reported = grant_tracking_current(&GrantControlInputs {
+        let grant = grant_tracking_current(&GrantControlInputs {
             max: Ampere(MAX_BOX_AMPERE),
             min_charge: Ampere(MIN_CHARGE_AMPERE),
             pause_margin: Ampere(PAUSE_MARGIN_AMPERE),
@@ -349,8 +352,8 @@ impl Controller {
             grid_stale,
             enabled: self.enabled,
             pilot_probe,
-        })
-        .0;
+        });
+        let reported = grant.current.0;
 
         // Expire a stale probe before applying it (#135 step 6).
         if self
@@ -407,6 +410,7 @@ impl Controller {
             status_json: status_json(&status),
             grid_failsafe: grid_stale,
             cn28_stale,
+            reason: grant.reason,
         }
     }
 }

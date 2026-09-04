@@ -475,6 +475,7 @@ mod tests {
                 enabled: true,
                 pilot_probe: false,
             })
+            .current
             .0;
             b.tick(5.0, Ampere(reported), Ampere(car));
             // The car ramps toward its grant, never past what it wants (target + 1).

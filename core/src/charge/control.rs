@@ -225,13 +225,44 @@ pub struct GrantControlInputs {
 /// Before a session exists neither the pin nor the deficit report applies: the box
 /// refuses to *open* near the floor unless it sees the full offer (the cold-start
 /// kick in the body, live 2026-07-09).
-pub fn grant_tracking_current(inputs: &GrantControlInputs) -> Ampere {
+/// Which rule produced a grant. The served current alone cannot be inverted back
+/// into a decision — a pause and a shut box look identical on the wire — so the
+/// rule names itself instead of the firmware guessing, and instead of `core`
+/// growing a logger it does not want (#3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrantReason {
+    /// A failsafe is active: the grid heartbeat or the CN28 grant feed aged out.
+    /// Overrides everything below it.
+    Failsafe,
+    /// The post-boot pilot probe is briefly opening the offer to make the box
+    /// report its control-pilot state (#161).
+    PilotProbe,
+    /// Held shut: not enabled, no target yet, or a target below the charge floor.
+    Shut,
+    /// The box grants nothing, so the full offer goes out to force a session open.
+    ColdStartKick,
+    /// A session exists but the car is still below target — hold the deficit
+    /// report so the grant survives the contactor lag and the ramp.
+    RampPin,
+    /// Steady state: track the box's own grant toward the target.
+    LbTracking,
+}
+
+/// One grant decision: the current to serve, and the rule that chose it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Grant {
+    pub current: Ampere,
+    pub reason: GrantReason,
+}
+
+pub fn grant_tracking_current(inputs: &GrantControlInputs) -> Grant {
+    let grant = |current, reason| Grant { current, reason };
     let pause = pause_report(inputs.max, inputs.pause_margin);
     // Both failsafes come first and are never overridden: a stale heartbeat or a
     // stale grant means the control layer is blind, and the probe below is only a
     // diagnostic convenience.
     if inputs.grid_stale || inputs.lb_stale {
-        return pause;
+        return grant(pause, GrantReason::Failsafe);
     }
     // Everything below the failsafes that would hold the box shut: not enabled, no
     // target yet, or a target under the floor the car cannot hold.
@@ -246,10 +277,10 @@ pub fn grant_tracking_current(inputs: &GrantControlInputs) -> Ampere {
     // already reporting) and never overrides a failsafe (checked above). The
     // firmware bounds it to one short window per boot.
     if shut && inputs.pilot_probe {
-        return Ampere(0.0);
+        return grant(Ampere(0.0), GrantReason::PilotProbe);
     }
     if shut {
-        return pause;
+        return grant(pause, GrantReason::Shut);
     }
     let target = inputs.target.expect("shut covers the None case");
     // Cold-start kick (live 2026-07-09): near the floor the deficit report `max − target`
@@ -262,7 +293,7 @@ pub fn grant_tracking_current(inputs: &GrantControlInputs) -> Ampere {
     // the process and the box never reopens (live 2026-07-10, PR #157). A one-tick full
     // offer cannot lift an open session either — the box's up clock is ~30 s.
     if inputs.lb.0 <= 0.0 {
-        return Ampere(0.0);
+        return grant(Ampere(0.0), GrantReason::ColdStartKick);
     }
     // Ramp pin, now that a session exists: the box's grant law folds in the live draw
     // (`lb ← car + MAX − reported`), so while the car is still below target the report
@@ -275,14 +306,20 @@ pub fn grant_tracking_current(inputs: &GrantControlInputs) -> Ampere {
         // (grant 5 at target 6, live 2026-07-05). Floor the term so it never
         // exceeds the live draw; the cast is the no_std floor (car ≥ 0, measured).
         let car_whole = (inputs.car.0 as i32) as f32;
-        return Ampere(inputs.max.0 - target.0 + car_whole).clamp(Ampere(0.0), inputs.max);
+        return grant(
+            Ampere(inputs.max.0 - target.0 + car_whole).clamp(Ampere(0.0), inputs.max),
+            GrantReason::RampPin,
+        );
     }
-    lb_tracking_report(
-        inputs.max,
-        target,
-        inputs.lb,
-        inputs.max_over,
-        inputs.min_charge,
+    grant(
+        lb_tracking_report(
+            inputs.max,
+            target,
+            inputs.lb,
+            inputs.max_over,
+            inputs.min_charge,
+        ),
+        GrantReason::LbTracking,
     )
 }
 
@@ -494,7 +531,7 @@ mod tests {
         };
         // A full offer (report 0) is what makes the box open — the same lever the
         // cold-start kick uses — and moving the offer is what emits the pilot line.
-        assert_eq!(grant_tracking_current(&inputs), Ampere(0.0));
+        assert_eq!(grant_tracking_current(&inputs).current, Ampere(0.0));
     }
 
     #[test]
@@ -511,7 +548,7 @@ mod tests {
                 ..grant_base()
             };
             assert_eq!(
-                grant_tracking_current(&inputs),
+                grant_tracking_current(&inputs).current,
                 pause_report(MAX, MARGIN),
                 "probe must not override grid_stale={grid_stale} lb_stale={lb_stale}"
             );
@@ -529,7 +566,10 @@ mod tests {
             pilot_probe: false,
             ..grant_base()
         };
-        assert_eq!(grant_tracking_current(&inputs), pause_report(MAX, MARGIN));
+        assert_eq!(
+            grant_tracking_current(&inputs).current,
+            pause_report(MAX, MARGIN)
+        );
     }
 
     #[test]
@@ -541,8 +581,8 @@ mod tests {
             ..grant_base()
         };
         assert_eq!(
-            grant_tracking_current(&with),
-            grant_tracking_current(&grant_base())
+            grant_tracking_current(&with).current,
+            grant_tracking_current(&grant_base()).current
         );
     }
 
@@ -555,7 +595,7 @@ mod tests {
             car: Ampere(0.0),
             ..grant_base()
         };
-        assert_eq!(grant_tracking_current(&i), Ampere(MAX.0 - 20.0));
+        assert_eq!(grant_tracking_current(&i).current, Ampere(MAX.0 - 20.0));
     }
 
     #[test]
@@ -572,7 +612,72 @@ mod tests {
             car: Ampere(0.045),
             ..grant_base()
         };
-        assert_eq!(grant_tracking_current(&i), Ampere(0.0));
+        assert_eq!(grant_tracking_current(&i).current, Ampere(0.0));
+    }
+
+    // --- which rule set the value (#3) ---
+
+    #[test]
+    fn a_failsafe_names_itself_as_the_reason() {
+        for (grid_stale, lb_stale) in [(true, false), (false, true)] {
+            let i = GrantControlInputs {
+                grid_stale,
+                lb_stale,
+                ..grant_base()
+            };
+            assert_eq!(grant_tracking_current(&i).reason, GrantReason::Failsafe);
+        }
+    }
+
+    #[test]
+    fn the_pilot_probe_names_itself_as_the_reason() {
+        let i = GrantControlInputs {
+            enabled: false,
+            target: None,
+            lb: Ampere(0.0),
+            car: Ampere(0.0),
+            pilot_probe: true,
+            ..grant_base()
+        };
+        assert_eq!(grant_tracking_current(&i).reason, GrantReason::PilotProbe);
+    }
+
+    #[test]
+    fn being_held_shut_names_itself_as_the_reason() {
+        let i = GrantControlInputs {
+            enabled: false,
+            ..grant_base()
+        };
+        assert_eq!(grant_tracking_current(&i).reason, GrantReason::Shut);
+    }
+
+    #[test]
+    fn the_cold_start_kick_names_itself_as_the_reason() {
+        let i = GrantControlInputs {
+            lb: Ampere(0.0),
+            ..grant_base()
+        };
+        assert_eq!(
+            grant_tracking_current(&i).reason,
+            GrantReason::ColdStartKick
+        );
+    }
+
+    #[test]
+    fn the_ramp_pin_names_itself_as_the_reason() {
+        let i = GrantControlInputs {
+            car: Ampere(0.0),
+            ..grant_base()
+        };
+        assert_eq!(grant_tracking_current(&i).reason, GrantReason::RampPin);
+    }
+
+    #[test]
+    fn steady_state_names_grant_tracking_as_the_reason() {
+        assert_eq!(
+            grant_tracking_current(&grant_base()).reason,
+            GrantReason::LbTracking
+        );
     }
 
     #[test]
@@ -585,7 +690,7 @@ mod tests {
             car: Ampere(0.0),
             ..grant_base()
         };
-        assert_eq!(grant_tracking_current(&i), Ampere(MAX.0 - 20.0));
+        assert_eq!(grant_tracking_current(&i).current, Ampere(MAX.0 - 20.0));
     }
 
     #[test]
@@ -600,7 +705,7 @@ mod tests {
             car: Ampere(0.0),
             ..grant_base()
         };
-        assert_eq!(grant_tracking_current(&i), Ampere(0.0));
+        assert_eq!(grant_tracking_current(&i).current, Ampere(0.0));
     }
 
     #[test]
@@ -616,13 +721,16 @@ mod tests {
             car: Ampere(0.045),
             ..grant_base()
         };
-        assert_eq!(grant_tracking_current(&noise), Ampere(MAX.0 - 20.0));
+        assert_eq!(grant_tracking_current(&noise).current, Ampere(MAX.0 - 20.0));
         let ramping = GrantControlInputs {
             lb: Ampere(5.0),
             car: Ampere(3.7),
             ..grant_base()
         };
-        assert_eq!(grant_tracking_current(&ramping), Ampere(MAX.0 - 20.0 + 3.0));
+        assert_eq!(
+            grant_tracking_current(&ramping).current,
+            Ampere(MAX.0 - 20.0 + 3.0)
+        );
     }
 
     #[test]
@@ -635,7 +743,10 @@ mod tests {
             car: Ampere(3.0),
             ..grant_base()
         };
-        assert_eq!(grant_tracking_current(&i), Ampere(MAX.0 - 20.0 + 3.0));
+        assert_eq!(
+            grant_tracking_current(&i).current,
+            Ampere(MAX.0 - 20.0 + 3.0)
+        );
     }
 
     #[test]
@@ -651,7 +762,10 @@ mod tests {
             car: Ampere(8.5),
             ..grant_base()
         };
-        assert_eq!(grant_tracking_current(&i), Ampere(MAX.0 - 16.0 + 8.0));
+        assert_eq!(
+            grant_tracking_current(&i).current,
+            Ampere(MAX.0 - 16.0 + 8.0)
+        );
     }
 
     #[test]
@@ -662,7 +776,7 @@ mod tests {
             car: Ampere(11.16),
             ..grant_base()
         };
-        assert_eq!(grant_tracking_current(&i), MAX);
+        assert_eq!(grant_tracking_current(&i).current, MAX);
     }
 
     #[test]
@@ -683,12 +797,12 @@ mod tests {
 
     #[test]
     fn grant_tracking_delegates_to_the_lb_report() {
-        assert_eq!(grant_tracking_current(&grant_base()), MAX);
+        assert_eq!(grant_tracking_current(&grant_base()).current, MAX);
         let over = GrantControlInputs {
             lb: Ampere(26.0),
             ..grant_base()
         };
-        assert_eq!(grant_tracking_current(&over), Ampere(34.0));
+        assert_eq!(grant_tracking_current(&over).current, Ampere(34.0));
     }
 
     #[test]
@@ -697,7 +811,7 @@ mod tests {
             enabled: false,
             ..grant_base()
         };
-        assert_eq!(grant_tracking_current(&i), PAUSE);
+        assert_eq!(grant_tracking_current(&i).current, PAUSE);
     }
 
     #[test]
@@ -706,7 +820,7 @@ mod tests {
             grid_stale: true,
             ..grant_base()
         };
-        assert_eq!(grant_tracking_current(&i), PAUSE);
+        assert_eq!(grant_tracking_current(&i).current, PAUSE);
     }
 
     #[test]
@@ -715,7 +829,7 @@ mod tests {
             lb_stale: true,
             ..grant_base()
         };
-        assert_eq!(grant_tracking_current(&i), PAUSE);
+        assert_eq!(grant_tracking_current(&i).current, PAUSE);
     }
 
     #[test]
@@ -724,7 +838,7 @@ mod tests {
             target: None,
             ..grant_base()
         };
-        assert_eq!(grant_tracking_current(&i), PAUSE);
+        assert_eq!(grant_tracking_current(&i).current, PAUSE);
     }
 
     #[test]
@@ -733,7 +847,7 @@ mod tests {
             target: Some(Ampere(4.0)),
             ..grant_base()
         };
-        assert_eq!(grant_tracking_current(&i), PAUSE);
+        assert_eq!(grant_tracking_current(&i).current, PAUSE);
     }
 
     // --- V4 direct grant tracking (#135 step 5) ---
