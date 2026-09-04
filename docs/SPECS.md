@@ -558,11 +558,13 @@ those were kept nowhere. So:
 - **The fault is sticky** (`fault` on the telemetry topic, see
   [`cn28-log-protocol.md`](cn28-log-protocol.md)) — the box now remembers.
 
-Only the firmware's own records leave the box. Everything from this crate and
-`core` carries an `evc04` target prefix; third-party crates (esp-idf-svc, the MQTT
-and HTTP clients) arrive through the `log` bridge under the target `log` and are
-dropped — their diagnostics are not ours to ship, and on a bounded queue they
-crowd out the records that are.
+Only the firmware's own records leave the box, plus anything anyone reports as a
+problem. Everything from this crate and `core` carries an `evc04` target prefix;
+third-party crates (esp-idf-svc, the MQTT and HTTP clients) arrive through the
+`log` bridge under the target `log`, and their routine chatter is dropped — on a
+bounded queue it crowds out the records that are ours. A warning or error from
+them still passes: on a box reachable only over the network, an esp-idf-svc error
+is sometimes the only account of why it went.
 
 Verbosity is switchable at runtime, because the box is sealed and every other way
 to change it costs an OTA:
