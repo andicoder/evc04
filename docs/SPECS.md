@@ -554,7 +554,12 @@ those were kept nowhere. So:
   Attaching it to every line would double a stream already near its budget.
 - **A monotonic parse-failure count** on every such record: on its own it would have
   flagged the incident at 22:06. Blank padding lines never count.
-- **Control ticks are logged on change**, not at 1 Hz.
+- **Control ticks are logged on change**, not at 1 Hz, and each carries the
+  `reason` — which rule of the grant law (§6) produced the value: `Failsafe`,
+  `PilotProbe`, `Shut`, `ColdStartKick`, `RampPin` or `LbTracking`. The served
+  current cannot be inverted back into a decision (a failsafe pause and a box
+  held shut both report `max + margin`), so the rule names itself rather than
+  `core` growing a logger it does not want.
 - **The fault is sticky** (`fault` on the telemetry topic, see
   [`cn28-log-protocol.md`](cn28-log-protocol.md)) — the box now remembers.
 
