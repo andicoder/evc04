@@ -21,3 +21,18 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # Image signing is deliberately deferred (evc04#76, "rollback now, sign later").
 # Adding it later is a build-config change, not an eFuse burn, so it can ship in a
 # future OTA without re-opening the box. Until then OTA trusts the local LAN.
+
+# Stack sizes for the logging plane (#3). Both defaults are far too small for it:
+#
+# - The main task builds the OTLP exporter and installs the tracing subscriber
+#   before anything else runs, on what esp-idf gives it by default (3584 B).
+# - The OpenTelemetry SDK spawns its own batch-exporter thread *internally*, so
+#   we cannot hand it a stack the way we do for our own workers — it lands on
+#   CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT (3072 B) while encoding protobuf and
+#   running an HTTP request.
+#
+# Neither was the cause of the 2026-09-04 outage — that was a panic in the
+# subscriber setup — but 3 KB for a thread doing protobuf plus HTTP is a fault
+# waiting to happen, and a stack overflow on this target is not a clean panic.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=10240

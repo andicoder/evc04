@@ -107,12 +107,21 @@ pub fn init() -> Result<SdkLoggerProvider> {
         .with_log_processor(processor)
         .build();
 
-    tracing_log::LogTracer::init().context("log bridge")?;
+    // `try_init`, never `init`: the latter unwraps and panics, and a panic here
+    // happens on *every* boot — 34 reboots in 30 s when this went wrong (#3). A
+    // logging plane must not be able to brick the box, so the error travels up to
+    // `main`, which carries on without logging.
+    //
+    // The `log` bridge is NOT installed by hand: with tracing-subscriber's
+    // `tracing-log` feature, `try_init` sets up the log compatibility layer
+    // itself. Calling `LogTracer::init()` first is what made that fail here —
+    // the second registration returns `SetLoggerError`.
     tracing_subscriber::registry()
         .with(LevelFilter::INFO)
         .with(tracing_subscriber::fmt::layer().with_ansi(false))
         .with(OpenTelemetryTracingBridge::new(&provider))
-        .init();
+        .try_init()
+        .context("install tracing subscriber")?;
 
     Ok(provider)
 }
