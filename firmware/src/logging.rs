@@ -23,7 +23,8 @@
 //! pre-sync (1970) timestamp rather than delaying the workers' start.
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
@@ -70,6 +71,17 @@ const SCHEDULED_DELAY: Duration = Duration::from_secs(5);
 /// collector costs records, never the control tick — but it must still fail
 /// fast enough that the next batch is not stuck behind it.
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Set once the station holds an IP; the exporter waits for it instead of firing
+/// into a dead link. The SDK drops a batch whose export fails, and at boot that
+/// batch is the entire bring-up sequence — the records worth the most when a box
+/// misbehaves (#3).
+static NETWORK_UP: AtomicBool = AtomicBool::new(false);
+/// How long an export waits for the link before trying anyway. Covers a cold boot
+/// (join takes seconds) and a short mid-run drop, without letting a long outage
+/// wedge the exporter thread.
+const NETWORK_WAIT: Duration = Duration::from_secs(30);
+const NETWORK_POLL: Duration = Duration::from_millis(250);
+
 /// Response body we bother to read: the collector answers OTLP/HTTP success with
 /// an empty `ExportLogsServiceResponse`, and a longer error body is truncated.
 const RESPONSE_BUF: usize = 512;
@@ -124,6 +136,12 @@ pub fn init() -> Result<SdkLoggerProvider> {
         .context("install tracing subscriber")?;
 
     Ok(provider)
+}
+
+/// Tell the exporter whether the network is usable. Called by [`crate::wifi`] on
+/// join and on link loss.
+pub fn set_network_up(up: bool) {
+    NETWORK_UP.store(up, Ordering::Relaxed);
 }
 
 /// Start SNTP so log timestamps become real wall-clock time. The handle must be
@@ -183,6 +201,16 @@ impl HttpClient for EspHttpClient {
 }
 
 fn post(request: Request<Bytes>) -> Result<Response<Bytes>> {
+    // Hold the batch until the link is up rather than failing fast. A failed
+    // export costs the whole batch, and the first batch of a session carries the
+    // WiFi/MQTT bring-up — exactly what is missing when a box will not come back.
+    // Safe to block: this runs on the SDK's exporter thread, never on the control
+    // path.
+    let deadline = Instant::now() + NETWORK_WAIT;
+    while !NETWORK_UP.load(Ordering::Relaxed) && Instant::now() < deadline {
+        std::thread::sleep(NETWORK_POLL);
+    }
+
     let mut conn = EspHttpConnection::new(&HttpConfig {
         timeout: Some(EXPORT_TIMEOUT),
         ..Default::default()

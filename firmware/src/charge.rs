@@ -93,6 +93,11 @@ const PILOT_PROBE_WINDOW: Duration = Duration::from_secs(45);
 pub struct Tick {
     pub reported: f32,
     pub status_json: String,
+    /// This tick's two failsafe verdicts. Exposed so the worker can record the
+    /// *moment* either flips (#3) instead of only its effect on `reported` — the
+    /// box carried a degraded state for 20 minutes with nothing in the log.
+    pub grid_failsafe: bool,
+    pub cn28_stale: bool,
 }
 
 /// Worker-local control state. Lives only on the prober/worker thread; the value it
@@ -400,6 +405,8 @@ impl Controller {
         Tick {
             reported: served,
             status_json: status_json(&status),
+            grid_failsafe: grid_stale,
+            cn28_stale,
         }
     }
 }

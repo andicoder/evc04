@@ -76,6 +76,7 @@ pub fn connect(
                 );
                 restart();
             }
+            crate::logging::set_network_up(false);
             warn!(
                 fails,
                 max = MAX_RECONNECT_FAILS,
@@ -92,6 +93,7 @@ pub fn connect(
     let got_ip = sysloop.subscribe::<IpEvent, _>(|event| {
         if matches!(event, IpEvent::DhcpIpAssigned(_)) {
             RECONNECT_FAILS.store(0, Ordering::Relaxed);
+            crate::logging::set_network_up(true);
             info!("wifi link restored (got ip)");
         }
     })?;
@@ -115,6 +117,7 @@ fn join_or_reboot(wifi: &mut BlockingWifi<EspWifi<'static>>) {
                     attempts = JOIN_ATTEMPTS,
                     "wifi up"
                 );
+                crate::logging::set_network_up(true);
                 return;
             }
             Err(e) => {

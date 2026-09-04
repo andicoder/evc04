@@ -15,7 +15,7 @@
 //!
 //! [`run`] is the thread routine `main` spawns; everything else is its internals.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -30,7 +30,7 @@ use evc04_cn28_core::debug::dump;
 #[cfg(feature = "raw-debug")]
 use evc04_cn28_core::debug::trace;
 use evc04_cn28_core::probe::cn28::{Cn28Snapshot, LineOutcome, LineReassembler};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::charge::{Controller, Handoff, Tick};
 use crate::device;
@@ -72,10 +72,22 @@ const CN28_TARGET: &str = "evc04::cn28";
 /// purpose — it outlives the per-session snapshot, because a reconnect must not
 /// reset the one number that would have flagged the 2026-09-02 incident at 22:06.
 static PARSE_FAILURES: AtomicU32 = AtomicU32::new(0);
+/// A full status record goes out this often even when nothing changed, so that
+/// silence means "gone" rather than "idle" (#3). Everything else in the control
+/// path is transition-driven, and with the probe window at debug a healthy box
+/// would otherwise say nothing at all.
+const HEALTH_INTERVAL: Duration = Duration::from_secs(60);
+
 /// The last served current that was logged, so the ~1 Hz tick records
 /// *transitions* instead of 86 400 identical records a day. `u32::MAX` is not a
 /// bit pattern `reported` can take, so the first tick always reports.
 static LAST_REPORTED_BITS: AtomicU32 = AtomicU32::new(u32::MAX);
+/// Last-logged failsafe verdicts, so an engage and a recovery are one record each.
+static LAST_GRID_FAILSAFE: AtomicBool = AtomicBool::new(false);
+static LAST_CN28_STALE: AtomicBool = AtomicBool::new(false);
+/// `esp_timer` milliseconds of the last health record; 0 = none yet, so the first
+/// tick after boot emits one and marks the start of the session.
+static LAST_HEALTH_MS: AtomicU32 = AtomicU32::new(0);
 
 /// Thread routine: connect to the broker, pump the connection, and serve probes /
 /// baud changes / OTA forever. `uart` is the CN28 UART (`main` owns construction).
@@ -237,6 +249,7 @@ fn tick_control(controller: &mut Controller, handoff: &Handoff) -> Tick {
     let tick = controller.tick(Instant::now(), last_poll_age_s);
     handoff.set_reported(tick.reported);
     log_control_transition(&tick);
+    log_health(&tick);
     tick
 }
 
@@ -246,6 +259,23 @@ fn tick_control(controller: &mut Controller, handoff: &Handoff) -> Tick {
 /// ~1 Hz would bury it. The full status object rides along, so the record also
 /// carries why the value moved (pilot state, failsafes, the box's own grant).
 fn log_control_transition(tick: &Tick) {
+    // The failsafes first: these are the transitions the box had no memory of at
+    // all. Each is a reason charging stopped, so engaging is a warning and the
+    // recovery earns its own record.
+    if LAST_GRID_FAILSAFE.swap(tick.grid_failsafe, Ordering::Relaxed) != tick.grid_failsafe {
+        if tick.grid_failsafe {
+            warn!(status = %tick.status_json, "grid heartbeat went stale; pausing");
+        } else {
+            info!(status = %tick.status_json, "grid heartbeat recovered");
+        }
+    }
+    if LAST_CN28_STALE.swap(tick.cn28_stale, Ordering::Relaxed) != tick.cn28_stale {
+        if tick.cn28_stale {
+            warn!(status = %tick.status_json, "cn28 grant feed went stale; pausing");
+        } else {
+            info!(status = %tick.status_json, "cn28 grant feed recovered");
+        }
+    }
     let bits = tick.reported.to_bits();
     if LAST_REPORTED_BITS.swap(bits, Ordering::Relaxed) != bits {
         info!(
@@ -253,6 +283,17 @@ fn log_control_transition(tick: &Tick) {
             status = %tick.status_json,
             "control state changed"
         );
+    }
+}
+
+/// Emit the full status on a fixed cadence, whether or not anything moved.
+/// Without it a healthy box and a dead one look the same in the log.
+fn log_health(tick: &Tick) {
+    let now_ms = (unsafe { esp_timer_get_time() } / 1000) as u32;
+    let last = LAST_HEALTH_MS.load(Ordering::Relaxed);
+    if last == 0 || now_ms.wrapping_sub(last) >= HEALTH_INTERVAL.as_millis() as u32 {
+        LAST_HEALTH_MS.store(now_ms, Ordering::Relaxed);
+        info!(uptime_s = now_ms / 1000, status = %tick.status_json, "health");
     }
 }
 
@@ -355,7 +396,10 @@ fn probe(
         }
     }
 
-    info!(
+    // Debug, not info: this fires every AUTO_WAKE_SECS whether or not anything
+    // happened, and made up 70 % of the record volume at info. Liveness is the
+    // health record's job (#3); this is for someone watching a specific window.
+    debug!(
         target: CN28_TARGET,
         sent = bytes.len(),
         received = resp.len(),
