@@ -115,6 +115,23 @@ pub enum LogRecord {
     CpStatus { state: CpState, cmax_a: u16 },
     /// `Stop Pwm<n>` — the CP PWM was stopped (a running charge is cut).
     PwmStop,
+    /// `wc` — recurring and frequent, meaning still unknown (#73). Recognised
+    /// so it stops inflating the parse-failure counter: 73 of the 111 failures
+    /// measured on 2026-09-04 were this two-byte line, intact (`77 63`).
+    /// Recognising a line is not the same as understanding it.
+    Wc,
+    /// `TEMP lb current: {n}` — the load-balancing limit **after thermal
+    /// derating**, which the protocol doc records as a different quantity from
+    /// `lb current:`. Deliberately not folded into [`LogRecord::LbCurrent`]:
+    /// that value is what the box reports over MQTT.
+    TempLbCurrent(u16),
+    /// `lb wait for time` — load balancing holding for a schedule window.
+    LbWaitForTime,
+    /// `Nref: {n}` — a reference value the box prints during detection.
+    Nref(u32),
+    /// `DMA …` — the box's own driver chatter, not a CN28 record at all.
+    /// Counting these as CN28 parse failures was simply wrong.
+    DmaEvent,
 }
 
 /// Classify and decode a single complete LOG line. Returns `None` for a blank,
@@ -131,6 +148,11 @@ pub fn parse_line(line: &str) -> Option<LogRecord> {
         .or_else(|| prefixed_u16(line, "ev current:").map(LogRecord::EvCurrent))
         .or_else(|| prefixed_u16(line, "max_offered_current:").map(LogRecord::MaxOffered))
         .or_else(|| prefixed_u16(line, "lb current:").map(LogRecord::LbCurrent))
+        .or_else(|| prefixed_u16(line, "TEMP lb current:").map(LogRecord::TempLbCurrent))
+        .or_else(|| prefixed_u32(line, "Nref:").map(LogRecord::Nref))
+        .or_else(|| (line == "wc").then_some(LogRecord::Wc))
+        .or_else(|| (line == "lb wait for time").then_some(LogRecord::LbWaitForTime))
+        .or_else(|| line.starts_with("DMA ").then_some(LogRecord::DmaEvent))
         .or_else(|| parse_probe_value(line))
         // Last: the box splices unrelated output into a line it is already printing
         // (#159), so a whole record can sit behind junk. Scanning is the fallback,
@@ -308,6 +330,10 @@ fn prefixed_u16(line: &str, prefix: &str) -> Option<u16> {
     line.strip_prefix(prefix)?.trim_start().parse().ok()
 }
 
+fn prefixed_u32(line: &str, prefix: &str) -> Option<u32> {
+    line.strip_prefix(prefix)?.trim_start().parse().ok()
+}
+
 /// Decode a `P{n}:\tV: …\tA: …\tW: …\tWh: …` metering line. A missing or extra
 /// field, or any non-numeric value, makes it `None` (a truncated line is junk).
 fn parse_phase(line: &str) -> Option<LogRecord> {
@@ -461,7 +487,15 @@ impl Cn28Snapshot {
             LogRecord::ProbeNotDetected(_)
             | LogRecord::DetectStart(_)
             | LogRecord::ProbeInit(_)
-            | LogRecord::ProbeValue(_, _) => {}
+            | LogRecord::ProbeValue(_, _)
+            // Recognised but not yet interpreted. TempLbCurrent in particular
+            // is a real measurement worth keeping one day; folding it into
+            // lb_current_a today would change what goes out over MQTT.
+            | LogRecord::Wc
+            | LogRecord::TempLbCurrent(_)
+            | LogRecord::LbWaitForTime
+            | LogRecord::Nref(_)
+            | LogRecord::DmaEvent => {}
         }
     }
 
@@ -1265,5 +1299,88 @@ mod tests {
         // The overflowed head is dropped; the next newline resyncs and the
         // following line comes through clean.
         assert_eq!(r.push(b"junk-tail\nok\n"), alloc::vec![b"ok".to_vec()]);
+    }
+}
+
+/// Lines the box really emits that the parser did not know.
+///
+/// Measured on the live stream 2026-09-04: 111 of 2000 records in two hours
+/// (5.5%) were `cn28 line did not parse`, and the hex dumps showed every one of
+/// them intact — `54 45 4d 50 20 6c 62 ...` for `TEMP lb current: 0`, `77 63`
+/// for `wc`. No truncation, no splice, no missing delimiter. They were simply
+/// unimplemented, and each one inflated a counter whose whole purpose is that
+/// "every increment means real wreckage".
+///
+/// All four are already catalogued in docs/cn28-log-protocol.md.
+#[cfg(test)]
+mod unimplemented_line_tests {
+    use super::*;
+
+    #[test]
+    fn wc_is_recognised_rather_than_counted_as_wreckage() {
+        // 73 of the 111 failures. Meaning still unknown (#73) — recognising a
+        // line is not the same as understanding it.
+        assert_eq!(parse_line("wc"), Some(LogRecord::Wc));
+    }
+
+    #[test]
+    fn thermally_derated_lb_current_is_its_own_record() {
+        assert_eq!(
+            parse_line("TEMP lb current: 16"),
+            Some(LogRecord::TempLbCurrent(16))
+        );
+    }
+
+    #[test]
+    fn the_derated_limit_is_not_folded_into_lb_current() {
+        // The protocol doc calls it the limit *after thermal derating* — a
+        // different quantity. Folding it into lb_current_a would quietly
+        // corrupt what the box reports over MQTT.
+        let mut snap = Cn28Snapshot::default();
+        assert_eq!(snap.apply_line("lb current:16", 0), LineOutcome::Applied);
+        assert_eq!(
+            snap.apply_line("TEMP lb current: 0", 0),
+            LineOutcome::Applied
+        );
+        assert_eq!(snap.lb_current_a, Some(16), "derated value overwrote it");
+    }
+
+    #[test]
+    fn load_balancing_wait_is_recognised() {
+        assert_eq!(
+            parse_line("lb wait for time"),
+            Some(LogRecord::LbWaitForTime)
+        );
+    }
+
+    #[test]
+    fn nref_is_recognised() {
+        assert_eq!(parse_line("Nref: 448"), Some(LogRecord::Nref(448)));
+    }
+
+    #[test]
+    fn dma_chatter_is_not_a_cn28_record() {
+        // The box's own driver messages. They are not CN28 data at all, so
+        // counting them as CN28 parse failures is simply wrong.
+        for line in ["DMA Starting", "DMA disabled", "DMA Reset"] {
+            assert_eq!(parse_line(line), Some(LogRecord::DmaEvent), "{line}");
+        }
+    }
+
+    #[test]
+    fn genuinely_unknown_lines_are_still_unparsed() {
+        // The counter has to keep meaning something. If recognising these four
+        // shapes turned the parser permissive, the next real framing break
+        // would arrive silently.
+        let mut snap = Cn28Snapshot::default();
+        assert_eq!(
+            snap.apply_line("totally unexpected garbage", 0),
+            LineOutcome::Unparsed
+        );
+    }
+
+    #[test]
+    fn the_known_lb_current_line_still_parses() {
+        assert_eq!(parse_line("lb current:3"), Some(LogRecord::LbCurrent(3)));
     }
 }
