@@ -629,7 +629,11 @@ is set. A pushed image boots **pending-verify** and only cancels its rollback on
 has re-reached WiFi **and** the broker (on the first CONNECTED), so an image that
 can't get online auto-reverts on the next reset. `firmware/ota_push.sh` serves the
 `.bin` from a *temporary* local HTTP server, triggers the pull, waits for
-`ok`/`failed`, then shuts the server down. Transport is **plain HTTP on the trusted
+`ok`/`failed`, then shuts the server down. `ok` only means the device **took**
+the image, so the script then waits for the version topic to name the build it
+just pushed and **fails loudly if it never does** — a boot loop is
+indistinguishable from a successful download at the trigger end, and on
+2026-09-04 that distinction cost a trip to the box. Transport is **plain HTTP on the trusted
 LAN**; image **signing is deferred** ("rollback now, sign later" — a later build-config
 change, not an eFuse burn, so it can ship in an OTA without re-opening the box).
 

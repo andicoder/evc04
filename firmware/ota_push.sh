@@ -14,8 +14,14 @@
 # WIFI_PASSWORD, MQTT_URL are baked into the image; MQTT_URL also locates the
 # broker for the trigger/status messages.
 #
+# The push is NOT done when the device has taken the image: it is done when the
+# new build reports back. A boot loop looks exactly like a successful download
+# from here, so the script waits for the version topic to name the build it just
+# pushed and fails loudly if it never does (#3).
+#
 # Overrides: OTA_HOST_IP (address the ESP reaches us on), OTA_PORT (default 8000),
-# OTA_TIMEOUT (seconds to wait for a result, default 180).
+# OTA_TIMEOUT (seconds to wait for a result, default 180), LAND_TIMEOUT (seconds
+# to wait for the new build to report back, default 120).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -46,6 +52,10 @@ fi
 
 OTA_PORT="${OTA_PORT:-8000}"
 OTA_TIMEOUT="${OTA_TIMEOUT:-180}"
+LAND_TIMEOUT="${LAND_TIMEOUT:-120}"
+# The build id the image will report, computed exactly as build.rs does — this is
+# what the landing check matches against.
+FW_EXPECT="$(git describe --tags --always --dirty 2>/dev/null || echo unknown)"
 # The IP the ESP can reach us on: first global IPv4, override with OTA_HOST_IP.
 OTA_HOST_IP="${OTA_HOST_IP:-$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1)}"
 [ -n "$OTA_HOST_IP" ] || { echo "!! could not detect a LAN IP; set OTA_HOST_IP" >&2; exit 1; }
@@ -65,11 +75,13 @@ touch src/main.rs
 ELF="target/xtensa-esp32-espidf/release/evc04-cn28-prober"
 SERVE_DIR="$(mktemp -d)"
 STATUS_LOG="$(mktemp)"
-HTTP_PID=""; SUB_PID=""
+VERSION_LOG="$(mktemp)"
+HTTP_PID=""; SUB_PID=""; VER_PID=""
 cleanup() {
   [ -n "$HTTP_PID" ] && kill "$HTTP_PID" 2>/dev/null || true
   [ -n "$SUB_PID" ] && kill "$SUB_PID" 2>/dev/null || true
-  rm -rf "$SERVE_DIR" "$STATUS_LOG"
+  [ -n "$VER_PID" ] && kill "$VER_PID" 2>/dev/null || true
+  rm -rf "$SERVE_DIR" "$STATUS_LOG" "$VERSION_LOG"
 }
 trap cleanup EXIT
 
@@ -85,6 +97,11 @@ HTTP_PID=$!
 # aren't missed; give the subscription a moment to register.
 mosquitto_sub -h "$MQ_HOST" -p "$MQ_PORT" "${MQ_AUTH[@]}" -t evc04/device/ota/status > "$STATUS_LOG" &
 SUB_PID=$!
+# The version topic is retained, so this immediately yields the build that is
+# running *now*. Everything after that line is a reconnect — which is what the
+# landing check waits for.
+mosquitto_sub -h "$MQ_HOST" -p "$MQ_PORT" "${MQ_AUTH[@]}" -t evc04/cn28/version > "$VERSION_LOG" &
+VER_PID=$!
 sleep 1
 
 echo ">> serving $(du -h "$SERVE_DIR/fw.bin" | cut -f1) image at $URL"
@@ -100,8 +117,39 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
 done
 
 case "$result" in
-  0) echo ">> OTA ok — device rebooting into the new image" ;;
-  1) echo "!! OTA failed (see message above)" >&2 ;;
-  *) echo "!! timed out after ${OTA_TIMEOUT}s with no result" >&2 ;;
+  1) echo "!! OTA failed (see message above)" >&2; exit 1 ;;
+  2) echo "!! timed out after ${OTA_TIMEOUT}s with no result" >&2; exit 2 ;;
 esac
-exit "$result"
+echo ">> image accepted; waiting up to ${LAND_TIMEOUT}s for it to report back as $FW_EXPECT"
+
+# Count what arrived before the reboot: the retained message plus anything the old
+# image published. Only lines beyond this can be the new image reporting in — and
+# without that offset, re-pushing an unchanged build would pass on the stale
+# retained line alone.
+pre=$(wc -l < "$VERSION_LOG")
+deadline=$(( $(date +%s) + LAND_TIMEOUT ))
+landed=1
+while [ "$(date +%s)" -lt "$deadline" ]; do
+  if tail -n +$((pre + 1)) "$VERSION_LOG" | grep -qF "\"fw\":\"$FW_EXPECT\""; then
+    landed=0
+    break
+  fi
+  sleep 2
+done
+
+if [ "$landed" = 0 ]; then
+  echo ">> landed: $(tail -n +$((pre + 1)) "$VERSION_LOG" | grep -F "\"fw\":\"$FW_EXPECT\"" | tail -1)"
+  exit 0
+fi
+
+# This is the failure that matters. The device took the image and then did not
+# come back: it is boot-looping or hung, and neither is visible from the download
+# side. Say so plainly rather than reporting the download as success.
+cat >&2 <<EOF
+!! the device did NOT report back within ${LAND_TIMEOUT}s.
+!! It accepted the image, so it is now booting something that cannot reach the
+!! broker. If the OTA rollback works it will revert on its own; if it hangs
+!! instead of panicking there is no reset and no rollback, and recovery needs
+!! USB. Expected: $FW_EXPECT
+EOF
+exit 3
