@@ -40,7 +40,7 @@ use opentelemetry_http::{Bytes, HttpClient, HttpError, Request, Response};
 use opentelemetry_otlp::{LogExporter, Protocol, WithExportConfig, WithHttpConfig};
 use opentelemetry_sdk::logs::{BatchConfigBuilder, BatchLogProcessor, SdkLoggerProvider};
 use opentelemetry_sdk::Resource;
-use tracing::info;
+use tracing::{info, Level};
 use tracing_subscriber::filter::{filter_fn, LevelFilter};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::reload;
@@ -160,14 +160,20 @@ pub fn init() -> Result<SdkLoggerProvider> {
     Ok(provider)
 }
 
-/// Keep only what this firmware and its `core` emit. Everything of ours shares
-/// the `evc04` prefix — `evc04::cn28` for the wire stream, `evc04_cn28_prober::…`
-/// and `evc04_cn28_core::…` for the module paths. Third-party crates reach us
-/// through the `log` bridge (esp-idf-svc, the MQTT and HTTP clients) and are
-/// dropped here: their diagnostics are not ours to ship, and on a 256-record
-/// queue they crowd out the records that are.
+/// Keep what this firmware and its `core` emit, plus anything anyone reports as
+/// a problem. Everything of ours shares the `evc04` prefix — `evc04::cn28` for
+/// the wire stream, `evc04_cn28_prober::…` and `evc04_cn28_core::…` for the
+/// module paths.
+///
+/// Third-party crates reach us through the `log` bridge (esp-idf-svc, the MQTT
+/// and HTTP clients) under a constant `log` target. Their routine chatter is
+/// dropped — on a bounded queue it crowds out the records that are ours — but a
+/// warning or an error still gets through: on a box reachable only over the
+/// network, an esp-idf-svc error is sometimes the only account of why it went.
 fn is_own_record(meta: &tracing::Metadata<'_>) -> bool {
-    meta.target().starts_with("evc04")
+    // tracing orders levels by severity, ERROR lowest: `<= WARN` is "warning or
+    // worse", not "warning or quieter".
+    meta.target().starts_with("evc04") || *meta.level() <= Level::WARN
 }
 
 /// Switch the live verbosity. `debug` self-expires after [`DEBUG_TTL`]; `info`
