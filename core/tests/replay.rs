@@ -229,6 +229,7 @@ fn run(sc: Scenario) -> Vec<Sample> {
                     enabled,
                     pilot_probe: false,
                 })
+                .current
                 .0
             }
         };
