@@ -8,7 +8,8 @@
 //!
 //! Supporting modules: [`mqtt`] (broker client + connection pump), [`charge`] (the
 //! control state plus the lock-free [`charge::Handoff`] the two threads share),
-//! [`device`] (OTA/version/discovery), [`wifi`].
+//! [`device`] (OTA/version/discovery), [`wifi`], [`logging`] (the `tracing` facade
+//! and its OTLP export, #3).
 //!
 //! The two threads share only that lock-free handoff, so the box's ~1 Hz meter poll
 //! is answered regardless of what the worker is doing (#87 hardens this further).
@@ -16,6 +17,7 @@
 //! Build/flash (locally only — never CI; needs Espressif's Xtensa toolchain):
 //!   ./bootstrap.sh                            # once: sysdeps + espup + cargo tools
 //!   export WIFI_SSID=... WIFI_PASSWORD=... MQTT_URL=mqtt://user:pass@host:1883
+//!   export OTLP_LOGS_URL=http://collector.lan:4318/v1/logs
 //!   cd firmware && cargo make build           # native esp build → host ELF
 //!   cargo make flash                          # flash + monitor on host (USB)
 
@@ -33,10 +35,11 @@ use esp_idf_svc::hal::uart::{
 };
 use esp_idf_svc::hal::units::Hertz;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use log::error;
+use tracing::error;
 
 mod charge;
 mod device;
+mod logging;
 mod mqtt;
 mod probe;
 mod rs485;
@@ -44,7 +47,10 @@ mod wifi;
 
 fn main() -> Result<()> {
     esp_idf_svc::sys::link_patches();
-    esp_idf_svc::log::EspLogger::initialize_default();
+    // Logging comes up before anything else so the WiFi bring-up is itself on
+    // the record (#3). The exporter simply drops batches until the link is
+    // there; it never blocks the boot path.
+    let _logger = logging::init()?;
 
     let peripherals = Peripherals::take()?;
     let sysloop = EspSystemEventLoop::take()?;
@@ -55,6 +61,11 @@ fn main() -> Result<()> {
     // WiFi keeps one for its calibration store, the prober gets another for the
     // persisted charge setpoint (its own namespace, so the two never collide).
     let _wifi = wifi::connect(peripherals.modem, sysloop, nvs.clone())?;
+
+    // Real wall-clock timestamps for the log records (#3). Held here like the
+    // WiFi guard; syncing runs in the background, so the workers below — and
+    // with them the box's meter poll — start on time either way.
+    let _sntp = logging::start_clock_sync()?;
 
     // UART1 → CN28 LOG (9600 8N1). UART0 stays free for the USB log monitor.
     let cn28 = UartDriver::new(
@@ -114,7 +125,7 @@ fn main() -> Result<()> {
             let handoff = Arc::clone(&handoff);
             move || {
                 if let Err(e) = probe::run(cn28, handoff, twdt, nvs) {
-                    error!("prober exited: {e:#}");
+                    error!(error = ?e, "prober exited");
                 }
                 // The prober is the device's whole job and now feeds production
                 // telemetry; if its loop ever returns — a publish error on an MQTT

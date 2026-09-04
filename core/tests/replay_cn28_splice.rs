@@ -21,7 +21,7 @@ fn replay(windows: &[&str]) -> Cn28Snapshot {
             .map(|i| u8::from_str_radix(&w[i..i + 2], 16).unwrap())
             .collect();
         for line in asm.push(&bytes) {
-            snap.apply_line(&line);
+            snap.apply_line(&String::from_utf8_lossy(&line), 0);
         }
     }
     snap

@@ -19,8 +19,30 @@ evc04-cn28-core = { path = "../core" }
 # Xtensa Rust toolchain (older 0.49 fails the c_char signedness check on rustc ≥1.9x).
 esp-idf-svc = "0.52"
 esp-idf-hal = "0.46"
-log = "0.4"
 anyhow = "1"
+# Logging plane (#3): `tracing` is the facade the whole firmware writes to; the
+# records leave the box as OTLP over HTTP/protobuf. `default-features = false`
+# everywhere on purpose — the OTLP defaults pull reqwest (and with it an async
+# runtime), which does not belong on this target; we hand the exporter an
+# esp-idf HTTP client instead.
+tracing = "0.1"
+tracing-log = "0.2"
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "registry",
+    "fmt",
+    "std",
+    "tracing-log",
+] }
+opentelemetry = { version = "0.32", default-features = false, features = ["logs"] }
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["logs"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = [
+    "logs",
+    "http-proto",
+] }
+opentelemetry-appender-tracing = { version = "0.32", default-features = false }
+opentelemetry-http = { version = "0.32", default-features = false }
+async-trait = "0.1"
+http = "1"
 
 [features]
 # Publish the raw CN28 views (evc04/cn28/raw{,/hex,/ascii}) on every probe. Off by

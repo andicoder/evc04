@@ -19,7 +19,7 @@ use esp_idf_svc::wifi::{
     AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi, WifiEvent,
 };
 use evc04_cn28_core::device::backoff::capped_exponential;
-use log::{error, info, warn};
+use tracing::{error, info, warn};
 
 const WIFI_SSID: &str = env!("WIFI_SSID");
 const WIFI_PASSWORD: &str = env!("WIFI_PASSWORD");
@@ -70,15 +70,22 @@ pub fn connect(
         if matches!(event, WifiEvent::StaDisconnected(_)) {
             let fails = RECONNECT_FAILS.fetch_add(1, Ordering::Relaxed) + 1;
             if fails > MAX_RECONNECT_FAILS {
-                error!("wifi: {fails} lost-link events without a stable re-join; rebooting");
+                error!(
+                    fails,
+                    "wifi: lost-link events without a stable re-join; rebooting"
+                );
                 restart();
             }
-            warn!("wifi link lost; re-associating ({fails}/{MAX_RECONNECT_FAILS})");
+            warn!(
+                fails,
+                max = MAX_RECONNECT_FAILS,
+                "wifi link lost; re-associating"
+            );
             // Re-associating from the event task is the documented STA_DISCONNECTED
             // recovery path; the matching `got ip` clears the tally.
             let rc = unsafe { esp_wifi_connect() };
             if rc != ESP_OK {
-                warn!("esp_wifi_connect failed: {rc}");
+                warn!(rc, "esp_wifi_connect failed");
             }
         }
     })?;
@@ -102,11 +109,21 @@ fn join_or_reboot(wifi: &mut BlockingWifi<EspWifi<'static>>) {
     for attempt in 0..JOIN_ATTEMPTS {
         match wifi.connect().and_then(|()| wifi.wait_netif_up()) {
             Ok(()) => {
-                info!("wifi up: {WIFI_SSID} (attempt {}/{JOIN_ATTEMPTS})", attempt + 1);
+                info!(
+                    ssid = WIFI_SSID,
+                    attempt = attempt + 1,
+                    attempts = JOIN_ATTEMPTS,
+                    "wifi up"
+                );
                 return;
             }
             Err(e) => {
-                warn!("wifi join {}/{JOIN_ATTEMPTS} failed: {e}", attempt + 1);
+                warn!(
+                    attempt = attempt + 1,
+                    attempts = JOIN_ATTEMPTS,
+                    error = %e,
+                    "wifi join failed"
+                );
                 // Drop any half-open association so the next connect() starts clean.
                 let _ = wifi.disconnect();
                 if attempt + 1 < JOIN_ATTEMPTS {
@@ -115,7 +132,10 @@ fn join_or_reboot(wifi: &mut BlockingWifi<EspWifi<'static>>) {
             }
         }
     }
-    error!("wifi: all {JOIN_ATTEMPTS} join attempts failed; rebooting to retry clean");
+    error!(
+        attempts = JOIN_ATTEMPTS,
+        "wifi: all join attempts failed; rebooting to retry clean"
+    );
     restart();
 }
 

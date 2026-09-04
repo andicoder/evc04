@@ -39,6 +39,13 @@ interface — is documented in [`cn28-log-protocol.md`](cn28-log-protocol.md); t
 ESP32 pin assignment (CN28 read + the RS485 meter-emulation port that would replace
 the gateway) is in [`esp32-pinout.md`](esp32-pinout.md).
 
+## Observability
+
+Everything the firmware logs — its own events plus one record per reassembled CN28
+LOG line, with a hex dump on the lines that fail to parse — leaves the box as OTLP
+log records over HTTP, so a fault is diagnosable after the fact instead of only
+while someone is watching. See the *Logging* section of [`SPECS.md`](SPECS.md).
+
 ## Hardware reference
 
 The vendor documentation and reverse-engineering photos behind all of the above —

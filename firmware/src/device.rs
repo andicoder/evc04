@@ -17,7 +17,7 @@ use esp_idf_svc::sys::esp_timer_get_time;
 use evc04_cn28_core::device::discovery::{cn28_discovery_messages, DiscoveryMeta};
 use evc04_cn28_core::device::ota;
 use evc04_cn28_core::device::version::{version_json, Version};
-use log::{info, warn};
+use tracing::{info, warn};
 
 use crate::mqtt::Mqtt;
 
@@ -55,7 +55,7 @@ pub fn run_ota(mqtt: &mut Mqtt, payload: &str) -> Result<()> {
     let url = match ota::validate_ota_url(payload) {
         Ok(url) => url,
         Err(e) => {
-            warn!("bad ota url {payload:?}: {e:?}");
+            warn!(payload, error = ?e, "rejected ota url");
             mqtt.publish_ota_status(&format!("failed {e:?}"))?;
             return Ok(());
         }
@@ -64,14 +64,17 @@ pub fn run_ota(mqtt: &mut Mqtt, payload: &str) -> Result<()> {
     mqtt.publish_ota_status("downloading")?;
     match download_and_flash(url) {
         Ok(total) => {
-            info!("ota wrote {total} B; rebooting into the new slot");
+            info!(
+                bytes = total,
+                "ota image written; rebooting into the new slot"
+            );
             mqtt.publish_ota_status("ok")?;
             // Let the broker flush the status before the link drops on reboot.
             std::thread::sleep(Duration::from_millis(500));
             restart();
         }
         Err(e) => {
-            warn!("ota failed: {e:#}");
+            warn!(error = ?e, "ota failed");
             mqtt.publish_ota_status(&format!("failed {e}"))?;
             Ok(())
         }
@@ -124,7 +127,7 @@ pub fn confirm_running_slot() -> Result<()> {
     let slot = ota.get_running_slot().context("running slot")?;
     if slot.state == SlotState::Unverified {
         ota.mark_running_slot_valid().context("mark slot valid")?;
-        info!("ota: confirmed running slot {}", slot.label);
+        info!(slot = %slot.label, "ota: confirmed running slot");
     }
     Ok(())
 }

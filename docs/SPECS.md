@@ -527,9 +527,45 @@ namespace; the two never collide.
 
 ### Configuration
 
-No config files, no env vars at runtime. `WIFI_SSID` / `WIFI_PASSWORD` / `MQTT_URL`
-are **baked in at build time** (`env!`, never committed); everything else is a
-compile-time constant. The build is per-install, not a generic image.
+No config files, no env vars at runtime. `WIFI_SSID` / `WIFI_PASSWORD` / `MQTT_URL` /
+`OTLP_LOGS_URL` — and the optional `OTLP_LOGS_AUTH` — are **baked in at build time**
+(`env!`, never committed); everything else is a compile-time constant. The build is
+per-install, not a generic image.
+
+### Logging
+
+`tracing` is the facade the whole firmware writes to — including everything
+esp-idf-svc emits through the `log` crate, bridged in — and every record goes two
+places: the USB serial console, and **OTLP log records over HTTP/protobuf** to
+`OTLP_LOGS_URL` (the full signal endpoint, e.g. `http://collector.lan:4318/v1/logs`).
+Records carry `service.name`, `service.version` (the `git describe` build id) and
+`service.instance.id` (the board's MAC) as resource attributes, and every export
+carries a `stream-name: evc04` header plus, when `OTLP_LOGS_AUTH` was set at build
+time, that value as `Authorization` (e.g. `Basic <base64>`). Leaving it unset posts
+unauthenticated — fine for a collector that only listens on the trusted LAN.
+
+Why it exists: on 2026-09-02 the box latched a solid red fault for ~10 h while every
+parsed field read healthy — the only witness would have been the raw CN28 lines, and
+those were kept nowhere. So:
+
+- **One record per reassembled CN28 LOG line** (target `evc04::cn28`), the body
+  escaped rather than lossily decoded, so wreckage survives the trip.
+- **The hex dump rides only on a line that fails to parse** — the forensic case.
+  Attaching it to every line would double a stream already near its budget.
+- **A monotonic parse-failure count** on every such record: on its own it would have
+  flagged the incident at 22:06. Blank padding lines never count.
+- **Control ticks are logged on change**, not at 1 Hz.
+- **The fault is sticky** (`fault` on the telemetry topic, see
+  [`cn28-log-protocol.md`](cn28-log-protocol.md)) — the box now remembers.
+
+The plane is built so it can never endanger the meter poll: emitting a record is a
+`try_send` onto a bounded queue that **drops** when the collector is unreachable, all
+network work happens on the SDK's own exporter thread, and that thread runs inside
+the SDK's telemetry-suppressed scope so shipping a batch cannot generate another one.
+Nothing is persisted across a reboot — with two OTA slots there is no flash to spare,
+and the reboot itself is already reported (`reset_reason`, plus the sticky fault).
+Timestamps come from SNTP, which syncs a few seconds after boot rather than delaying
+the workers; the first records of a boot carry a pre-sync timestamp.
 
 ### Continuous availability
 
@@ -547,6 +583,7 @@ Local only — the Espressif Xtensa toolchain and the device dependency keep
 ```
 firmware/bootstrap.sh              # once: sysdeps + espup + cargo tools + esp-clang shim
 export WIFI_SSID=… WIFI_PASSWORD=… MQTT_URL=mqtt://user:pass@host:1883
+export OTLP_LOGS_URL=http://collector.lan:4318/v1/logs
 cd firmware && cargo make build    # native esp build → host ELF
 cargo make flash                   # flash + USB monitor (first flash only)
 ```

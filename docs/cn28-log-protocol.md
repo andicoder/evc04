@@ -290,7 +290,10 @@ staircase at this feedback rate (settling ~1 A high near the 6 A floor).
 - per-phase `PhaseReading { v_mv, a_ma, w, wh }`, `temp_c`
 - `ev_current_a`, `max_offered_a`, `lb_current_a`
 - `meter_detected` (`true` on `… DETECTED`, `false` on `Any … NOT detected!`)
-- `last_error` (set by `ERROR:`, cleared by `CLEAR:`)
+- `fault` — the standing fault as `{ code, first_seen_ms, count }` (`null` while
+  healthy): raised by `ERROR: {n}`, and cleared **only** by a `CLEAR:` naming the
+  same code. Stickiness is deliberate (#3): the box's own field is edge-triggered,
+  so before this a fault that ended before anyone looked was unreportable.
 
 The CP `S:` state line is decoded into `cp_state` (`null` until the first
 transition) and, since #148, mirrored — guarded — into the control-plane

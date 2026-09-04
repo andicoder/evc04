@@ -15,8 +15,9 @@
 //!
 //! [`run`] is the thread routine `main` spawns; everything else is its internals.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{mpsc, Arc};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use esp_idf_svc::hal::delay::TickType;
@@ -25,10 +26,11 @@ use esp_idf_svc::hal::uart::UartDriver;
 use esp_idf_svc::hal::units::Hertz;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys::{esp_err_t, esp_timer_get_time, ESP_ERR_TIMEOUT};
-use evc04_cn28_core::probe::cn28::{Cn28Snapshot, LineReassembler};
+use evc04_cn28_core::debug::dump;
 #[cfg(feature = "raw-debug")]
-use evc04_cn28_core::debug::{dump, trace};
-use log::{info, warn};
+use evc04_cn28_core::debug::trace;
+use evc04_cn28_core::probe::cn28::{Cn28Snapshot, LineOutcome, LineReassembler};
+use tracing::{info, warn};
 
 use crate::charge::{Controller, Handoff, Tick};
 use crate::device;
@@ -62,6 +64,19 @@ const READ_GAP: Duration = Duration::from_millis(200);
 const FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(2);
 const READ_BUF: usize = 512;
 
+/// Every CN28 LOG record carries this target, so a collector can split the raw
+/// wire stream from the firmware's own chatter without parsing message text.
+const CN28_TARGET: &str = "evc04::cn28";
+
+/// LOG lines that reached us but did not decode, since boot (#3). Monotonic on
+/// purpose — it outlives the per-session snapshot, because a reconnect must not
+/// reset the one number that would have flagged the 2026-09-02 incident at 22:06.
+static PARSE_FAILURES: AtomicU32 = AtomicU32::new(0);
+/// The last served current that was logged, so the ~1 Hz tick records
+/// *transitions* instead of 86 400 identical records a day. `u32::MAX` is not a
+/// bit pattern `reported` can take, so the first tick always reports.
+static LAST_REPORTED_BITS: AtomicU32 = AtomicU32::new(u32::MAX);
+
 /// Thread routine: connect to the broker, pump the connection, and serve probes /
 /// baud changes / OTA forever. `uart` is the CN28 UART (`main` owns construction).
 pub fn run(
@@ -91,10 +106,10 @@ pub fn run(
                 if let Err(e) =
                     worker_loop(&mut mqtt, &uart, rx, &handoff, &mut wdt, &mut controller)
                 {
-                    warn!("mqtt session ended: {e:#}");
+                    warn!(error = ?e, "mqtt session ended");
                 }
             }
-            Err(e) => warn!("mqtt connect failed: {e:#}"),
+            Err(e) => warn!(error = ?e, "mqtt connect failed"),
         }
         offline_tick(&mut controller, &handoff, &mut wdt);
     }
@@ -139,10 +154,10 @@ fn worker_loop(
                 // that fails on a flapping reconnect must not reboot the chip. The next
                 // CONNECTED re-subscribes; the heartbeat/tick re-publish.
                 if let Err(e) = mqtt.subscribe_all() {
-                    warn!("subscribe skipped (mqtt flap?): {e:#}");
+                    warn!(error = ?e, "subscribe skipped (mqtt flap?)");
                 }
                 if let Err(e) = mqtt.publish_status_online() {
-                    warn!("status-online publish skipped: {e:#}");
+                    warn!(error = ?e, "status-online publish skipped");
                 }
                 next_heartbeat = Instant::now() + STATUS_HEARTBEAT;
                 // Republish charge status at once so it overwrites a stale LWT
@@ -155,18 +170,18 @@ fn worker_loop(
                 // — that is the signal an OTA actually took. Diagnostic only, so a
                 // failure is logged, not propagated.
                 if let Err(e) = device::publish_version(mqtt) {
-                    warn!("version: publish skipped: {e:#}");
+                    warn!(error = ?e, "version: publish skipped");
                 }
                 // Register the telemetry sensors with Home Assistant (retained
                 // discovery configs, #98). Idempotent on reconnect; non-fatal.
                 if let Err(e) = device::publish_discovery(mqtt) {
-                    warn!("discovery: publish skipped: {e:#}");
+                    warn!(error = ?e, "discovery: publish skipped");
                 }
                 // Reaching the broker is the proof a freshly-OTA'd image needs to
                 // cancel its pending rollback (#76). A confirm failure must not
                 // kill the loop, so it is logged, not propagated.
                 if let Err(e) = device::confirm_running_slot() {
-                    warn!("ota: confirm skipped: {e:#}");
+                    warn!(error = ?e, "ota: confirm skipped");
                 }
             }
             Ok(InMsg::Probe(bytes)) => {
@@ -189,7 +204,7 @@ fn worker_loop(
                 }
                 if now >= next_heartbeat {
                     if let Err(e) = mqtt.publish_status_online() {
-                        warn!("heartbeat publish skipped (mqtt down?): {e:#}");
+                        warn!(error = ?e, "heartbeat publish skipped (mqtt down?)");
                     }
                     next_heartbeat = now + STATUS_HEARTBEAT;
                 }
@@ -221,7 +236,24 @@ fn tick_control(controller: &mut Controller, handoff: &Handoff) -> Tick {
     let last_poll_age_s = now_ms.wrapping_sub(handoff.last_poll_ms()) as f32 / 1000.0;
     let tick = controller.tick(Instant::now(), last_poll_age_s);
     handoff.set_reported(tick.reported);
+    log_control_transition(&tick);
     tick
+}
+
+/// Record a control tick only when the current we serve the box actually moved.
+/// The box has no memory of its own faults (#3), so every step of the ramp and
+/// every drop into the pause has to be on the record — but a steady state at
+/// ~1 Hz would bury it. The full status object rides along, so the record also
+/// carries why the value moved (pilot state, failsafes, the box's own grant).
+fn log_control_transition(tick: &Tick) {
+    let bits = tick.reported.to_bits();
+    if LAST_REPORTED_BITS.swap(bits, Ordering::Relaxed) != bits {
+        info!(
+            reported_ampere = tick.reported,
+            status = %tick.status_json,
+            "control state changed"
+        );
+    }
 }
 
 /// Tick then publish the retained charge status (#86). The publish is best-effort: a
@@ -230,7 +262,7 @@ fn tick_control(controller: &mut Controller, handoff: &Handoff) -> Tick {
 fn control_tick(mqtt: &mut Mqtt, controller: &mut Controller, handoff: &Handoff) {
     let tick = tick_control(controller, handoff);
     if let Err(e) = mqtt.publish_charge_status(&tick.status_json) {
-        warn!("charge status publish skipped (mqtt down?): {e:#}");
+        warn!(error = ?e, "charge status publish skipped (mqtt down?)");
     }
 }
 
@@ -298,10 +330,10 @@ fn probe(
     #[cfg(feature = "raw-debug")]
     {
         if let Err(e) = mqtt.publish_raw(&resp, &dump::to_hex(&resp), &dump::to_printable(&resp)) {
-            warn!("raw publish skipped (mqtt down?): {e:#}");
+            warn!(error = ?e, "raw publish skipped (mqtt down?)");
         }
         if let Err(e) = mqtt.publish_read_trace(&read_trace.to_json()) {
-            warn!("read-trace publish skipped (mqtt down?): {e:#}");
+            warn!(error = ?e, "read-trace publish skipped (mqtt down?)");
         }
     }
 
@@ -312,19 +344,64 @@ fn probe(
     // corrupts the object — it just contributes whatever whole lines it carried.
     let mut updated = false;
     for line in reassembler.push(&resp) {
-        updated |= telemetry.apply_line(&line);
+        updated |= record_line(telemetry, &line);
     }
     if updated {
         // Best-effort like the charge-status publish: an auto-wake probe keeps firing
         // during a WiFi/MQTT outage, and a failed telemetry publish must not reboot the
         // chip (which would silence the RS485 slave and red-fault the box, #87).
         if let Err(e) = mqtt.publish_telemetry(&telemetry.to_json()) {
-            warn!("telemetry publish skipped (mqtt down?): {e:#}");
+            warn!(error = ?e, "telemetry publish skipped (mqtt down?)");
         }
     }
 
-    info!("probe {} B → {} B response", bytes.len(), resp.len());
+    info!(
+        target: CN28_TARGET,
+        sent = bytes.len(),
+        received = resp.len(),
+        "cn28 probe window"
+    );
     Ok(updated)
+}
+
+/// Ship one reassembled CN28 line off-box and fold it into the snapshot (#3).
+///
+/// Every line becomes a record, escaped rather than lossily decoded, so the
+/// wreckage that made `temp_c` read 15042 would survive the trip. The hex dump
+/// rides along only on a line that failed to parse: that is the forensic case,
+/// and attaching it to every line would double a stream that already runs near
+/// the box's budget. Returns whether the line updated the snapshot.
+fn record_line(telemetry: &mut Cn28Snapshot, line: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(line);
+    match telemetry.apply_line(&text, wall_clock_ms()) {
+        LineOutcome::Applied => {
+            info!(target: CN28_TARGET, line = %dump::to_escaped(line), "cn28 line");
+            true
+        }
+        // The box pads its bursts with empty lines; recording them would be all
+        // volume and no signal.
+        LineOutcome::Blank => false,
+        LineOutcome::Unparsed => {
+            let failures = PARSE_FAILURES.fetch_add(1, Ordering::Relaxed) + 1;
+            warn!(
+                target: CN28_TARGET,
+                line = %dump::to_escaped(line),
+                hex = %dump::to_hex(line),
+                parse_failures = failures,
+                "cn28 line did not parse"
+            );
+            false
+        }
+    }
+}
+
+/// Milliseconds since the Unix epoch, so a fault's first sighting lines up with
+/// the log records. Reads ~0 until SNTP has synced (see [`crate::logging`]).
+fn wall_clock_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Push the box's freshest grant (`lb_current` from the CN28 LOG) and the car's
@@ -358,11 +435,11 @@ fn feed_cn28_feedback(controller: &mut Controller, telemetry: &Cn28Snapshot) {
 fn set_baud(mqtt: &mut Mqtt, uart: &UartDriver<'_>, rate: u32) -> Result<()> {
     match uart.change_baudrate(Hertz(rate)) {
         Ok(_) => {
-            info!("uart baud set to {rate}");
+            info!(target: CN28_TARGET, rate, "uart baud set");
             mqtt.publish_baud_result(rate, true)?;
         }
         Err(e) => {
-            warn!("uart baud {rate} rejected: {e}");
+            warn!(target: CN28_TARGET, rate, error = %e, "uart baud rejected");
             mqtt.publish_baud_result(rate, false)?;
         }
     }
