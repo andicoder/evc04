@@ -286,6 +286,7 @@ fn log_control_transition(tick: &Tick) {
     if LAST_REPORTED_BITS.swap(bits, Ordering::Relaxed) != bits {
         info!(
             reported_ampere = tick.reported,
+            reason = ?tick.reason,
             status = %tick.status_json,
             "control state changed"
         );
@@ -299,7 +300,12 @@ fn log_health(tick: &Tick) {
     let last = LAST_HEALTH_MS.load(Ordering::Relaxed);
     if last == 0 || now_ms.wrapping_sub(last) >= HEALTH_INTERVAL.as_millis() as u32 {
         LAST_HEALTH_MS.store(now_ms, Ordering::Relaxed);
-        info!(uptime_s = now_ms / 1000, status = %tick.status_json, "health");
+        info!(
+            uptime_s = now_ms / 1000,
+            reason = ?tick.reason,
+            status = %tick.status_json,
+            "health"
+        );
     }
 }
 
