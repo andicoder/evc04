@@ -50,7 +50,15 @@ fn main() -> Result<()> {
     // Logging comes up before anything else so the WiFi bring-up is itself on
     // the record (#3). The exporter simply drops batches until the link is
     // there; it never blocks the boot path.
-    let _logger = logging::init()?;
+    //
+    // Deliberately NOT fatal: propagating an error here would return from `main`
+    // before the RS485 slave thread exists, and a silent meter hard-faults the
+    // wallbox to solid red (SPECS §7). Losing the logs is survivable; losing the
+    // meter is not. `tracing` macros degrade to no-ops, and esp-idf's own output
+    // still reaches the USB console.
+    let _logger = logging::init()
+        .inspect_err(|e| eprintln!("logging init failed, continuing without it: {e:#}"))
+        .ok();
 
     let peripherals = Peripherals::take()?;
     let sysloop = EspSystemEventLoop::take()?;
