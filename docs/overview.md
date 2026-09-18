@@ -53,6 +53,13 @@ service manual, Modbus RTU register map, annotated board layouts and real-board
 silkscreen shots (CN20 meter bus, CN28 LOG socket, CN25 VESLINK) — live in
 [`hardware-reference/`](hardware-reference/).
 
+⚠️ **Not built, not needed yet:** [`drawings/cp-interrupt.svg`](drawings/cp-interrupt.svg)
+sketches a fail-safe relay in the control-pilot line, for waking a vehicle that has
+gone to sleep while plugged in. It is a proposal — the box has no control-pilot line
+today and may not need one. It is drawn because the fail-safe detail is the whole
+point: the relay's **normally-closed** contact means a dead ESP32 leaves the pilot
+connected and the box charging normally.
+
 ## Why one repo
 
 Both workstreams share the same hardware facts (mainboard layout, connectors, the
