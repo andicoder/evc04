@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 496" role="img" aria-label="Fail-safe control-pilot interrupt: an ESP32 GPIO drives a BC547 which energises a signal relay whose normally-closed contact sits in the CP line between mainboard and outlet"><style>
+  :root{--surface:#fff;--surface-2:#f7f9fa;--ink:#16202a;--ink-2:#4a5966;--ink-3:#7a8894;
+        --rule:#d3dade;--v5:#b8332a;--gnd:#37424d;--logic:#2c5f8a;--pilot:#1f7a4d;--warn:#a8501f;}
+  @media (prefers-color-scheme:dark){:root{--surface:#18212a;--surface-2:#1e2831;--ink:#e8eef2;
+        --ink-2:#a9b8c4;--ink-3:#7d8c98;--rule:#2c3a45;--v5:#f0705f;--gnd:#9aa8b4;
+        --logic:#6fb0e0;--pilot:#4fc48a;--warn:#e08a52;}}
+  text{font-family:"IBM Plex Mono",monospace;fill:var(--ink)}
+  .t{font-size:15px;font-weight:600}
+  .l{font-size:11px;fill:var(--ink-2)}
+  .s{font-size:10px;fill:var(--ink-3)}
+  .w{stroke:var(--ink-2);stroke-width:1.6;fill:none;stroke-linecap:round}
+  .v5{stroke:var(--v5);stroke-width:1.8;fill:none}
+  .gnd{stroke:var(--gnd);stroke-width:1.8;fill:none}
+  .lg{stroke:var(--logic);stroke-width:1.8;fill:none}
+  .cp{stroke:var(--pilot);stroke-width:2.2;fill:none}
+  .box{fill:var(--surface-2);stroke:var(--rule);stroke-width:1.2}
+  .dash{stroke:var(--rule);stroke-width:1;stroke-dasharray:4 4;fill:none}
+  .j{fill:var(--ink-2)}
+</style>
+<rect width="900" height="496" fill="var(--surface)"/>
+<text class="t" x="30" y="32">Control-pilot interrupt — fail-safe wake pulse</text>
+<text class="s" x="30" y="50">De-energised, the pilot is connected. A dead ESP32 cannot stop the box charging.</text>
+
+<rect class="dash" x="30" y="66" width="840" height="300" rx="6"/>
+<text class="s" x="44" y="84">LOW-VOLTAGE SIDE — inside the enclosure</text>
+
+<path class="v5" d="M120 118 H700"/>
+<text class="l" x="52" y="114" fill="var(--v5)">+5 V</text>
+<text class="s" x="52" y="128">ESP32 5V pin</text>
+
+<rect class="box" x="300" y="150" width="110" height="46" rx="4"/>
+<text class="l" x="312" y="170">K1 coil</text>
+<text class="s" x="312" y="186">5 V · 28 mA</text>
+<path class="w" d="M355 118 V150"/><circle class="j" cx="355" cy="118" r="3"/>
+<path class="w" d="M355 196 V232"/><circle class="j" cx="355" cy="232" r="3"/>
+
+<path class="w" d="M520 118 V232 H355"/><circle class="j" cx="520" cy="118" r="3"/>
+<path d="M508 176 H532 L520 152 Z" fill="none" stroke="var(--ink-2)" stroke-width="1.6"/>
+<path class="w" d="M506 152 H534"/>
+<text class="l" x="546" y="164">1N4148</text>
+<text class="s" x="546" y="178">ring (cathode) → +5 V</text>
+
+<path class="w" d="M330 240 V296"/>
+<path class="w" d="M330 252 L355 232"/>
+<path class="w" d="M330 284 L355 304"/>
+<path d="M349 294 L357 306 L344 306 Z" fill="var(--ink-2)"/>
+<path class="w" d="M355 304 V352"/>
+<text class="l" x="372" y="272">BC547</text>
+<text class="s" x="372" y="286">collector up, emitter down</text>
+
+<rect class="box" x="186" y="254" width="72" height="28" rx="4"/>
+<text class="l" x="200" y="273">1 kΩ</text>
+<path class="lg" d="M108 268 H186"/><path class="lg" d="M258 268 H330"/>
+<text class="l" x="44" y="264" fill="var(--logic)">GPIO27</text>
+<text class="s" x="44" y="278">3.3 V logic</text>
+
+<circle class="j" cx="280" cy="268" r="3"/>
+<path class="w" d="M280 268 V310"/>
+<rect class="box" x="252" y="310" width="56" height="26" rx="4"/>
+<text class="s" x="262" y="328">10 kΩ</text>
+<path class="w" d="M280 336 V352"/>
+
+<path class="gnd" d="M120 352 H700"/>
+<text class="l" x="52" y="348" fill="var(--gnd)">GND</text>
+<text class="s" x="120" y="374">10 kΩ holds the base low while the ESP boots</text>
+
+<rect class="dash" x="30" y="386" width="840" height="78" rx="6"/>
+<text class="s" x="44" y="404">PILOT SIDE — galvanically separate from the coil</text>
+<path class="cp" d="M172 434 H352"/>
+<path class="cp" d="M470 434 H744"/>
+<rect class="box" x="352" y="412" width="118" height="44" rx="4"/>
+<text class="l" x="366" y="430">K1 contact</text>
+<text class="s" x="366" y="446">NC — COM</text>
+<circle class="j" cx="352" cy="434" r="3"/><circle class="j" cx="470" cy="434" r="3"/>
+<text class="l" x="52" y="430">mainboard</text>
+<text class="s" x="52" y="444">CP/PP socket</text>
+<text class="l" x="758" y="430">outlet</text>
+<text class="s" x="758" y="444">CP screw terminal</text>
+<text class="s" x="30" y="480" fill="var(--warn)">Pulse ≈ 1 s. The vehicle sees unplug and plug; the box sees state A1 — no cable — which is not an error.</text>
+<text class="s" x="30" y="492" fill="var(--warn)">The unused NO contact can later take 1 kΩ to +12 V for the keep-alive variant.</text>
+</svg>
