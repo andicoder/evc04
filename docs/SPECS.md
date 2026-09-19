@@ -517,6 +517,55 @@ publishes the current on-change and then holds it, so aging the target would
 deadlock (box forgets → pauses → evcc never re-sends). The grid heartbeat carries
 the "controller alive" check instead.
 
+### Waking a sleeping vehicle — the control-pilot interrupt
+
+**Why the box has to do this at all.** A Renault Zoe Ph1 goes to sleep within a
+minute of a charge ending and then ignores an offer that appears later: measured
+on a car with a real deficit, an offer standing at 16 A for three minutes
+produced no charge and not one frame on its OBD bus. The obvious remedy —
+waking it over CAN — works and was abandoned, because the frame that is long
+enough to be useful also leaves a warning on the car's dashboard that only a
+drive clears. The pilot is the remaining way in: a car reads a pilot that goes
+away and comes back as a cable being re-plugged, and answers it.
+
+A **normally-closed** relay in the CP line on `GPIO27`, per
+[`drawings/cp-interrupt.svg`](drawings/cp-interrupt.svg). Fail-safe is the whole
+design: an ESP32 that is dead, resetting or unflashed leaves the contact closed
+and the pilot intact, so the worst case is a box that behaves exactly like one
+without this feature.
+
+**Opt-in, gated, and bounded — never implicit.** This is the one place the
+firmware acts on its own rather than on a published target, so every edge of it
+is a decision:
+
+| | |
+|---|---|
+| `CP_WAKE_ENABLED` | compile-time, **default off**. A box that was not built for this cannot do it. |
+| gate | only while `enable = true` **and** the grant is at or above `MIN_CHARGE_AMPERE`. An offer nobody made is not worth waking a car for. |
+| trigger | the offer has stood for `CP_WAKE_AFTER_S` (default 40 s) with the CN28 meter reporting no draw. |
+| pulse | `CP_WAKE_PULSE_S` (default 12 s). Reported durations cluster at 10 s for other makes and **above** 10 s for this one. |
+| bound | at most `CP_WAKE_MAX_ATTEMPTS` (default 3) per plug-in, reset only by a real `A → B` transition in the CN28 `S:` line. |
+| after | hold the offer for `CP_WAKE_SETTLE_S` (default 30 s) before any pause may act, so a waking car is not cut off mid-decision. |
+
+**The bound is the point of choosing this shape.** An unbounded version is what
+the reference implementations ship and it demonstrably works, but a relay that
+pulls the pilot on its own judgement, all night, with no ceiling, is the kind of
+automation nobody wants to debug at three in the morning. Three attempts and
+then it stops and says so.
+
+**It reports what it did.** `cp_wake_attempts` and `cp_wake_last` go into the
+status payload (§8), because an intervention that leaves no trace is
+indistinguishable from a car that woke by itself — and this box already learned
+that lesson once, when a wallbox power-cycle left no mark anywhere and cost an
+evening's measurement.
+
+⚠️ **The premise is borrowed, not measured here.** That a pilot interrupt wakes
+*this* car is reported by others and shipped by other controllers; it has not
+been shown on this vehicle, because there is no way to interrupt the pilot
+without the relay. Building it **is** the experiment. If it fails, the hardware
+cost is under five euros and the fail-safe contact means nothing is worse than
+before.
+
 ### Persistence
 
 The `target`/`enable` topics are non-retained, so the last commanded setpoint is
@@ -531,6 +580,12 @@ No config files, no env vars at runtime. `WIFI_SSID` / `WIFI_PASSWORD` / `MQTT_U
 `OTLP_LOGS_URL` — and the optional `OTLP_LOGS_AUTH` — are **baked in at build time**
 (`env!`, never committed); everything else is a compile-time constant. The build is
 per-install, not a generic image.
+
+That includes the `CP_WAKE_*` constants above. A box without the relay is built
+with `CP_WAKE_ENABLED = false` and then cannot drive a pin that is not wired —
+the capability is a property of the build, matching the hardware it was built
+for, rather than a runtime setting that can be switched on against a box that
+has no relay in it.
 
 ### Logging
 
@@ -670,9 +725,10 @@ UTF-8 JSON; QoS 1; the status topic is retained. Topics are device-scoped under
 - **Outbound — status** (`evc04/charge/status`, retained, + offline LWT): `online`,
   `target_ampere`, `reported_ampere`, `grid_power_w`, `grid_age_s`, `grid_failsafe`,
   `last_poll_age_s`, `charge_state`, `enabled`, `last_error`, `lb_current_ampere`
-  (the box's grant — the V4 feedback), `cn28_feedback_stale`, and `probe_over_ampere`.
-  `charge_state` is the approximated evcc `B`/`C` state (#28; `A` is never asserted —
-  the emulation has no control-pilot line).
+  (the box's grant — the V4 feedback), `cn28_feedback_stale`, `probe_over_ampere`,
+  and — when `CP_WAKE_ENABLED` (§7) — `cp_wake_attempts` and `cp_wake_last`.
+  `charge_state` is the real IEC-61851 pilot state decoded from the CN28 `S:` line
+  since #148, `A`/`B`/`C`, or `""` while the pilot is unknown.
 
 **The brain is evcc** (#28): the firmware is a mode-agnostic actuator, driven as an
 **evcc custom charger** — `maxcurrent` → target, `enable` → the enable gate, `status`
