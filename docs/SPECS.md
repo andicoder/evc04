@@ -534,30 +534,33 @@ design: an ESP32 that is dead, resetting or unflashed leaves the contact closed
 and the pilot intact, so the worst case is a box that behaves exactly like one
 without this feature.
 
-**Opt-in, gated, and bounded — never implicit.** This is the one place the
-firmware acts on its own rather than on a published target, so every edge of it
-is a decision:
+**evcc decides, the firmware only pulses.** evcc already runs a bounded wakeup
+for chargers that can interrupt the pilot, so the firmware does not grow a
+second, competing judgement. evcc's loadpoint starts a 30 s timer when it
+enables the charger; while it stays enabled, in `B` and below the vehicle's SoC
+limit, it makes up to six attempts 30 s apart, calling the **charger's** wakeup
+on attempts 1, 3 and 5 (the others go to the vehicle API where one exists). A
+vehicle whose SoC evcc knows to be at its limit is never woken — which keeps a
+full car, a Tesla at its charge limit included, out of it. The firmware runs
+exactly what evcc's own relay chargers (`openwb-native`) run for that call:
+no offer while the line is open, the pilot opened for a fixed pulse, then back
+to normal control.
 
 | | |
 |---|---|
-| `CP_WAKE_ENABLED` | compile-time, **default off**. A box that was not built for this cannot do it. |
-| gate | only while `enable = true` **and** the grant is at or above `MIN_CHARGE_AMPERE`. An offer nobody made is not worth waking a car for. |
-| trigger | the offer has stood for `CP_WAKE_AFTER_S` (default 40 s) with the CN28 meter reporting no draw. |
-| pulse | `CP_WAKE_PULSE_S` (default 12 s). Reported durations cluster at 10 s for other makes and **above** 10 s for this one. |
-| bound | at most `CP_WAKE_MAX_ATTEMPTS` (default 3) per plug-in, reset only by a real `A → B` transition in the CN28 `S:` line. |
-| after | hold the offer for `CP_WAKE_SETTLE_S` (default 30 s) before any pause may act, so a waking car is not cut off mid-decision. |
+| `CP_WAKE_ENABLED` | compile-time, **default off** — the `cp-wake` Cargo feature. A box that was not built for this cannot do it; a wakeup on such a build is rejected into `last_error`. |
+| trigger | `{"wakeup": true}` on `evc04/charge/wakeup` — evcc's custom-charger `wakeup` ([`evcc.md`](evcc.md)). |
+| pulse | `CP_WAKE_PULSE` (12 s). evcc's relay chargers default to 10 s (`cpwait`); reported durations cluster at 10 s for other makes and **above** 10 s for the Zoe Ph1. |
+| offer | paused for the length of the pulse (`reason: CpWake`). A failsafe still names itself first. |
+| repeat | a wakeup during a running pulse is ignored — it never stretches the pulse. Pacing and the attempt bound are evcc's. |
+| status | `charge_state` reads `B` while the line is open: the box decodes our own open pilot as `A`, and an `A` reaching evcc is an unplug that would end the session mid-wakeup. |
 
-**The bound is the point of choosing this shape.** An unbounded version is what
-the reference implementations ship and it demonstrably works, but a relay that
-pulls the pilot on its own judgement, all night, with no ceiling, is the kind of
-automation nobody wants to debug at three in the morning. Three attempts and
-then it stops and says so.
-
-**It reports what it did.** `cp_wake_attempts` and `cp_wake_last` go into the
-status payload (§8), because an intervention that leaves no trace is
-indistinguishable from a car that woke by itself — and this box already learned
-that lesson once, when a wallbox power-cycle left no mark anywhere and cost an
-evening's measurement.
+**It reports what it did.** `cp_wake_attempts` (pulses since boot) and
+`cp_wake_last` (Unix seconds of the last pulse, `null` before the first) go into
+the status payload (§8), and each pulse is a warning in the log, because an
+intervention that leaves no trace is indistinguishable from a car that woke by
+itself — and this box already learned that lesson once, when a wallbox
+power-cycle left no mark anywhere and cost an evening's measurement.
 
 ⚠️ **The premise is borrowed, not measured here.** That a pilot interrupt wakes
 *this* car is reported by others and shipped by other controllers; it has not
@@ -581,8 +584,8 @@ No config files, no env vars at runtime. `WIFI_SSID` / `WIFI_PASSWORD` / `MQTT_U
 (`env!`, never committed); everything else is a compile-time constant. The build is
 per-install, not a generic image.
 
-That includes the `CP_WAKE_*` constants above. A box without the relay is built
-with `CP_WAKE_ENABLED = false` and then cannot drive a pin that is not wired —
+That includes `CP_WAKE_ENABLED` above. A box without the relay is built without
+the `cp-wake` feature and then cannot drive a pin that is not wired —
 the capability is a property of the build, matching the hardware it was built
 for, rather than a runtime setting that can be switched on against a box that
 has no relay in it.
@@ -611,7 +614,7 @@ those were kept nowhere. So:
   flagged the incident at 22:06. Blank padding lines never count.
 - **Control ticks are logged on change**, not at 1 Hz, and each carries the
   `reason` — which rule of the grant law (§6) produced the value: `Failsafe`,
-  `PilotProbe`, `Shut`, `ColdStartKick`, `RampPin` or `LbTracking`. The served
+  `PilotProbe`, `CpWake`, `Shut`, `ColdStartKick`, `RampPin` or `LbTracking`. The served
   current cannot be inverted back into a decision (a failsafe pause and a box
   held shut both report `max + margin`), so the rule names itself rather than
   `core` growing a logger it does not want.
@@ -722,6 +725,8 @@ UTF-8 JSON; QoS 1; the status topic is retained. Topics are device-scoped under
   gate independent of the target (#60).
 - **Inbound — probe_over** (`evc04/charge/probe_over`): `{ "ampere": N }`, the
   measurement-probe lift (§7); 0 clears.
+- **Inbound — wakeup** (`evc04/charge/wakeup`): `{ "wakeup": true }`, evcc's charger
+  wakeup — one control-pilot pulse on a `cp-wake` build (§7).
 - **Outbound — status** (`evc04/charge/status`, retained, + offline LWT): `online`,
   `target_ampere`, `reported_ampere`, `grid_power_w`, `grid_age_s`, `grid_failsafe`,
   `last_poll_age_s`, `charge_state`, `enabled`, `last_error`, `lb_current_ampere`

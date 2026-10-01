@@ -210,6 +210,9 @@ pub struct GrantControlInputs {
     /// (measured 2026-08-16). While this is set the offer is opened *despite* the
     /// pause gates, for the bounded window the firmware allows.
     pub pilot_probe: bool,
+    /// evcc's wakeup is holding the control pilot open (SPECS §7). Like evcc's own
+    /// pilot-relay chargers, nothing is offered while the line is open.
+    pub cp_wake: bool,
 }
 
 /// The V4 per-tick decision: gate on enable, both staleness failsafes, the cold
@@ -237,6 +240,8 @@ pub enum GrantReason {
     /// The post-boot pilot probe is briefly opening the offer to make the box
     /// report its control-pilot state (#161).
     PilotProbe,
+    /// evcc's wakeup holds the control pilot open, so nothing is offered.
+    CpWake,
     /// Held shut: not enabled, no target yet, or a target below the charge floor.
     Shut,
     /// The box grants nothing, so the full offer goes out to force a session open.
@@ -263,6 +268,9 @@ pub fn grant_tracking_current(inputs: &GrantControlInputs) -> Grant {
     // diagnostic convenience.
     if inputs.grid_stale || inputs.lb_stale {
         return grant(pause, GrantReason::Failsafe);
+    }
+    if inputs.cp_wake {
+        return grant(pause, GrantReason::CpWake);
     }
     // Everything below the failsafes that would hold the box shut: not enabled, no
     // target yet, or a target under the floor the car cannot hold.
@@ -503,6 +511,7 @@ mod tests {
             grid_stale: false,
             enabled: true,
             pilot_probe: false,
+            cp_wake: false,
         }
     }
 
@@ -583,6 +592,50 @@ mod tests {
         assert_eq!(
             grant_tracking_current(&with).current,
             grant_tracking_current(&grant_base()).current
+        );
+    }
+
+    // --- evcc-commanded pilot interrupt (SPECS §7) ------------------------------
+    // evcc's own pilot-interrupt chargers disable the charger, open the pilot and
+    // re-enable it; the box gets the same: no offer while the line is open.
+
+    #[test]
+    fn a_pilot_interrupt_pauses_a_healthy_session() {
+        let inputs = GrantControlInputs {
+            cp_wake: true,
+            ..grant_base()
+        };
+        assert_eq!(
+            grant_tracking_current(&inputs),
+            Grant {
+                current: pause_report(MAX, MARGIN),
+                reason: GrantReason::CpWake,
+            }
+        );
+    }
+
+    #[test]
+    fn a_pilot_interrupt_outranks_the_pilot_probe() {
+        let inputs = GrantControlInputs {
+            enabled: false,
+            target: None,
+            pilot_probe: true,
+            cp_wake: true,
+            ..grant_base()
+        };
+        assert_eq!(grant_tracking_current(&inputs).reason, GrantReason::CpWake);
+    }
+
+    #[test]
+    fn a_failsafe_still_names_itself_during_a_pilot_interrupt() {
+        let inputs = GrantControlInputs {
+            grid_stale: true,
+            cp_wake: true,
+            ..grant_base()
+        };
+        assert_eq!(
+            grant_tracking_current(&inputs).reason,
+            GrantReason::Failsafe
         );
     }
 

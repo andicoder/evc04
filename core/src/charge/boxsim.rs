@@ -474,6 +474,7 @@ mod tests {
                 grid_stale: false,
                 enabled: true,
                 pilot_probe: false,
+                cp_wake: false,
             })
             .current
             .0;

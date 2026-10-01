@@ -62,8 +62,8 @@ ESP32 GND              ─────────────  CN28 pin 1  (GND
 The box is **Master** on CN20 and polls the meter; we are the **slave** the box
 reads (SPECS §2/§4). RS485 is a half-duplex differential bus, so it needs a
 transceiver. We use a **TTL485 v2 auto-direction module**: it senses TX activity and
-flips the bus direction itself, so there is **no DE line** to drive and **GPIO27 is
-now free**.
+flips the bus direction itself, so there is **no DE line** to drive, which left
+GPIO27 free for the control-pilot relay (below).
 
 ```
 ESP32  GPIO25 (UART2 TX) ──► RXD   ┐
@@ -113,7 +113,15 @@ With the auto-direction module the firmware does **nothing** for direction contr
 it enables the bus driver when we clock bytes out on `RXD` and returns to receive
 after the line idles, all in hardware. `firmware/src/rs485.rs` just reads the poll
 and writes the reply — no DE toggle, no TX-drain wait. (The earlier bare-MAX3485
-design drove DE manually on GPIO27; that pin is unused now.)
+design drove DE manually on GPIO27; that pin now drives the control-pilot relay.)
+
+## Control-pilot relay (optional, `cp-wake` builds)
+
+GPIO27 drives a BC547 that energises a signal relay whose **normally-closed** contact
+sits in the CP line, per [`drawings/cp-interrupt.svg`](drawings/cp-interrupt.svg).
+High opens the pilot; low — and a dead, resetting or unflashed ESP32, held there by
+the 10 kΩ base pull-down — leaves it connected. Only a firmware built with the
+`cp-wake` feature touches the pin ([`SPECS.md`](SPECS.md) §7).
 
 ## Bus parameters (must match the box)
 

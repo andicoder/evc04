@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
-use esp_idf_svc::hal::gpio;
+use esp_idf_svc::hal::gpio::{self, PinDriver};
 use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::hal::reset::restart;
 use esp_idf_svc::hal::task::watchdog::{TWDTConfig, TWDTDriver};
@@ -113,6 +113,22 @@ fn main() -> Result<()> {
     // never blocks on the worker.
     let handoff = Arc::new(charge::Handoff::new());
 
+    // Control-pilot relay (SPECS §7), only on a build made for it. Driven low at
+    // once: the relay is normally closed, so low keeps the pilot connected, and the
+    // 10 kΩ pull-down holds it there through the boot before this line runs. Not
+    // fatal: an error here would return before the RS485 slave exists, and a lost
+    // wakeup is survivable where a silent meter is not.
+    let cp_relay = charge::CP_WAKE_ENABLED
+        .then(|| {
+            let mut relay = PinDriver::output(peripherals.pins.gpio27)?;
+            relay.set_low()?;
+            Ok::<_, esp_idf_svc::sys::EspError>(relay)
+        })
+        .and_then(|r| {
+            r.inspect_err(|e| error!(error = ?e, "cp relay init failed"))
+                .ok()
+        });
+
     // Task watchdog (#113): the prober subscribes its own task and feeds it each
     // loop; a hang longer than this reboots the chip. 60 s clears the longest
     // legitimate block (a bounded OTA download); panic_on_trigger turns the timeout
@@ -132,7 +148,7 @@ fn main() -> Result<()> {
         .spawn({
             let handoff = Arc::clone(&handoff);
             move || {
-                if let Err(e) = probe::run(cn28, handoff, twdt, nvs) {
+                if let Err(e) = probe::run(cn28, handoff, twdt, nvs, cp_relay) {
                     error!(error = ?e, "prober exited");
                 }
                 // The prober is the device's whole job and now feeds production

@@ -16,6 +16,7 @@ Topics are **device-scoped** under `evc04/charge/*` (fixed, not configurable):
 | Inbound — grid power | `evc04/charge/grid_power` | `{ "watt": N }`   |
 | Inbound — enable     | `evc04/charge/enable`     | `{ "enable": b }` |
 | Inbound — probe      | `evc04/charge/probe_over` | `{ "ampere": N }` |
+| Inbound — wakeup     | `evc04/charge/wakeup`     | `{ "wakeup": b }` |
 | Outbound — status    | `evc04/charge/status`     | (retained JSON)   |
 
 All payloads are UTF-8 JSON; QoS 1. The **status** topic is retained; the inbound
@@ -161,6 +162,24 @@ touching the command state:
 
 ---
 
+## Inbound — wakeup
+
+**Topic:** `evc04/charge/wakeup` · **QoS 1** · **non-retained**
+
+evcc's charger wakeup ([`evcc.md`](evcc.md)) — one control-pilot interrupt on a box
+built with the `cp-wake` feature and the relay wired in ([`SPECS.md`](SPECS.md) §7):
+
+```json
+{ "wakeup": true }
+```
+
+- The pilot opens for 12 s with no offer, then normal control resumes. A wakeup
+  during a running pulse is ignored. When and how often is evcc's decision.
+- `false` does nothing. On a build without the relay a `true` is rejected and
+  surfaced in `last_error`.
+
+---
+
 ## Outbound — status
 
 **Topic:** `evc04/charge/status` · **QoS 1** · **publish retained**
@@ -201,6 +220,8 @@ reads it via one MQTT sensor using `json_attributes_topic` + value templates.
 | `lb_current_ampere`   | number         | The box's own per-car grant (`lb_current`) read from the CN28 LOG — the V4 control feedback. |
 | `cn28_feedback_stale` | bool           | `true` when the grant feed is > 15 s old; the firmware then pauses (blind regulation never charges). |
 | `probe_over_ampere`   | number         | Active measurement-probe lift over the ceiling, ampere (0 when no probe is running). |
+| `cp_wake_attempts`    | number         | Only on a `cp-wake` build: control-pilot pulses since boot. |
+| `cp_wake_last`        | number or null | Only on a `cp-wake` build: Unix seconds of the last pulse, `null` before the first. |
 
 > **`charge_state` mirrors the box's real pilot, guarded for evcc.** Since #148 it is
 > derived from the CN28 LOG `S:` line (`cp_state`), not approximated from our command:

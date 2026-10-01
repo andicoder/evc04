@@ -10,3 +10,4 @@ pub mod control;
 pub mod frame;
 pub mod intake;
 pub mod status;
+pub mod wake;
