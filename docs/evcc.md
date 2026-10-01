@@ -20,6 +20,7 @@ control surface.
 | `enable` (write) | `enable` | `{"enable": <bool>}` — the on/off gate, **independent** of the throttle (#60). `false` hard-pauses; `true` honors the current `maxcurrent`. |
 | `enabled` (read) | `status` | our `enabled` field — reflects the gate directly. |
 | `status` (read) | `status` | our `charge_state` field: `A` (no vehicle) / `B` (connected, not charging) / `C` (charging) / `""` (pilot unknown → evcc retains its last status). |
+| `wakeup` (write, optional) | `wakeup` | `{"wakeup": true}` — one control-pilot interrupt; only on a box built with `cp-wake` and the relay wired in ([`SPECS.md`](SPECS.md) §7). |
 | `power` (read, optional) | `evc04/cn28/telemetry` | sum of the box's own per-phase active power — real measured watts instead of evcc's `current × phases × 230 V` estimate. |
 
 > **On/off and the current setpoint use separate topics.** Earlier the single `target`
@@ -77,6 +78,12 @@ chargers:
       source: mqtt
       topic: evc04/charge/target
       payload: '{"ampere": ${maxcurrent}}'
+    # Only with the control-pilot relay (a `cp-wake` build, SPECS §7): evcc calls
+    # this when the car stays in B after it enabled the charger, at most three times.
+    # wakeup:
+    #   source: mqtt
+    #   topic: evc04/charge/wakeup
+    #   payload: '{"wakeup": ${wakeup}}'
 ```
 
 ## Loadpoint: min/max current

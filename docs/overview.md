@@ -53,11 +53,11 @@ service manual, Modbus RTU register map, annotated board layouts and real-board
 silkscreen shots (CN20 meter bus, CN28 LOG socket, CN25 VESLINK) — live in
 [`hardware-reference/`](hardware-reference/).
 
-⚠️ **Specified, not built yet:** [`drawings/cp-interrupt.svg`](drawings/cp-interrupt.svg)
+⚠️ **Firmware ready, hardware not built yet:** [`drawings/cp-interrupt.svg`](drawings/cp-interrupt.svg)
 sketches a fail-safe relay in the control-pilot line, for waking a vehicle that has
-gone to sleep while plugged in. The behaviour around it is now specified in
-[`SPECS.md`](SPECS.md) §7 — opt-in at build time, gated on a standing offer, and
-bounded to three attempts per plug-in. The fail-safe detail is the whole point:
+gone to sleep while plugged in. The firmware drives it on GPIO27 when built with
+the `cp-wake` feature, and only on evcc's charger wakeup — evcc decides when and
+how often ([`SPECS.md`](SPECS.md) §7). The fail-safe detail is the whole point:
 the relay's **normally-closed** contact means a dead ESP32 leaves the pilot
 connected and the box charging normally, so the worst case is a box that behaves
 exactly like one without the feature.

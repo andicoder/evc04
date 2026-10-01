@@ -19,18 +19,23 @@
 //! pause: a stale grid heartbeat (#136 — HA/evcc gone while the latched target
 //! would charge forever), stale CN28 feedback (the regulation is blind) and
 //! `enable=false` each STOP an evcc/HA-managed box, never start it (SPECS §7, #52).
+//!
+//! On a `cp-wake` build the controller also owns the control-pilot relay on GPIO27
+//! and runs evcc's charger wakeup as one fixed pulse (SPECS §7).
 
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use esp_idf_svc::hal::gpio::{Output, PinDriver};
 use esp_idf_svc::nvs::{EspDefaultNvs, EspDefaultNvsPartition, EspNvs};
 use evc04_cn28_core::charge::control::{
     grant_tracking_current, probe_report, Ampere, GrantControlInputs, GrantReason,
 };
 use evc04_cn28_core::charge::intake::IntakeError;
-use evc04_cn28_core::charge::status::{charge_state, status_json, Status};
+use evc04_cn28_core::charge::status::{charge_state, status_json, CpWakeStatus, Status};
+use evc04_cn28_core::charge::wake::{charge_state_during_pulse, CpWake};
 use evc04_cn28_core::probe::cn28::CpState;
-use tracing::warn;
+use tracing::{info, warn};
 
 const MAX_BOX_AMPERE: f32 = 16.0;
 const MIN_CHARGE_AMPERE: f32 = 6.0;
@@ -88,6 +93,17 @@ const PILOT_PROBE_DELAY: Duration = Duration::from_secs(90);
 /// produce.
 const PILOT_PROBE_WINDOW: Duration = Duration::from_secs(45);
 
+/// Whether this build drives the control-pilot relay (SPECS §7). A property of the
+/// build, matching the hardware it was built for: a box without the relay has no
+/// runtime switch that could drive an unwired pin.
+pub const CP_WAKE_ENABLED: bool = cfg!(feature = "cp-wake");
+/// The normally-closed relay in the CP line: high energises it and opens the pilot.
+pub type CpRelay = PinDriver<'static, Output>;
+/// How long one wakeup holds the pilot open — evcc's `cpwait` for its own relay
+/// chargers (default 10 s there). Reported durations cluster at 10 s for other
+/// makes and above it for the Zoe Ph1 this was built for.
+const CP_WAKE_PULSE: Duration = Duration::from_secs(12);
+
 /// One control tick's outputs: the per-phase current to hand to the slave and the
 /// retained status JSON to publish.
 pub struct Tick {
@@ -139,10 +155,15 @@ pub struct Controller {
     /// and restored on boot so an OTA/reboot resumes instead of cold-start pausing.
     /// `None` if NVS could not be opened — persistence off, the box still runs.
     nvs: Option<EspDefaultNvs>,
+    /// The pilot relay, `None` on a build without it, and the pulse it runs.
+    cp_relay: Option<CpRelay>,
+    cp_relay_open: bool,
+    cp_wake: CpWake,
+    cp_wake_last_unix: Option<u64>,
 }
 
 impl Controller {
-    pub fn new(partition: EspDefaultNvsPartition) -> Self {
+    pub fn new(partition: EspDefaultNvsPartition, cp_relay: Option<CpRelay>) -> Self {
         let now = Instant::now();
         let mut controller = Self {
             target: None,
@@ -163,6 +184,10 @@ impl Controller {
             pilot_probed: false,
             boot_at: now,
             nvs: None,
+            cp_relay,
+            cp_relay_open: false,
+            cp_wake: CpWake::new(CP_WAKE_PULSE.as_millis() as u64),
+            cp_wake_last_unix: None,
         };
         // Open the persistence namespace and restore the last commanded setpoint, so
         // an OTA/reboot resumes rather than cold-starting paused. Best-effort: if NVS
@@ -278,6 +303,64 @@ impl Controller {
         }
     }
 
+    /// evcc's charger wakeup (SPECS §7): open the pilot for one pulse. evcc decides
+    /// when — enabled, stuck in `B`, below the vehicle's SoC limit — and paces its
+    /// own attempts; a repeat during a running pulse is ignored, never stretches it.
+    pub fn apply_wakeup(&mut self, parsed: Result<bool, IntakeError>, now: Instant) {
+        match parsed {
+            Ok(true) if self.cp_relay.is_none() => {
+                self.last_error = Some(String::from("wakeup: no pilot relay on this build"));
+            }
+            Ok(true) => {
+                self.last_error = None;
+                if self.cp_wake.request(self.uptime_ms(now)) {
+                    self.cp_wake_last_unix = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .ok()
+                        .map(|d| d.as_secs());
+                    warn!(
+                        attempts = self.cp_wake.attempts(),
+                        pulse_s = CP_WAKE_PULSE.as_secs(),
+                        "cp wake: opening the control pilot"
+                    );
+                    self.drive_cp_relay(true);
+                } else {
+                    info!("cp wake: pulse already running, request ignored");
+                }
+            }
+            // evcc only ever sends `true`; nothing to undo for a `false`.
+            Ok(false) => self.last_error = None,
+            Err(e) => self.last_error = Some(format!("bad wakeup: {e:?}")),
+        }
+    }
+
+    fn uptime_ms(&self, now: Instant) -> u64 {
+        now.saturating_duration_since(self.boot_at).as_millis() as u64
+    }
+
+    fn drive_cp_relay(&mut self, open: bool) {
+        let Some(relay) = self.cp_relay.as_mut() else {
+            return;
+        };
+        if open == self.cp_relay_open {
+            return;
+        }
+        let result = if open {
+            relay.set_high()
+        } else {
+            relay.set_low()
+        };
+        match result {
+            Ok(()) => {
+                self.cp_relay_open = open;
+                if !open {
+                    info!("cp wake: control pilot closed again");
+                }
+            }
+            Err(e) => warn!(error = ?e, open, "cp wake: relay drive failed"),
+        }
+    }
+
     pub fn apply_enable(&mut self, parsed: Result<bool, IntakeError>) {
         match parsed {
             Ok(b) => {
@@ -340,6 +423,8 @@ impl Controller {
         // carries the "controller is alive" failsafe instead (#136).
         // Hoisted out of the struct literal below: it takes &mut self.
         let pilot_probe = self.pilot_probe_active(now);
+        let cp_wake = self.cp_relay.is_some() && self.cp_wake.is_open(self.uptime_ms(now));
+        self.drive_cp_relay(cp_wake);
         let grant = grant_tracking_current(&GrantControlInputs {
             max: Ampere(MAX_BOX_AMPERE),
             min_charge: Ampere(MIN_CHARGE_AMPERE),
@@ -352,6 +437,7 @@ impl Controller {
             grid_stale,
             enabled: self.enabled,
             pilot_probe,
+            cp_wake,
         });
         let reported = grant.current.0;
 
@@ -368,15 +454,18 @@ impl Controller {
         // what the meter tells the box, not our command state —
         // evcc reads charge_state as its charger status, and a probe flipping it to
         // 'B' would make evcc believe the charge stopped.
-        let charge_state_letter = charge_state(
-            Ampere(reported),
-            Ampere(MAX_BOX_AMPERE),
-            Ampere(PAUSE_MARGIN_AMPERE),
-            self.cn28_cp_state,
-            cn28_stale,
-            // The car's real draw (max phase current off the CN28 MID metering),
-            // which outranks a latched pilot letter (#158).
-            Ampere(self.cn28_car),
+        let charge_state_letter = charge_state_during_pulse(
+            charge_state(
+                Ampere(reported),
+                Ampere(MAX_BOX_AMPERE),
+                Ampere(PAUSE_MARGIN_AMPERE),
+                self.cn28_cp_state,
+                cn28_stale,
+                // The car's real draw (max phase current off the CN28 MID metering),
+                // which outranks a latched pilot letter (#158).
+                Ampere(self.cn28_car),
+            ),
+            cp_wake,
         );
         let served = probe_report(
             Ampere(reported),
@@ -404,6 +493,10 @@ impl Controller {
             } else {
                 0.0
             },
+            cp_wake: self.cp_relay.is_some().then(|| CpWakeStatus {
+                attempts: self.cp_wake.attempts(),
+                last_unix_s: self.cp_wake_last_unix,
+            }),
         };
         Tick {
             reported: served,

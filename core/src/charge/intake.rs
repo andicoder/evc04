@@ -53,6 +53,15 @@ pub fn parse_enable(payload: &str) -> Result<bool, IntakeError> {
     }
 }
 
+/// Parse a `{"wakeup": bool}` payload — evcc's charger wakeup (SPECS §7).
+pub fn parse_wakeup(payload: &str) -> Result<bool, IntakeError> {
+    match field_value(payload, "wakeup").ok_or(IntakeError::MissingField)? {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(IntakeError::BadType),
+    }
+}
+
 /// The raw, trimmed value token for `"key"` in a flat JSON object, or `None` if the
 /// key is absent. The token runs from after the `:` to the next `,`/`}` — good for
 /// the contract's number/bool values; a string value keeps its quotes, so it fails
@@ -169,5 +178,23 @@ mod tests {
     #[test]
     fn non_bool_enable_is_bad_type() {
         assert_eq!(parse_enable(r#"{"enable": 1}"#), Err(IntakeError::BadType));
+    }
+
+    #[test]
+    fn parses_evcc_wakeup() {
+        assert_eq!(parse_wakeup(r#"{"wakeup": true}"#), Ok(true));
+    }
+
+    #[test]
+    fn missing_wakeup_field_is_error() {
+        assert_eq!(
+            parse_wakeup(r#"{"enable": true}"#),
+            Err(IntakeError::MissingField)
+        );
+    }
+
+    #[test]
+    fn non_bool_wakeup_is_bad_type() {
+        assert_eq!(parse_wakeup(r#"{"wakeup": 1}"#), Err(IntakeError::BadType));
     }
 }

@@ -96,6 +96,17 @@ pub struct Status<'a> {
     /// #135 step 6: active measurement-probe lift over the ceiling (A), 0 when off.
     /// While set, `reported_ampere` sits above the ceiling *on purpose*.
     pub probe_over_ampere: f32,
+    /// The evcc-commanded pilot interrupt (SPECS §7), `None` on a build without the
+    /// relay — the fields are then absent rather than a misleading zero.
+    pub cp_wake: Option<CpWakeStatus>,
+}
+
+/// What the pilot interrupt did since boot, so a car that woke by itself and one
+/// that was woken can be told apart afterwards.
+pub struct CpWakeStatus {
+    pub attempts: u32,
+    /// Wall-clock start of the last pulse, `None` if none ran yet.
+    pub last_unix_s: Option<u64>,
 }
 
 /// Render [`Status`] as the retained status JSON (one flat object, field order
@@ -105,12 +116,21 @@ pub fn status_json(s: &Status) -> String {
         Some(e) => format!("\"{e}\""),
         None => String::from("null"),
     };
+    let cp_wake = match &s.cp_wake {
+        Some(w) => format!(
+            ",\"cp_wake_attempts\":{},\"cp_wake_last\":{}",
+            w.attempts,
+            w.last_unix_s
+                .map_or_else(|| String::from("null"), |t| format!("{t}"))
+        ),
+        None => String::new(),
+    };
     format!(
         "{{\"online\":{},\"target_ampere\":{},\"grid_power_w\":{},\
          \"reported_ampere\":{},\"last_poll_age_s\":{},\"grid_age_s\":{},\
          \"grid_failsafe\":{},\"charge_state\":\"{}\",\"enabled\":{},\
          \"last_error\":{},\"lb_current_ampere\":{},\
-         \"cn28_feedback_stale\":{},\"probe_over_ampere\":{}}}",
+         \"cn28_feedback_stale\":{},\"probe_over_ampere\":{}{}}}",
         s.online,
         s.target_ampere,
         s.grid_power_w,
@@ -124,6 +144,7 @@ pub fn status_json(s: &Status) -> String {
         s.lb_current_ampere,
         s.cn28_feedback_stale,
         s.probe_over_ampere,
+        cp_wake,
     )
 }
 
@@ -438,6 +459,7 @@ mod tests {
             lb_current_ampere: 7.0,
             cn28_feedback_stale: false,
             probe_over_ampere: 0.0,
+            cp_wake: None,
         };
         assert_eq!(
             status_json(&s),
@@ -461,6 +483,7 @@ mod tests {
             lb_current_ampere: 9.0,
             cn28_feedback_stale: true,
             probe_over_ampere: 1.5,
+            cp_wake: None,
         };
         let json = status_json(&s);
         assert!(json.contains(r#""last_error":"bad target""#), "{json}");
@@ -469,6 +492,57 @@ mod tests {
         assert!(json.contains(r#""lb_current_ampere":9"#), "{json}");
         assert!(json.contains(r#""cn28_feedback_stale":true"#), "{json}");
         assert!(json.contains(r#""probe_over_ampere":1.5"#), "{json}");
+    }
+
+    #[test]
+    fn json_omits_the_pilot_interrupt_on_a_build_without_it() {
+        let json = status_json(&status_with_cp_wake(None));
+        assert!(!json.contains("cp_wake"), "{json}");
+    }
+
+    #[test]
+    fn json_appends_the_pilot_interrupt_record() {
+        let json = status_json(&status_with_cp_wake(Some(CpWakeStatus {
+            attempts: 2,
+            last_unix_s: Some(1_790_000_000),
+        })));
+        assert!(
+            json.ends_with(
+                r#""probe_over_ampere":0,"cp_wake_attempts":2,"cp_wake_last":1790000000}"#
+            ),
+            "{json}"
+        );
+    }
+
+    #[test]
+    fn json_reports_a_pilot_interrupt_that_never_ran_as_null() {
+        let json = status_json(&status_with_cp_wake(Some(CpWakeStatus {
+            attempts: 0,
+            last_unix_s: None,
+        })));
+        assert!(
+            json.contains(r#""cp_wake_attempts":0,"cp_wake_last":null"#),
+            "{json}"
+        );
+    }
+
+    fn status_with_cp_wake(cp_wake: Option<CpWakeStatus>) -> Status<'static> {
+        Status {
+            online: true,
+            target_ampere: 6.0,
+            grid_power_w: 0.0,
+            reported_ampere: 20.0,
+            last_poll_age_s: 0.2,
+            grid_age_s: 1.0,
+            grid_failsafe: false,
+            charge_state: "B",
+            enabled: true,
+            last_error: None,
+            lb_current_ampere: 0.0,
+            cn28_feedback_stale: false,
+            probe_over_ampere: 0.0,
+            cp_wake,
+        }
     }
 
     #[test]
@@ -487,6 +561,7 @@ mod tests {
             lb_current_ampere: 0.0,
             cn28_feedback_stale: false,
             probe_over_ampere: 0.0,
+            cp_wake: None,
         };
         let json = status_json(&s);
         assert!(json.contains(r#""charge_state":"""#), "{json}");

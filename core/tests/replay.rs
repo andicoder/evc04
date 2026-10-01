@@ -228,6 +228,7 @@ fn run(sc: Scenario) -> Vec<Sample> {
                     grid_stale: false,
                     enabled,
                     pilot_probe: false,
+                    cp_wake: false,
                 })
                 .current
                 .0

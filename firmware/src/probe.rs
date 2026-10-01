@@ -32,7 +32,7 @@ use evc04_cn28_core::debug::trace;
 use evc04_cn28_core::probe::cn28::{Cn28Snapshot, LineOutcome, LineReassembler};
 use tracing::{debug, info, warn};
 
-use crate::charge::{Controller, Handoff, Tick};
+use crate::charge::{Controller, CpRelay, Handoff, Tick};
 use crate::device;
 use crate::mqtt::{InMsg, Mqtt};
 
@@ -96,6 +96,7 @@ pub fn run(
     handoff: Arc<Handoff>,
     mut twdt: TWDTDriver<'static>,
     nvs: EspDefaultNvsPartition,
+    cp_relay: Option<CpRelay>,
 ) -> Result<()> {
     // Watch this (the worker) task with the hardware watchdog (#113); every path that
     // can block feeds it.
@@ -104,7 +105,7 @@ pub fn run(
     // It restores the last persisted setpoint from `nvs` on construction (resume after
     // reboot) and then carries target/offset/trim + the staleness clocks; recreating it
     // on every reconnect would drop that state.
-    let mut controller = Controller::new(nvs);
+    let mut controller = Controller::new(nvs, cp_relay);
 
     // Reconnect forever. A WiFi/MQTT drop must NEVER bubble out of `run`: `main` reboots
     // the chip when this returns, which kills the RS485 slave thread and lets the box
@@ -211,6 +212,7 @@ fn worker_loop(
             Ok(InMsg::GridPower(parsed)) => controller.apply_grid_power(parsed, Instant::now()),
             Ok(InMsg::Enable(parsed)) => controller.apply_enable(parsed),
             Ok(InMsg::ProbeOver(parsed)) => controller.apply_probe_over(parsed, Instant::now()),
+            Ok(InMsg::Wakeup(parsed)) => controller.apply_wakeup(parsed, Instant::now()),
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let now = Instant::now();

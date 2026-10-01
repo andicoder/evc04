@@ -48,6 +48,10 @@ http = "1"
 # default: it is capture/discovery debug noise once the box auto-polls (#110). Build
 # a capture image with `--features raw-debug` (e.g. `OTA_FEATURES=raw-debug ./ota_push.sh`).
 raw-debug = []
+# Drive the control-pilot relay on GPIO27 for evcc's charger wakeup (SPECS §7). Off by
+# default: only a box with the relay wired in is built with it
+# (`OTA_FEATURES=cp-wake ./ota_push.sh`).
+cp-wake = []
 
 [build-dependencies]
 embuild = "0.33"
