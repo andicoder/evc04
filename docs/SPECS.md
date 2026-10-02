@@ -550,10 +550,10 @@ to normal control.
 |---|---|
 | `CP_WAKE_ENABLED` | compile-time, **default off** — the `cp-wake` Cargo feature. A box that was not built for this cannot do it; a wakeup on such a build is rejected into `last_error`. |
 | trigger | `{"wakeup": true}` on `evc04/charge/wakeup` — evcc's custom-charger `wakeup` ([`evcc.md`](evcc.md)). |
-| pulse | `CP_WAKE_PULSE` (12 s). evcc's relay chargers default to 10 s (`cpwait`); reported durations cluster at 10 s for other makes and **above** 10 s for the Zoe Ph1. |
+| pulse | `CP_WAKE_PULSE` (12 s) unless the command carries `"pulse_s"` (whole seconds, `1`–`MAX_PULSE_S` = 180; anything else is rejected into `last_error` and nothing pulses). evcc sends no length, so it gets the default; the field exists for measuring other lengths by hand. evcc's relay chargers default to 10 s (`cpwait`); reported durations cluster at 10 s for other makes and **above** 10 s for the Zoe Ph1. |
 | offer | paused for the length of the pulse (`reason: CpWake`). A failsafe still names itself first. |
 | repeat | a wakeup during a running pulse is ignored — it never stretches the pulse. Pacing and the attempt bound are evcc's. |
-| status | `charge_state` reads `B` while the line is open: the box decodes our own open pilot as `A`, and an `A` reaching evcc is an unplug that would end the session mid-wakeup. |
+| status | `charge_state` reads `B` while the line is open: the box decodes our own open pilot as `A`, and an `A` reaching evcc is an unplug that would end the session mid-wakeup. The mask holds past the pulse until the box reads the car again, because the CN28 feed lags the relay by ~4 s; it lets an `A` through once the box has read `B` or `C`, or `SETTLE_MS` (10 s) after the pulse, so an unplug during the pulse still reaches evcc. |
 
 **It reports what it did.** `cp_wake_attempts` (pulses since boot) and
 `cp_wake_last` (Unix seconds of the last pulse, `null` before the first) go into
@@ -562,12 +562,18 @@ intervention that leaves no trace is indistinguishable from a car that woke by
 itself — and this box already learned that lesson once, when a wallbox
 power-cycle left no mark anywhere and cost an evening's measurement.
 
-⚠️ **The premise is borrowed, not measured here.** That a pilot interrupt wakes
-*this* car is reported by others and shipped by other controllers; it has not
-been shown on this vehicle, because there is no way to interrupt the pilot
-without the relay. Building it **is** the experiment. If it fails, the hardware
-cost is under five euros and the fail-safe contact means nothing is worse than
-before.
+⚠️ **The 12 s pulse does not wake this car (measured 2026-10-02).** The Zoe
+Ph1 had been asleep for five minutes on a 16 A offer when evcc fired all three
+attempts. Each opened the pilot as specified: the box read `A` 2 s in and `B`
+again 4 s after the relay closed. The car drew nothing after any of them, and
+started at once when a door was closed a minute after the third. About 58 s after
+each pulse the box reported the pilot in `F` (−12 V) for 4 s, which did not
+wake the car either; in twelve days of CN28 history `F` appears otherwise only
+for a moment during one unplug.
+Before the mask was extended past the pulse, the ~4 s lag let an `A` out to the
+status for 2–3 s at the end of every pulse. Longer pulses (`pulse_s`) are the
+remaining test of the premise that other controllers ship; that a pilot
+interrupt wakes *this* car is still borrowed, not shown.
 
 ### Persistence
 

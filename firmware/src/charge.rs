@@ -33,7 +33,7 @@ use evc04_cn28_core::charge::control::{
 };
 use evc04_cn28_core::charge::intake::IntakeError;
 use evc04_cn28_core::charge::status::{charge_state, status_json, CpWakeStatus, Status};
-use evc04_cn28_core::charge::wake::{charge_state_during_pulse, CpWake};
+use evc04_cn28_core::charge::wake::CpWake;
 use evc04_cn28_core::probe::cn28::CpState;
 use tracing::{info, warn};
 
@@ -99,9 +99,10 @@ const PILOT_PROBE_WINDOW: Duration = Duration::from_secs(45);
 pub const CP_WAKE_ENABLED: bool = cfg!(feature = "cp-wake");
 /// The normally-closed relay in the CP line: high energises it and opens the pilot.
 pub type CpRelay = PinDriver<'static, Output>;
-/// How long one wakeup holds the pilot open — evcc's `cpwait` for its own relay
-/// chargers (default 10 s there). Reported durations cluster at 10 s for other
-/// makes and above it for the Zoe Ph1 this was built for.
+/// How long one wakeup holds the pilot open unless the command names a length —
+/// evcc's `cpwait` for its own relay chargers (default 10 s there). Reported
+/// durations cluster at 10 s for other makes and above it for the Zoe Ph1 this was
+/// built for.
 const CP_WAKE_PULSE: Duration = Duration::from_secs(12);
 
 /// One control tick's outputs: the per-phase current to hand to the slave and the
@@ -306,21 +307,22 @@ impl Controller {
     /// evcc's charger wakeup (SPECS §7): open the pilot for one pulse. evcc decides
     /// when — enabled, stuck in `B`, below the vehicle's SoC limit — and paces its
     /// own attempts; a repeat during a running pulse is ignored, never stretches it.
-    pub fn apply_wakeup(&mut self, parsed: Result<bool, IntakeError>, now: Instant) {
+    pub fn apply_wakeup(&mut self, parsed: Result<(bool, Option<u64>), IntakeError>, now: Instant) {
         match parsed {
-            Ok(true) if self.cp_relay.is_none() => {
+            Ok((true, _)) if self.cp_relay.is_none() => {
                 self.last_error = Some(String::from("wakeup: no pilot relay on this build"));
             }
-            Ok(true) => {
+            Ok((true, pulse_s)) => {
                 self.last_error = None;
-                if self.cp_wake.request(self.uptime_ms(now)) {
+                let now_ms = self.uptime_ms(now);
+                if self.cp_wake.request(now_ms, pulse_s.map(|s| s * 1_000)) {
                     self.cp_wake_last_unix = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .ok()
                         .map(|d| d.as_secs());
                     warn!(
                         attempts = self.cp_wake.attempts(),
-                        pulse_s = CP_WAKE_PULSE.as_secs(),
+                        pulse_s = pulse_s.unwrap_or(CP_WAKE_PULSE.as_secs()),
                         "cp wake: opening the control pilot"
                     );
                     self.drive_cp_relay(true);
@@ -329,7 +331,7 @@ impl Controller {
                 }
             }
             // evcc only ever sends `true`; nothing to undo for a `false`.
-            Ok(false) => self.last_error = None,
+            Ok((false, _)) => self.last_error = None,
             Err(e) => self.last_error = Some(format!("bad wakeup: {e:?}")),
         }
     }
@@ -454,7 +456,8 @@ impl Controller {
         // what the meter tells the box, not our command state —
         // evcc reads charge_state as its charger status, and a probe flipping it to
         // 'B' would make evcc believe the charge stopped.
-        let charge_state_letter = charge_state_during_pulse(
+        let uptime_ms = self.uptime_ms(now);
+        let charge_state_letter = self.cp_wake.charge_state(
             charge_state(
                 Ampere(reported),
                 Ampere(MAX_BOX_AMPERE),
@@ -465,7 +468,7 @@ impl Controller {
                 // which outranks a latched pilot letter (#158).
                 Ampere(self.cn28_car),
             ),
-            cp_wake,
+            uptime_ms,
         );
         let served = probe_report(
             Ampere(reported),

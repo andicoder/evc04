@@ -10,6 +10,8 @@
 
 use alloc::format;
 
+use super::wake::MAX_PULSE_S;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IntakeError {
     /// The expected field is absent (or the payload is not a JSON object).
@@ -18,6 +20,8 @@ pub enum IntakeError {
     BadType,
     /// A numeric field that parsed to NaN or infinity — never applied to the box.
     NotFinite,
+    /// A number outside the range the contract allows for that field.
+    OutOfRange,
 }
 
 /// Parse a `{"ampere": N}` payload (target / measured topics) into amperes.
@@ -60,6 +64,19 @@ pub fn parse_wakeup(payload: &str) -> Result<bool, IntakeError> {
         "false" => Ok(false),
         _ => Err(IntakeError::BadType),
     }
+}
+
+/// The optional `"pulse_s"` of a wakeup: whole seconds, `1..=MAX_PULSE_S`, or
+/// `None` for the default pulse.
+pub fn parse_wakeup_pulse(payload: &str) -> Result<Option<u64>, IntakeError> {
+    let Some(raw) = field_value(payload, "pulse_s") else {
+        return Ok(None);
+    };
+    let s: u64 = raw.parse().map_err(|_| IntakeError::BadType)?;
+    if !(1..=MAX_PULSE_S).contains(&s) {
+        return Err(IntakeError::OutOfRange);
+    }
+    Ok(Some(s))
 }
 
 /// The raw, trimmed value token for `"key"` in a flat JSON object, or `None` if the
@@ -196,5 +213,40 @@ mod tests {
     #[test]
     fn non_bool_wakeup_is_bad_type() {
         assert_eq!(parse_wakeup(r#"{"wakeup": 1}"#), Err(IntakeError::BadType));
+    }
+
+    #[test]
+    fn a_plain_wakeup_carries_no_pulse_length() {
+        assert_eq!(parse_wakeup_pulse(r#"{"wakeup": true}"#), Ok(None));
+    }
+
+    #[test]
+    fn parses_a_wakeup_pulse_length_in_seconds() {
+        assert_eq!(
+            parse_wakeup_pulse(r#"{"wakeup": true, "pulse_s": 60}"#),
+            Ok(Some(60))
+        );
+    }
+
+    #[test]
+    fn a_pulse_length_beyond_the_ceiling_is_rejected() {
+        let payload = format!(r#"{{"wakeup": true, "pulse_s": {}}}"#, MAX_PULSE_S + 1);
+        assert_eq!(parse_wakeup_pulse(&payload), Err(IntakeError::OutOfRange));
+    }
+
+    #[test]
+    fn a_zero_pulse_length_is_rejected() {
+        assert_eq!(
+            parse_wakeup_pulse(r#"{"wakeup": true, "pulse_s": 0}"#),
+            Err(IntakeError::OutOfRange)
+        );
+    }
+
+    #[test]
+    fn a_fractional_pulse_length_is_bad_type() {
+        assert_eq!(
+            parse_wakeup_pulse(r#"{"wakeup": true, "pulse_s": 1.5}"#),
+            Err(IntakeError::BadType)
+        );
     }
 }
