@@ -171,10 +171,14 @@ built with the `cp-wake` feature and the relay wired in ([`SPECS.md`](SPECS.md) 
 
 ```json
 { "wakeup": true }
+{ "wakeup": true, "pulse_s": 60 }
 ```
 
 - The pilot opens for 12 s with no offer, then normal control resumes. A wakeup
   during a running pulse is ignored. When and how often is evcc's decision.
+- `pulse_s` (optional, whole seconds, `1`–`180`) sets the length of this one
+  pulse; out of range or not an integer, the command is rejected into
+  `last_error` and nothing pulses. evcc never sends it.
 - `false` does nothing. On a build without the relay a `true` is rejected and
   surfaced in `last_error`.
 

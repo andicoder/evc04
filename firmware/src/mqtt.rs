@@ -18,7 +18,7 @@ use esp_idf_svc::mqtt::client::{
     EspMqttClient, EspMqttConnection, EventPayload, LwtConfiguration, MqttClientConfiguration, QoS,
 };
 use evc04_cn28_core::charge::intake::{
-    parse_ampere, parse_enable, parse_wakeup, parse_watt, IntakeError,
+    parse_ampere, parse_enable, parse_wakeup, parse_wakeup_pulse, parse_watt, IntakeError,
 };
 use evc04_cn28_core::device::log_level::{parse_log_level, LogLevel};
 use evc04_cn28_core::probe::{baud, command};
@@ -68,7 +68,8 @@ const TOPIC_CTRL_STATUS: &str = "evc04/charge/status";
 /// to `MAX + N` (bounded, auto-expiring) so the box's response just above its limit
 /// can be measured. Diagnostic-only; never part of the evcc/HA control contract.
 const TOPIC_CTRL_PROBE: &str = "evc04/charge/probe_over";
-/// evcc's charger wakeup (SPECS §7): `{"wakeup": true}` runs one pilot interrupt.
+/// evcc's charger wakeup (SPECS §7): `{"wakeup": true}` runs one pilot interrupt,
+/// `"pulse_s"` optionally naming its length.
 const TOPIC_CTRL_WAKEUP: &str = "evc04/charge/wakeup";
 
 const MQTT_URL: &str = env!("MQTT_URL");
@@ -86,7 +87,7 @@ pub enum InMsg {
     GridPower(Result<f32, IntakeError>),
     Enable(Result<bool, IntakeError>),
     ProbeOver(Result<f32, IntakeError>),
-    Wakeup(Result<bool, IntakeError>),
+    Wakeup(Result<(bool, Option<u64>), IntakeError>),
 }
 
 /// Owns the broker client; all publishes go through its methods so the topic
@@ -299,7 +300,9 @@ fn spawn_connection_pump(mut connection: EspMqttConnection, tx: mpsc::Sender<InM
                                 let _ = tx.send(InMsg::ProbeOver(parse_ampere(payload)));
                             }
                             Some(t) if t == TOPIC_CTRL_WAKEUP => {
-                                let _ = tx.send(InMsg::Wakeup(parse_wakeup(payload)));
+                                let parsed = parse_wakeup(payload)
+                                    .and_then(|w| Ok((w, parse_wakeup_pulse(payload)?)));
+                                let _ = tx.send(InMsg::Wakeup(parsed));
                             }
                             _ => match command::decode_command(payload) {
                                 Ok(bytes) => {
