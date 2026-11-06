@@ -46,6 +46,10 @@ struct Ev {
     /// Chronic overdraw: the car pulls ~1–2 % above its grant when it draws at
     /// all (campaign 2026-07-05: 8.15 @ 8, 6.14 @ 6). 1.0 = exact tracking.
     overshoot: f32,
+    /// Amps the car stays under its grant (2026-11-06: 8.9 @ 10, 6.9 @ 8, 5.95 @ 7).
+    /// Its draw is what the box's grant law folds in, so every shed lands this much
+    /// lower than a car that tracks exactly.
+    draw_gap: f32,
     offered_s: f32,
 }
 
@@ -55,12 +59,19 @@ impl Ev {
             amps: 0.0,
             start_lag_s,
             overshoot: 1.0,
+            draw_gap: 0.0,
             offered_s: 0.0,
         }
     }
     fn with_overshoot(start_lag_s: f32, overshoot: f32) -> Self {
         Ev {
             overshoot,
+            ..Ev::new(start_lag_s)
+        }
+    }
+    fn with_draw_gap(start_lag_s: f32, draw_gap: f32) -> Self {
+        Ev {
+            draw_gap,
             ..Ev::new(start_lag_s)
         }
     }
@@ -72,7 +83,7 @@ impl Ev {
         }
         let ready = self.offered_s >= self.start_lag_s;
         let target = if lb >= MIN_CHARGE && ready {
-            (lb * self.overshoot).min(16.0)
+            (lb * self.overshoot - self.draw_gap).min(16.0)
         } else {
             0.0
         };
@@ -119,6 +130,37 @@ struct Scenario {
     mid_noise_a: f32,
 }
 
+/// How fresh the controller's CN28 view is, and what the box prints once it has cut.
+#[derive(Clone, Copy)]
+struct Feedback {
+    lb_period_s: u32,
+    /// The value a `lb current:` line carries is this old when it prints: the grant
+    /// has already moved when the line still shows the last one.
+    lb_lag_s: u32,
+    car_period_s: u32,
+    /// The grant the box keeps printing while it has no session.
+    idle_grant: f32,
+}
+
+/// What the older captures showed (see [`CN28_PERIOD_S`]).
+const FAST_FEEDBACK: Feedback = Feedback {
+    lb_period_s: CN28_PERIOD_S,
+    lb_lag_s: 0,
+    car_period_s: CN28_PERIOD_S,
+    idle_grant: 0.0,
+};
+
+/// 2026-11-06 (`2026-11-06-shed-cuts.log`): `lb current:` every ~6 s and up to ~4 s
+/// behind `Cmax` (14:34:40 still 10 with the grant on its way to 6, 14:41:44 shows 9
+/// two seconds after `Cmax:9`), phase metering every ~10 s. A cut still shows within
+/// one 2 s burst through `Stop Pwm`.
+const LIVE_FEEDBACK: Feedback = Feedback {
+    lb_period_s: 6,
+    lb_lag_s: 4,
+    car_period_s: 10,
+    idle_grant: 0.0,
+};
+
 #[derive(Debug)]
 struct Sample {
     t: u32,
@@ -132,6 +174,10 @@ struct Sample {
 /// starts are the box's own decision now (start law on the slow clock) — the
 /// harness never nudges it.
 fn run(sc: Scenario) -> Vec<Sample> {
+    run_with(sc, FAST_FEEDBACK)
+}
+
+fn run_with(sc: Scenario, feedback: Feedback) -> Vec<Sample> {
     let mut boxsim = BoxSim::new(sc.box_params);
     let mut ev = sc.ev;
     let mut target: Option<f32> = None;
@@ -142,6 +188,7 @@ fn run(sc: Scenario) -> Vec<Sample> {
     let mut cn28_lb = 0.0_f32;
     let mut cn28_car = 0.0_f32;
     let mut out = Vec::new();
+    let mut lb_history: Vec<f32> = Vec::new();
 
     for t in 0..sc.duration_s {
         for &(at, tgt, en) in &sc.events {
@@ -184,9 +231,17 @@ fn run(sc: Scenario) -> Vec<Sample> {
             };
         }
 
-        // CN28 telemetry: the V4 feedback follows the box's grant within ~2 s.
-        if t % CN28_PERIOD_S == 0 {
-            cn28_lb = boxsim.lb().0;
+        lb_history.push(boxsim.lb().0);
+        if t % feedback.lb_period_s == 0 && boxsim.charging() {
+            let printed = lb_history
+                .len()
+                .saturating_sub(1 + feedback.lb_lag_s as usize);
+            cn28_lb = lb_history[printed];
+        }
+        if t % CN28_PERIOD_S == 0 && !boxsim.charging() {
+            cn28_lb = feedback.idle_grant;
+        }
+        if t % feedback.car_period_s == 0 {
             cn28_car = ev.amps + sc.mid_noise_a;
         }
 
@@ -439,6 +494,8 @@ fn lb_tracking_holds_every_target_across_the_band() {
                 // amps) well before the next one — no pin at 15/16, no undershoot.
                 for &(at, tgt) in &steps {
                     let settled = &trace[(at + 110) as usize];
+                    // A tracking car cannot be shed below 8 A (see `shed_room`).
+                    let tgt = tgt.max(8.0);
                     assert!(
                         (settled.car - tgt).abs() <= 1.0,
                         "target {tgt} not held 110 s after the step (up {up_period_s}, down {down_period_s}, lag {ev_start_lag_s}), got {settled:?}"
@@ -585,15 +642,11 @@ fn replay_sweep2_rep0_flip_converges_and_only_the_enable_flap_cuts() {
     assert_eq!(start.lb, MAX_BOX);
 
     // After the flip the grant converges next to the target and HOLDS — no cut.
-    // The wire shows 6 exactly (the box out-shed the firmware's floor-capped
-    // over-report on stale feedback); with fresh feedback V4's deliberate
-    // never-shed-into-the-pilot-floor cap settles one amp higher — both inside
-    // the ±1 A acceptance. Allow the shed transient one down eval + car ramp.
+    // The wire shows 6 exactly (the box out-shed the firmware's over-report on stale
+    // feedback, and that ride ended in a cut on 2026-11-06), so a tracking car now rests
+    // at 8 (see `shed_room`). Allow the shed transient one down eval + car ramp.
     for s in trace.iter().take(190).skip(165) {
-        assert!(
-            s.lb == 6.0 || s.lb == 7.0,
-            "expected the shed to hold at 6..7, got {s:?}"
-        );
+        assert!(s.lb == 8.0, "expected the shed to hold at 8, got {s:?}");
         assert!(s.car >= 6.0, "session must stay alive, got {s:?}");
     }
 
@@ -678,13 +731,184 @@ fn lb_tracking_survives_car_overshoot_and_mid_standby_noise() {
         assert!(s.car >= MIN_CHARGE, "car stalled at {s:?}");
     }
     for &(at, tgt) in &steps {
-        // V4's floor cap settles target 6 at grant 7 by design; with the 2 %
-        // overdraw on top the car sits at ~7.14 — the acceptance is ±1 A on the
-        // grant plus the overdraw on the car.
+        // A tracking car cannot be shed below 8 A (see `shed_room`), and the 2 %
+        // overdraw sits on top — the acceptance is ±1 A on the grant plus the overdraw
+        // on the car.
+        let tgt = tgt.max(8.0);
         let settled = &trace[(at + 110) as usize];
         assert!(
             (settled.car - tgt).abs() <= 1.2 && (settled.lb - tgt).abs() <= 1.0,
             "target {tgt} not held under noise, got {settled:?}"
         );
     }
+}
+
+/// An open box with the car already settled on its grant.
+fn settled_box(grant: f32, draw_gap: f32) -> (BoxSim, Ev) {
+    let mut boxsim = BoxSim::new(fitted_box());
+    boxsim.tick(30.0, Ampere(MAX_BOX - grant), Ampere(0.0));
+    assert_eq!(
+        boxsim.lb(),
+        Ampere(grant),
+        "setup: box must open at {grant}"
+    );
+    let mut ev = Ev::with_draw_gap(0.0, draw_gap);
+    ev.amps = grant - draw_gap;
+    (boxsim, ev)
+}
+
+fn drive(boxsim: &mut BoxSim, ev: &mut Ev, reported: f32, seconds: u32) {
+    for _ in 0..seconds {
+        boxsim.tick(1.0, Ampere(reported), Ampere(ev.amps));
+        ev.tick(1.0, boxsim.lb().0);
+    }
+}
+
+/// `2026-11-06-shed-cuts.log`, 14:30:37 and 14:34:37: grant 10, car 8.9, reported 18 →
+/// `Stop Pwm` about 5 s later, before the controller had seen the grant move.
+#[test]
+fn box_model_cuts_the_two_amp_shed_of_a_short_car_from_grant_ten() {
+    let (mut boxsim, mut ev) = settled_box(10.0, 1.1);
+    drive(&mut boxsim, &mut ev, 18.0, 10);
+    assert!(!boxsim.charging());
+}
+
+/// Same log, 14:41:37: from grant 15 the reports served (18 for 7 s, 17 for 6 s, then
+/// 15) brought the grant down to 7 without a cut.
+#[test]
+fn box_model_lets_the_same_shed_through_from_grant_fifteen() {
+    let (mut boxsim, mut ev) = settled_box(15.0, 1.1);
+    drive(&mut boxsim, &mut ev, 18.0, 7);
+    drive(&mut boxsim, &mut ev, 17.0, 6);
+    drive(&mut boxsim, &mut ev, 15.0, 10);
+    assert!(boxsim.charging());
+    assert!(boxsim.lb().0 <= 10.0, "grant {:?}", boxsim.lb());
+}
+
+fn assert_never_cut(trace: &[Sample], what: &str) {
+    let start = trace.iter().find(|s| s.car >= 1.0).expect("charge starts");
+    for s in trace.iter().skip(start.t as usize + 30) {
+        assert!(s.lb > 0.0, "box cut the session ({what}) at {s:?}");
+    }
+}
+
+/// `2026-11-06-shed-cuts.log`, 14:29–14:34: evcc flips 8 → 10 → 8 and the box cuts the
+/// step down. No phase of the box's clock against the feedback may lose the session.
+#[test]
+fn short_car_survives_target_flips_on_live_feedback() {
+    for down_period_s in [4.0, 5.0, 6.0] {
+        for phase in 0..12 {
+            let at = |t: u32| t + phase;
+            let sc = Scenario {
+                events: vec![
+                    (0, Some(8.0), true),
+                    (at(120), Some(10.0), true),
+                    (at(180), Some(8.0), true),
+                    (at(240), Some(10.0), true),
+                    (at(300), Some(8.0), true),
+                ],
+                house_w: 300.0,
+                pv_w: 12_000.0,
+                duration_s: 420,
+                reporting: Reporting::LbTracking,
+                box_params: BoxSimParams {
+                    down_period_s,
+                    ..fitted_box()
+                },
+                ev: Ev::with_draw_gap(15.0, 1.1),
+                mid_noise_a: 0.045,
+            };
+            let trace = run_with(sc, LIVE_FEEDBACK);
+            assert_never_cut(&trace, &format!("down {down_period_s}, phase {phase}"));
+        }
+    }
+}
+
+/// `2026-11-06-shed-cuts.log`, 12:13–12:16: a car tracking its grant, target 6, cut once
+/// a minute from grant 9 and 8. The whole staircase has to hold for both kinds of car.
+#[test]
+fn staircase_survives_live_feedback_for_both_kinds_of_car() {
+    let steps: [(u32, f32); 7] = [
+        (0, 16.0),
+        (120, 12.0),
+        (240, 10.0),
+        (360, 8.0),
+        (480, 6.0),
+        (600, 8.0),
+        (720, 16.0),
+    ];
+    for draw_gap in [0.0, 1.1] {
+        for down_period_s in [4.0, 5.0, 6.0] {
+            for phase in 0..12 {
+                let sc = Scenario {
+                    events: steps
+                        .iter()
+                        .map(|&(t, a)| (if t == 0 { 0 } else { t + phase }, Some(a), true))
+                        .collect(),
+                    house_w: 300.0,
+                    pv_w: 12_000.0,
+                    duration_s: 860,
+                    reporting: Reporting::LbTracking,
+                    box_params: BoxSimParams {
+                        down_period_s,
+                        ..fitted_box()
+                    },
+                    ev: Ev::with_draw_gap(15.0, draw_gap),
+                    mid_noise_a: 0.045,
+                };
+                let trace = run_with(sc, LIVE_FEEDBACK);
+                assert_never_cut(
+                    &trace,
+                    &format!("gap {draw_gap}, down {down_period_s}, phase {phase}"),
+                );
+                for &(t, tgt) in &steps {
+                    let settled = &trace[(t + phase + 110) as usize];
+                    // A tracking car cannot be shed below 8 A (see `shed_room`).
+                    let lowest = if draw_gap == 0.0 { tgt.max(8.0) } else { tgt };
+                    assert!(
+                        (settled.car - lowest).abs() <= 1.2,
+                        "target {tgt} (gap {draw_gap}, down {down_period_s}, phase {phase}), got {settled:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// `2026-11-06-shed-cuts.log`, 14:34:46–14:38:13: after a cut the box kept printing
+/// `lb current:3`. The controller took that for a session and served the ramp pin,
+/// report 8, which the box's start law refuses, so the car stayed off for 3.5 min.
+#[test]
+fn a_cut_that_leaves_a_small_grant_printed_still_reopens() {
+    let sc = Scenario {
+        events: vec![
+            (0, Some(8.0), true),
+            (120, Some(8.0), false),
+            (135, Some(8.0), true),
+        ],
+        house_w: 300.0,
+        pv_w: 12_000.0,
+        duration_s: 240,
+        reporting: Reporting::LbTracking,
+        box_params: fitted_box(),
+        ev: Ev::with_draw_gap(15.0, 1.1),
+        mid_noise_a: 0.045,
+    };
+    let trace = run_with(
+        sc,
+        Feedback {
+            idle_grant: 3.0,
+            ..LIVE_FEEDBACK
+        },
+    );
+    assert!(
+        trace[134].car < 1.0,
+        "setup: the pause must cut, got {:?}",
+        trace[134]
+    );
+    assert!(
+        trace[135..].iter().any(|s| s.car >= MIN_CHARGE - 1.1),
+        "never reopened, ended at {:?}",
+        trace.last()
+    );
 }

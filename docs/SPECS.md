@@ -435,10 +435,21 @@ session either, since the box's up clock is ~30 s. Live-proven 2026-07-09: the e
 stall opened `B → C` at target 6 (`reported 0` → box granted 16 → the pin ramped
 down to 7); the car is still in its contactor lag when the ceiling grant lands, so
 it never draws it. **Shed
-floor**: the over-report is additionally capped at `lb − (MIN_CHARGE + 1)`, so
-the box is never told to shed into its pilot floor — target 6 deliberately
-settles at 7 A (inside the ±1 A acceptance) instead of risking the ≥2 A-step
-cut. Proven in the simulator across the full 6–16 A staircase, under deep PV
+floor** (live 2026-11-06, `2026-11-06-shed-cuts.log`): the box evaluates every ~5 s
+while `lb current:` arrives every ~6 s and up to ~4 s behind it, so one over-report
+runs through up to three evals before the controller can take it back, and a car
+sitting under its grant (8.9 A @ 10) loses that gap on top of each. Report 18 at
+grant 10 cut twice, report 17 at grant 8 and report 18 at grant 9 cut twice each.
+The over-report is therefore capped at `(lb − 5.5) / 3 − (lb − car)`, whole amps. A
+capped-out shed reports `MAX`, which lets a short car walk down one step per eval
+until the ramp pin catches it. Near the floor (car below `MIN_CHARGE + 1`) there is
+no pin to catch it, so the report gives the gap back and stays put. A car tracking
+its grant cannot be shed below 8 A this way: target 6 rests at 8 A, which trades
+~1.4 kW of accuracy for a session that survives. **Small grant after a cut**: a cut
+does not always print 0 — at 14:34:46 the box stayed on `lb current:3` with the car
+off and refused the ramp pin (report 8 is below the start law) for 3.5 min. A grant
+under `MIN_CHARGE` with the car under 1 A is no session, so the controller serves
+the cold-start kick there as well. Proven in the simulator across the full 6–16 A staircase, under deep PV
 export, across the box's clock bands (up 24–36 s, down 4–6 s), car start lags
 0/15 s, ~2 % car overdraw and MID standby noise (`core/tests/replay.rs`); the
 box-side dynamics are pinned by the 2026-07-02 probe, the 2026-07-03 flag-day

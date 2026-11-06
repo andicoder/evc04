@@ -128,10 +128,9 @@ pub fn probe_report(base: Ampere, over: Ampere, max: Ampere, max_over: Ampere) -
 ///
 /// - grant above target → report `max + err` (at least `max + 1` to clear the dead
 ///   zone, capped at `max + max_over` to stay clearly below the cut threshold, and
-///   capped at `lb − (min_charge + 1)` so the box is never told to shed into its
-///   6 A pilot floor — a ≥2 A step landing there drops the session (flag-day
-///   staircase 2026-07-03). A fully capped-out shed holds instead, so target 6
-///   deliberately settles at 7 A (within the ±1 A acceptance),
+///   capped by [`shed_room`] so the box cannot ride into its 6 A pilot floor before
+///   this controller sees the grant move. A fully capped-out shed holds instead, so
+///   a car tracking its grant settles at 8 A on a lower target (2026-11-06),
 /// - grant at target (±1 A — grants are whole amps) → report exactly `max` (holds,
 ///   #57),
 /// - grant below target → report the deficit as headroom (`max − (target − lb)`),
@@ -141,16 +140,17 @@ pub fn lb_tracking_report(
     max: Ampere,
     target: Ampere,
     lb: Ampere,
+    car: Ampere,
     max_over: Ampere,
     min_charge: Ampere,
 ) -> Ampere {
     let err = lb.0 - target.0;
     if err >= 1.0 {
-        let floor_cap = lb.0 - (min_charge.0 + 1.0);
+        let floor_cap = shed_room(lb, car, min_charge);
         let over = if err > max_over.0 { max_over.0 } else { err };
         let over = if over > floor_cap { floor_cap } else { over };
         if over < 1.0 {
-            return max;
+            return capped_shed_report(max, lb, car, min_charge);
         }
         Ampere(max.0 + over)
     } else if err <= -1.0 {
@@ -158,6 +158,35 @@ pub fn lb_tracking_report(
     } else {
         max
     }
+}
+
+/// The report when no over-report is safe. The box lands on `car + max − reported`, so
+/// reporting `max` lets the grant follow a car sitting under it down one step per eval:
+/// that still sheds, and the ramp pin catches it once the car falls below the target.
+/// Only a target near the floor has no pin below it (2026-11-06 14:31:39: report 16,
+/// grant 8 → 7 → 6), so there the report gives back the gap and stays put.
+fn capped_shed_report(max: Ampere, lb: Ampere, car: Ampere, min_charge: Ampere) -> Ampere {
+    if car.0 >= min_charge.0 + 1.0 || lb.0 <= car.0 {
+        return max;
+    }
+    // The cast is the no_std floor.
+    Ampere(max.0 - ((lb.0 - car.0) as i32) as f32)
+}
+
+/// Fast box evals one over-report can run through before the grant it caused reaches
+/// this controller: `lb current:` prints every ~6 s and up to ~4 s behind the box
+/// (2026-11-06, 12:14:58–12:15:08: three steps on report 17 before the report moved).
+const EVALS_BEFORE_FEEDBACK: f32 = 3.0;
+
+/// The largest whole over-report that keeps the box above its pilot floor through
+/// [`EVALS_BEFORE_FEEDBACK`] evals. Each one lands at `car − over`, and the car then
+/// sits its usual `lb − car` under that, so the grant falls by `over + gap` per eval.
+/// A goal of 5.5 still rounds to the floor.
+fn shed_room(lb: Ampere, car: Ampere, min_charge: Ampere) -> f32 {
+    let gap = if lb.0 > car.0 { lb.0 - car.0 } else { 0.0 };
+    let room = (lb.0 - (min_charge.0 - 0.5)) / EVALS_BEFORE_FEEDBACK - gap;
+    // The cast is the no_std floor; a negative room truncates to 0, which holds.
+    (room as i32) as f32
 }
 
 /// Relax the trim toward zero by `step` while CN28 feedback is stale (#119): a lost
@@ -228,6 +257,10 @@ pub struct GrantControlInputs {
 /// Before a session exists neither the pin nor the deficit report applies: the box
 /// refuses to *open* near the floor unless it sees the full offer (the cold-start
 /// kick in the body, live 2026-07-09).
+/// Above any standby noise of the box's own meter (18–45 mA per phase, 2026-07-05) and
+/// below any real draw: the car takes at least the 6 A pilot minimum, less a small gap.
+const IDLE_CAR_AMPERE: f32 = 1.0;
+
 /// Which rule produced a grant. The served current alone cannot be inverted back
 /// into a decision — a pause and a shut box look identical on the wire — so the
 /// rule names itself instead of the firmware guessing, and instead of `core`
@@ -300,7 +333,13 @@ pub fn grant_tracking_current(inputs: &GrantControlInputs) -> Grant {
     // feeds stay valid), so any "already kicked once" latch stays disarmed for the life of
     // the process and the box never reopens (live 2026-07-10, PR #157). A one-tick full
     // offer cannot lift an open session either — the box's up clock is ~30 s.
-    if inputs.lb.0 <= 0.0 {
+    //
+    // A cut does not always print a grant of 0: on 2026-11-06 the box stayed on `lb
+    // current:3` with the car off and refused the ramp pin for 3.5 min. Below the pilot
+    // floor with nothing drawing is no session, whatever the line says. A car still
+    // drawing keeps the pin: grant 5 under load was seen live on 2026-07-05.
+    let no_session = inputs.lb.0 < inputs.min_charge.0 && inputs.car.0 < IDLE_CAR_AMPERE;
+    if inputs.lb.0 <= 0.0 || no_session {
         return grant(Ampere(0.0), GrantReason::ColdStartKick);
     }
     // Ramp pin, now that a session exists: the box's grant law folds in the live draw
@@ -324,6 +363,7 @@ pub fn grant_tracking_current(inputs: &GrantControlInputs) -> Grant {
             inputs.max,
             target,
             inputs.lb,
+            inputs.car,
             inputs.max_over,
             inputs.min_charge,
         ),
@@ -763,14 +803,13 @@ mod tests {
 
     #[test]
     fn grant_tracking_ramp_pin_floors_the_car_term_to_whole_amps() {
-        // Live 2026-07-05, second bite: with a session open (lb 5) the pin reported
-        // `MAX − target + 0.045`, the box re-evaluated `lb ← live_car + headroom ≈
-        // 5.98` and floored it to 5 — one amp below the pilot minimum, stuck, car
-        // never started. Grants are whole amps: the car term must be floored so our
-        // estimate never exceeds the box's live draw. Sub-amp noise → term 0; a real
-        // mid-ramp draw keeps only its whole amps.
+        // Live 2026-07-05, second bite: the pin reported `MAX − target + 0.045`, the
+        // box re-evaluated `lb ← live_car + headroom ≈ 5.98` and floored it to 5 — one
+        // amp below the pilot minimum, stuck, car never started. Grants are whole amps:
+        // the car term must be floored so our estimate never exceeds the box's live
+        // draw. Sub-amp noise → term 0; a real mid-ramp draw keeps only its whole amps.
         let noise = GrantControlInputs {
-            lb: Ampere(5.0),
+            lb: Ampere(8.0),
             car: Ampere(0.045),
             ..grant_base()
         };
@@ -834,18 +873,97 @@ mod tests {
 
     #[test]
     fn lb_tracking_never_sheds_into_the_pilot_floor() {
-        // Flag-day staircase 2026-07-03 (t=522): target 6, lb 8, reported 18 → the
-        // box cut instead of shedding 8 → 6. The over-report must cap at
-        // `lb − (min_charge + 1)`: from 8 shed one amp (report 17), at 7 hold —
-        // target 6 settles at 7 A, inside the ±1 A acceptance.
+        // Flag-day staircase 2026-07-03 (t=522): target 6, lb 8, reported 18 → cut.
+        // 2026-11-06 12:14:58: target 6, lb 8, car 8.1, reported 17 → 7, 6, cut.
         assert_eq!(
-            lb_tracking_report(MAX, Ampere(6.0), Ampere(8.0), Ampere(2.0), MIN),
-            Ampere(MAX.0 + 1.0)
-        );
-        assert_eq!(
-            lb_tracking_report(MAX, Ampere(6.0), Ampere(7.0), Ampere(2.0), MIN),
+            lb_tracking_report(MAX, Ampere(6.0), Ampere(8.0), Ampere(8.1), Ampere(2.0), MIN),
             MAX
         );
+        assert_eq!(
+            lb_tracking_report(MAX, Ampere(6.0), Ampere(7.0), Ampere(7.1), Ampere(2.0), MIN),
+            MAX
+        );
+    }
+
+    #[test]
+    fn lb_tracking_holds_a_short_car_at_grant_ten() {
+        // 2026-11-06 14:34:37: target 8, lb 10, car 8.9, reported 18 → cut 5 s later.
+        assert_eq!(
+            lb_tracking_report(
+                MAX,
+                Ampere(8.0),
+                Ampere(10.0),
+                Ampere(8.9),
+                Ampere(2.0),
+                MIN
+            ),
+            MAX
+        );
+    }
+
+    #[test]
+    fn lb_tracking_gives_back_the_gap_of_a_short_car_near_the_floor() {
+        assert_eq!(
+            lb_tracking_report(MAX, Ampere(6.0), Ampere(8.0), Ampere(6.9), Ampere(2.0), MIN),
+            Ampere(MAX.0 - 1.0)
+        );
+    }
+
+    #[test]
+    fn lb_tracking_sheds_one_amp_from_grant_ten_when_the_car_tracks_it() {
+        assert_eq!(
+            lb_tracking_report(
+                MAX,
+                Ampere(8.0),
+                Ampere(10.0),
+                Ampere(10.1),
+                Ampere(2.0),
+                MIN
+            ),
+            Ampere(MAX.0 + 1.0)
+        );
+    }
+
+    #[test]
+    fn lb_tracking_keeps_the_full_shed_far_above_the_floor() {
+        // 2026-11-06 14:41:37: target 8, lb 15, car 14.2, reported 18 → no cut.
+        assert_eq!(
+            lb_tracking_report(
+                MAX,
+                Ampere(8.0),
+                Ampere(15.0),
+                Ampere(14.8),
+                Ampere(2.0),
+                MIN
+            ),
+            Ampere(MAX.0 + 2.0)
+        );
+    }
+
+    #[test]
+    fn a_small_grant_with_nothing_drawing_kicks_the_box_open() {
+        // 2026-11-06 14:34:46: `lb current:3`, car off, target 8.
+        let i = GrantControlInputs {
+            target: Some(Ampere(8.0)),
+            lb: Ampere(3.0),
+            car: Ampere(0.045),
+            ..grant_base()
+        };
+        let g = grant_tracking_current(&i);
+        assert_eq!(g.current, Ampere(0.0));
+        assert_eq!(g.reason, GrantReason::ColdStartKick);
+    }
+
+    #[test]
+    fn a_small_grant_with_the_car_drawing_stays_on_the_pin() {
+        // Grant 5 under load, live 2026-07-05: a kick here would lift a running session.
+        let i = GrantControlInputs {
+            target: Some(Ampere(6.0)),
+            lb: Ampere(5.0),
+            car: Ampere(4.9),
+            ..grant_base()
+        };
+        assert_eq!(grant_tracking_current(&i).reason, GrantReason::RampPin);
     }
 
     #[test]
@@ -853,6 +971,7 @@ mod tests {
         assert_eq!(grant_tracking_current(&grant_base()).current, MAX);
         let over = GrantControlInputs {
             lb: Ampere(26.0),
+            car: Ampere(26.0),
             ..grant_base()
         };
         assert_eq!(grant_tracking_current(&over).current, Ampere(34.0));
@@ -908,7 +1027,14 @@ mod tests {
     #[test]
     fn lb_tracking_holds_at_the_ceiling_when_the_grant_matches_the_target() {
         assert_eq!(
-            lb_tracking_report(MAX, Ampere(20.0), Ampere(20.0), Ampere(2.0), MIN),
+            lb_tracking_report(
+                MAX,
+                Ampere(20.0),
+                Ampere(20.0),
+                Ampere(20.0),
+                Ampere(2.0),
+                MIN
+            ),
             MAX
         );
     }
@@ -918,7 +1044,14 @@ mod tests {
         // Grant 6 A over → the box sheds proportionally, but the report is capped
         // at max_over so it can never approach the cut threshold.
         assert_eq!(
-            lb_tracking_report(MAX, Ampere(20.0), Ampere(26.0), Ampere(2.0), MIN),
+            lb_tracking_report(
+                MAX,
+                Ampere(20.0),
+                Ampere(26.0),
+                Ampere(26.0),
+                Ampere(2.0),
+                MIN
+            ),
             Ampere(34.0)
         );
     }
@@ -928,7 +1061,14 @@ mod tests {
         // The box ignores ≤0.5 over (#135 step 6); a 1 A error must land at
         // max+1, inside the measured shed region.
         assert_eq!(
-            lb_tracking_report(MAX, Ampere(20.0), Ampere(21.0), Ampere(2.0), MIN),
+            lb_tracking_report(
+                MAX,
+                Ampere(20.0),
+                Ampere(21.0),
+                Ampere(21.0),
+                Ampere(2.0),
+                MIN
+            ),
             Ampere(33.0)
         );
     }
@@ -937,11 +1077,25 @@ mod tests {
     fn lb_tracking_sub_amp_error_holds() {
         // CN28 grants are whole amps; anything below 1 A error is "at target".
         assert_eq!(
-            lb_tracking_report(MAX, Ampere(20.0), Ampere(20.5), Ampere(2.0), MIN),
+            lb_tracking_report(
+                MAX,
+                Ampere(20.0),
+                Ampere(20.5),
+                Ampere(20.5),
+                Ampere(2.0),
+                MIN
+            ),
             MAX
         );
         assert_eq!(
-            lb_tracking_report(MAX, Ampere(20.0), Ampere(19.5), Ampere(2.0), MIN),
+            lb_tracking_report(
+                MAX,
+                Ampere(20.0),
+                Ampere(19.5),
+                Ampere(19.5),
+                Ampere(2.0),
+                MIN
+            ),
             MAX
         );
     }
@@ -950,7 +1104,14 @@ mod tests {
     fn lb_tracking_reports_the_deficit_as_headroom() {
         // Grant 6 A short → headroom 6, the box ratchets up to the target.
         assert_eq!(
-            lb_tracking_report(MAX, Ampere(20.0), Ampere(14.0), Ampere(2.0), MIN),
+            lb_tracking_report(
+                MAX,
+                Ampere(20.0),
+                Ampere(14.0),
+                Ampere(14.0),
+                Ampere(2.0),
+                MIN
+            ),
             Ampere(26.0)
         );
     }
@@ -959,7 +1120,14 @@ mod tests {
     fn lb_tracking_start_headroom_equals_the_target() {
         // No grant yet: report max − target, so the start-grant is the target.
         assert_eq!(
-            lb_tracking_report(MAX, Ampere(20.0), Ampere(0.0), Ampere(2.0), MIN),
+            lb_tracking_report(
+                MAX,
+                Ampere(20.0),
+                Ampere(0.0),
+                Ampere(0.0),
+                Ampere(2.0),
+                MIN
+            ),
             Ampere(12.0)
         );
     }
@@ -967,7 +1135,14 @@ mod tests {
     #[test]
     fn lb_tracking_deficit_report_floors_at_zero() {
         assert_eq!(
-            lb_tracking_report(MAX, Ampere(32.0), Ampere(0.0), Ampere(2.0), MIN),
+            lb_tracking_report(
+                MAX,
+                Ampere(32.0),
+                Ampere(0.0),
+                Ampere(0.0),
+                Ampere(2.0),
+                MIN
+            ),
             Ampere(0.0)
         );
     }
