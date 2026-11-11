@@ -55,7 +55,6 @@ Follow the `commit-conventions` and `pr-workflow` skills. Project deltas:
 
 - The default branch is `main`. Never push straight to it; branch off with a `feat/…`,
   `fix/…`, `chore/…`, or `refactor/…` prefix and open a PR. **Merge by rebase only.**
-- **Never** commit/push/PR/merge unless explicitly asked.
 - English only for commit subjects/bodies and PR/issue titles/bodies.
 
 ## Safety reminders (real hardware involved)
@@ -81,3 +80,13 @@ The control loop drives a **3-phase 11 kW charger**.
 - **`core.yml`** — host tests for **`core/`** (`core/**`-path-scoped).
 - **`firmware/`** has no CI — the Espressif Xtensa toolchain and the device dependency
   keep it local-only (`cargo make build` / `ota_push.sh`).
+
+## Agent skills
+
+### Issue tracker
+
+GitHub issues on `andicoder/evc04` (always `gh ... -R andicoder/evc04`). See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root, created lazily. See `docs/agents/domain.md`.
